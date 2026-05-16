@@ -1,0 +1,148 @@
+services:
+  - type: web
+    name: spm-signal-bus
+    runtime: python
+    region: oregon
+    plan: starter
+    branch: main
+    rootDir: signal_bus
+    buildCommand: pip install -r ../requirements.txt
+    startCommand: python3 server.py
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: signal-bus-state
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: BINANCE_SYMBOLS
+        value: "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT,DOGEUSDT,AVAXUSDT,LINKUSDT,LTCUSDT,NEARUSDT,SUIUSDT,APTUSDT,ARBUSDT,OPUSDT,INJUSDT,SEIUSDT,TIAUSDT,WIFUSDT,JUPUSDT,DOTUSDT"
+      - key: HL_AGENT_WALLET
+        value: "0xaed87768d3b6a76c997b6c0048610ab1e718fdb2"
+      - key: STATE_DIR
+        value: /var/data
+      - key: HTTP_PORT
+        value: "10000"
+
+  - type: web
+    name: spm-strategy-runner
+    runtime: python
+    region: oregon
+    plan: starter
+    branch: main
+    rootDir: strategy_runner
+    buildCommand: pip install -r ../requirements.txt
+    startCommand: python3 server.py
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: strategy-runner-state
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: SIGNAL_BUS_URL
+        value: https://spm-signal-bus.onrender.com
+      - key: PM_URL
+        value: https://spm-pm.onrender.com
+      - key: PM_AUTH_TOKEN
+        sync: false
+      - key: HL_AGENT_WALLET
+        value: "0xaed87768d3b6a76c997b6c0048610ab1e718fdb2"
+      - key: HL_PRIVATE_KEY
+        sync: false
+      - key: LIVE_TRADING
+        value: "0"
+      - key: RISK_PCT_PER_TRADE
+        value: "0.02"
+      - key: LEVERAGE
+        value: "5"
+      - key: MAX_OPEN_POSITIONS
+        value: "6"
+      - key: SCAN_INTERVAL_SEC
+        value: "300"
+      - key: HALT_TOKEN
+        sync: false
+      - key: STATE_DIR
+        value: /var/data
+      - key: STRATEGY_FSP_ENABLED
+        value: "1"
+      - key: STRATEGY_VSQ_ENABLED
+        value: "1"
+      - key: STRATEGY_RANGE_FADE_ENABLED
+        value: "1"
+      - key: STRATEGY_RANGE_BO_ENABLED
+        value: "1"
+      - key: STRATEGY_LH1_ENABLED
+        value: "1"
+      - key: STRATEGY_FD1_ENABLED
+        value: "1"
+      - key: STRATEGY_PRECOG_ENABLED
+        value: "1"
+      - key: STRATEGY_LIQ_CASCADE_ENABLED
+        value: "1"
+      - key: STRATEGY_CEX_DEX_ARB_ENABLED
+        value: "1"
+
+  - type: web
+    name: spm-pm
+    runtime: python
+    region: oregon
+    plan: starter
+    branch: main
+    rootDir: pm
+    buildCommand: pip install -r ../requirements.txt
+    startCommand: python3 server.py
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: pm-state
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: SIGNAL_BUS_URL
+        value: https://spm-signal-bus.onrender.com
+      - key: PM_AUTH_TOKEN
+        sync: false
+      - key: HL_AGENT_WALLET
+        value: "0xaed87768d3b6a76c997b6c0048610ab1e718fdb2"
+      - key: STATE_DIR
+        value: /var/data
+      - key: PRETRADE_COIN_CONC_MAX
+        value: "2.0"
+
+  - type: web
+    name: spm-monitor
+    runtime: python
+    region: oregon
+    plan: starter
+    branch: main
+    rootDir: monitor
+    buildCommand: pip install -r ../requirements.txt
+    startCommand: python3 server.py
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: monitor-state
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: CLAUDE_CODE_API_KEY
+        sync: false
+      - key: SIGNAL_BUS_URL
+        value: https://spm-signal-bus.onrender.com
+      - key: PM_URL
+        value: https://spm-pm.onrender.com
+      - key: PM_AUTH_TOKEN
+        sync: false
+      - key: RENDER_API_TOKEN
+        sync: false
+      - key: DASH_PUSH_SECRET
+        sync: false
+      - key: VAPID_PUBLIC_KEY
+        sync: false
+      - key: VAPID_PRIVATE_KEY
+        sync: false
+      - key: DAILY_API_BUDGET_USD
+        value: "5"
+      - key: STATE_DIR
+        value: /var/data

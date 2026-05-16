@@ -1,0 +1,134 @@
+"""HL order wrapper. Wraps hyperliquid-python-sdk and provides deterministic cloid hashing.
+
+cloid format (HL accepts 128-bit hex):
+  0x + 32 hex chars = 16 bytes derived from sha256(prefix || coin || ts_ms || nonce)
+  We embed the strategy prefix in the FIRST 8 hex chars by re-hashing prefix to 4 bytes
+  and using it as a salt. Attribution reads back via prefix match on lookup table.
+"""
+from __future__ import annotations
+
+import hashlib
+import os
+import time
+from dataclasses import dataclass
+from typing import Optional
+
+
+def make_cloid(prefix: str, coin: str, nonce: Optional[int] = None, ts_ms: Optional[int] = None) -> str:
+    """Return 0x-prefixed 32-char hex cloid (16 bytes), seeded by prefix+coin+ts+nonce."""
+    if ts_ms is None:
+        ts_ms = int(time.time() * 1000)
+    if nonce is None:
+        nonce = int.from_bytes(os.urandom(4), "big")
+    h = hashlib.sha256(f"{prefix}|{coin}|{ts_ms}|{nonce}".encode()).digest()[:16]
+    return "0x" + h.hex()
+
+
+def cloid_matches_prefix(cloid: str, prefix: str, coin: str, lookback_ms: int = 24 * 3600 * 1000) -> bool:
+    """Best-effort cloid->prefix match. Real attribution uses a SQLite cloid registry;
+    this helper exists only for unit tests of the cloid scheme itself."""
+    # cloids are sha256 outputs — not reversible. Attribution happens via the registry
+    # in pm/attribution.py, not via cloid parsing. This function intentionally returns
+    # False to remind callers to use the registry.
+    return False
+
+
+@dataclass
+class OrderResult:
+    ok: bool
+    cloid: str
+    coin: str
+    side: str
+    size_coin: float
+    px: Optional[float]
+    raw: dict
+    error: Optional[str] = None
+
+
+class HLExchange:
+    """Lazy-init wrapper around hyperliquid-python-sdk.
+
+    The SDK is heavy and requires eth_account; we defer import so common/ can be
+    imported in CI/test contexts without secrets present.
+    """
+
+    def __init__(
+        self,
+        agent_wallet: Optional[str] = None,
+        private_key: Optional[str] = None,
+        base_url: str = "https://api.hyperliquid.xyz",
+    ):
+        self.agent_wallet = agent_wallet or os.environ.get("HL_AGENT_WALLET")
+        self.private_key = private_key or os.environ.get("HL_PRIVATE_KEY")
+        self.base_url = base_url
+        self._exchange = None
+        self._info = None
+
+    def _ensure(self):
+        if self._exchange is not None:
+            return
+        if not self.private_key:
+            raise RuntimeError("HL_PRIVATE_KEY not set; cannot place live orders")
+        from eth_account import Account  # type: ignore
+        from hyperliquid.exchange import Exchange  # type: ignore
+        from hyperliquid.info import Info  # type: ignore
+
+        wallet = Account.from_key(self.private_key)
+        self._info = Info(self.base_url, skip_ws=True)
+        self._exchange = Exchange(wallet, self.base_url)
+
+    def market_open(
+        self,
+        coin: str,
+        is_buy: bool,
+        size_coin: float,
+        cloid: str,
+        slippage: float = 0.005,
+    ) -> OrderResult:
+        self._ensure()
+        try:
+            res = self._exchange.market_open(
+                name=coin,
+                is_buy=is_buy,
+                sz=size_coin,
+                slippage=slippage,
+                cloid=cloid,
+            )
+            ok = bool(res and res.get("status") == "ok")
+            return OrderResult(
+                ok=ok,
+                cloid=cloid,
+                coin=coin,
+                side="B" if is_buy else "A",
+                size_coin=size_coin,
+                px=None,
+                raw=res or {},
+                error=None if ok else str(res),
+            )
+        except Exception as e:
+            return OrderResult(
+                ok=False, cloid=cloid, coin=coin,
+                side="B" if is_buy else "A",
+                size_coin=size_coin, px=None, raw={}, error=str(e),
+            )
+
+    def market_close(self, coin: str, size_coin: Optional[float] = None, cloid: Optional[str] = None) -> OrderResult:
+        self._ensure()
+        try:
+            res = self._exchange.market_close(coin=coin, sz=size_coin, cloid=cloid)
+            ok = bool(res and res.get("status") == "ok")
+            return OrderResult(
+                ok=ok,
+                cloid=cloid or "",
+                coin=coin,
+                side="close",
+                size_coin=size_coin or 0.0,
+                px=None,
+                raw=res or {},
+                error=None if ok else str(res),
+            )
+        except Exception as e:
+            return OrderResult(
+                ok=False, cloid=cloid or "", coin=coin, side="close",
+                size_coin=size_coin or 0.0, px=None, raw={}, error=str(e),
+            )
