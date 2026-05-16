@@ -215,10 +215,11 @@ def main() -> None:
             threading.Thread(target=_do_backfill, daemon=True, name="rest_backfill").start()
     threading.Thread(target=_flush_loop, args=(CACHE,), daemon=True, name="flush").start()
 
-    # HL WS thread is wired up in Session 3 via hl_ws.run_in_thread
+    # HL WS thread is wired up via hl_ws.run_in_thread
     try:
         from signal_bus import hl_ws  # noqa: F401
-        hl_wallet = config.get("HL_AGENT_WALLET", "")
+        # HL agent wallets sign-only; reads must target the MAIN wallet.
+        hl_wallet = config.get("HL_USER_WALLET", "") or config.get("HL_AGENT_WALLET", "")
         if hl_wallet:
             threading.Thread(target=hl_ws.run_in_thread, args=(hl_wallet, CACHE), daemon=True, name="hl_ws").start()
             log.info("hl ws started for wallet %s", hl_wallet)

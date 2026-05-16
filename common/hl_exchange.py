@@ -56,10 +56,19 @@ class HLExchange:
         self,
         agent_wallet: Optional[str] = None,
         private_key: Optional[str] = None,
+        account_address: Optional[str] = None,
         base_url: str = "https://api.hyperliquid.xyz",
     ):
         self.agent_wallet = agent_wallet or os.environ.get("HL_AGENT_WALLET")
         self.private_key = private_key or os.environ.get("HL_PRIVATE_KEY")
+        # When signer (private_key) is an agent, account_address tells HL which
+        # main account to route the order to. Without this, the SDK may sign
+        # but HL rejects ("agent not authorized for that account").
+        self.account_address = (
+            account_address
+            or os.environ.get("HL_USER_WALLET")
+            or os.environ.get("HL_MAIN_WALLET")
+        )
         self.base_url = base_url
         self._exchange = None
         self._info = None
@@ -75,7 +84,13 @@ class HLExchange:
 
         wallet = Account.from_key(self.private_key)
         self._info = Info(self.base_url, skip_ws=True)
-        self._exchange = Exchange(wallet, self.base_url)
+        # Pass account_address so HL routes the agent-signed order to the main account
+        if self.account_address:
+            self._exchange = Exchange(
+                wallet, self.base_url, account_address=self.account_address
+            )
+        else:
+            self._exchange = Exchange(wallet, self.base_url)
 
     def market_open(
         self,

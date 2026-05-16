@@ -181,6 +181,10 @@ async def _runner(wallet: str, cache: Cache, mark_coins: list[str]) -> None:
 
 
 def run_in_thread(wallet: str, cache: Cache, mark_coins: list[str] | None = None) -> None:
+    """`wallet` should be the MAIN (owner) wallet, not the agent. HL agents
+    sign-only and report no balance/positions of their own; queries on the
+    agent address return empty. SPEC §0 main wallet = 0x3eDaD0...
+    """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     coins = mark_coins or DEFAULT_MARK_COINS
