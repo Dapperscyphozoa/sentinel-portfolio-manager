@@ -636,17 +636,11 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/orderbook/"):
             coin = path.split("/")[-1]
             return self._serve_orderbook(coin)
-        # Other landing sub-pages — redirect to existing equivalents
+        # Landing sub-nav paths — serve the landing HTML so the page stays styled
+        # (originally these were separate sub-pages in precog-hl, not yet ported).
         if path in ("/engines", "/audit", "/system", "/macro",
                     "/enforce", "/experiment", "/violations"):
-            target = os.environ.get(
-                "DASHBOARD_URL",
-                "https://quant-stack-dashboard-phbu.onrender.com/",
-            ) + path.lstrip("/")
-            self.send_response(302)
-            self.send_header("Location", target)
-            self.end_headers()
-            return
+            return self._serve_landing()
         # Route to subsystem
         for prefix, (port, strip) in _PROXY_MAP.items():
             if path == prefix or path.startswith(prefix + "/"):
