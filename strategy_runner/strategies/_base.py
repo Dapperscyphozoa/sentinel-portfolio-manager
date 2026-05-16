@@ -36,6 +36,17 @@ class StrategyBase:
         raise NotImplementedError
 
     @classmethod
+    def should_close(cls, trade_row, bus) -> tuple[bool, str]:
+        """Optional override for strategies with strategy-defined exits beyond
+        the fixed SL/TP/timeout that trader.position_loop handles. Return
+        (True, reason) to close the position. Default: no strategy-driven close.
+
+        Used by Donchian (10-bar opposite-channel exit) and any future strategy
+        that wants trailing/dynamic exits.
+        """
+        return (False, "")
+
+    @classmethod
     def info(cls) -> dict:
         return {
             "name": cls.NAME,

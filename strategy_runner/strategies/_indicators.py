@@ -133,3 +133,19 @@ def pivot_highs(highs: Sequence[float], lb: int = 5, rb: int = 5) -> list[int]:
            all(highs[i] >= highs[i + j] for j in range(1, rb + 1)):
             out.append(i)
     return out
+
+
+def donchian(highs: Sequence[float], lows: Sequence[float], n: int):
+    """Donchian channel: upper = N-period highest high, lower = N-period lowest low.
+
+    The classical Turtle System uses the channel value as of the PREVIOUS bar's
+    close (so a breakout is "close > prev N-bar high"), to avoid using the
+    current bar's own data to define the channel. Callers should use
+    `upper[i-1]` and `lower[i-1]` when evaluating bar i for a breakout.
+    """
+    upper: list[float | None] = [None] * len(highs)
+    lower: list[float | None] = [None] * len(lows)
+    for i in range(n - 1, len(highs)):
+        upper[i] = max(highs[i - n + 1: i + 1])
+        lower[i] = min(lows[i - n + 1: i + 1])
+    return upper, lower

@@ -89,14 +89,21 @@ class Trader:
         )
         return OpenResult(ok=(err is None), cloid=cloid, error=err)
 
-    def position_loop_once(self) -> int:
-        """Scan every open trade and close those that hit SL/TP/timeout. Returns # closed."""
+    def position_loop_once(self, registry=None) -> int:
+        """Scan every open trade and close those that hit SL/TP/timeout, OR
+        whose strategy.should_close() returns True (e.g. Donchian's
+        trail-exit). Returns # closed.
+
+        `registry` is an optional list of StrategyBase classes (used for
+        strategy-driven close checks). If None, only SL/TP/timeout is used.
+        """
         rows = self.conn.execute(
             "SELECT cloid,strategy,coin,is_long,open_ts,open_px,size_coin,sl_px,tp_px,max_hold_bars "
             "FROM trades WHERE status='open'"
         ).fetchall()
         closed = 0
         now = time.time()
+        strat_by_name = {s.NAME: s for s in (registry or [])}
         for r in rows:
             coin = r["coin"]
             try:
@@ -112,9 +119,22 @@ class Trader:
             hit_sl = (is_long and px <= r["sl_px"]) or (not is_long and px >= r["sl_px"])
             # tf is 1h proxy: max_hold_bars * 3600s. Strategies may override via extras, ignored for v1.
             timed_out = (now - r["open_ts"]) > r["max_hold_bars"] * 3600
-            if not (hit_tp or hit_sl or timed_out):
+
+            # Strategy-driven exit (e.g. Donchian 10-bar opposite break)
+            strat_close = False
+            strat_reason = ""
+            strat_cls = strat_by_name.get(r["strategy"])
+            if strat_cls is not None and not (hit_tp or hit_sl or timed_out):
+                try:
+                    sc, sr = strat_cls.should_close(r, self.bus)
+                    strat_close = bool(sc)
+                    strat_reason = sr or "strategy_exit"
+                except Exception:
+                    log.exception("should_close raised for %s/%s", r["strategy"], coin)
+
+            if not (hit_tp or hit_sl or timed_out or strat_close):
                 continue
-            reason = "tp" if hit_tp else "sl" if hit_sl else "timeout"
+            reason = "tp" if hit_tp else "sl" if hit_sl else "timeout" if timed_out else strat_reason
             self._close(r, px, reason, now)
             closed += 1
         return closed

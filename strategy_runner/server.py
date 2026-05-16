@@ -137,9 +137,10 @@ def _scan_loop() -> None:
 
 
 def _position_loop() -> None:
+    from .runner import REGISTRY
     while True:
         try:
-            closed = TRADER.position_loop_once()
+            closed = TRADER.position_loop_once(registry=REGISTRY)
             if closed:
                 log.info("position loop: closed %d", closed)
         except Exception:

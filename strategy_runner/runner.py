@@ -30,7 +30,7 @@ def _load_registered() -> None:
     from .strategies import fsp
     register(fsp.FSP)
     # Subsequent sessions add more imports here.
-    for modname in ("range_fade", "range_breakout", "vsq", "fd1", "lh1", "precog", "liq_cascade", "cex_dex_arb"):
+    for modname in ("range_fade", "range_breakout", "vsq", "fd1", "lh1", "precog", "liq_cascade", "cex_dex_arb", "donchian"):
         try:
             mod = __import__(f"strategy_runner.strategies.{modname}", fromlist=["*"])
             for attr in dir(mod):
