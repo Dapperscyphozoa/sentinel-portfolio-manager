@@ -60,6 +60,14 @@ class BusClient:
         r.raise_for_status()
         return r.json()
 
+    def hl_confluence(self, coin: str, since_ms: Optional[int] = None) -> dict:
+        params = {}
+        if since_ms is not None:
+            params["since"] = since_ms
+        r = self._client.get(f"{self.base_url}/hl/confluence/{coin.upper()}", params=params)
+        r.raise_for_status()
+        return r.json()
+
     def health(self) -> dict:
         r = self._client.get(f"{self.base_url}/health")
         r.raise_for_status()

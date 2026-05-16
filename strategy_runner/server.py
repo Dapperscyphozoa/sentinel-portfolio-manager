@@ -96,6 +96,26 @@ class Handler(BaseHTTPRequestHandler):
             halt.set_halt(CONN, target, False, actor=body.get("actor", "api"))
             return _json(self, 200, {"ok": True, "halted": list(halt.active_halts())})
 
+        if path == "/precog/webhook":
+            # HMAC verification of X-Precog-Sig (hex sha256 of body with PRECOG_WEBHOOK_SECRET)
+            import hmac, hashlib
+            secret = os.environ.get("PRECOG_WEBHOOK_SECRET", "")
+            sig_hdr = self.headers.get("X-Precog-Sig") or self.headers.get("x-precog-sig", "")
+            if not secret:
+                return _json(self, 503, {"error": "no_secret_configured"})
+            expected = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(expected, (sig_hdr or "").lower()):
+                return _json(self, 401, {"error": "bad_signature"})
+            coin = (body.get("coin") or "").upper()
+            if not coin:
+                return _json(self, 400, {"error": "no_coin"})
+            try:
+                from strategy_runner.strategies import precog as precog_mod
+                precog_mod.enqueue(coin, body)
+            except Exception as e:
+                return _json(self, 500, {"error": str(e)})
+            return _json(self, 200, {"ok": True, "queue": precog_mod.queue_stats()})
+
         return _json(self, 404, {"error": "not_found"})
 
 

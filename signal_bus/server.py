@@ -110,6 +110,26 @@ class Handler(BaseHTTPRequestHandler):
             fills = [f for f in CACHE.hl_fills if f.get("ts", 0) >= since]
             return _json_resp(self, 200, fills)
 
+        if len(parts) == 3 and parts[0] == "hl" and parts[1] == "confluence":
+            # /hl/confluence/{coin}: returns recent fill activity + position direction
+            # for use by strategies that want to align with HL flow
+            coin = parts[2].upper()
+            since = int(q.get("since", str(int((time.time() - 600) * 1000))))
+            fills = [f for f in CACHE.hl_fills if f.get("coin") == coin and f.get("ts", 0) >= since]
+            buy_qty = sum(f["qty"] for f in fills if f["side"] == "B")
+            sell_qty = sum(f["qty"] for f in fills if f["side"] == "A")
+            net = buy_qty - sell_qty
+            pos = next((p for p in CACHE.hl_positions if p["coin"] == coin), None)
+            return _json_resp(self, 200, {
+                "coin": coin,
+                "fills_in_window": len(fills),
+                "buy_qty": buy_qty,
+                "sell_qty": sell_qty,
+                "net_qty": net,
+                "since": since,
+                "position": pos,
+            })
+
         return _json_resp(self, 404, {"error": "not_found", "path": path})
 
 
