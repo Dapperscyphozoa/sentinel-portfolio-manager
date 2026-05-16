@@ -1,0 +1,1 @@
+{"halt": {"active": false, "reason": null, "ts": null}, "mode_effective": "paper", "open_trades": [], "pending_live": [], "pnl": {"n_closed": 0, "n_wins": 0, "wr_pct": 0, "total_net_pnl": 0, "total_fees": 0, "total_bps": 0, "avg_bps": 0, "tp_count": 0, "sl_count": 0, "time_count": 0}}
