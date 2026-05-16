@@ -99,8 +99,9 @@ class Cache:
         self.hl_fills: Deque[dict] = deque(maxlen=10000)
         self.last_update: dict[str, float] = {
             "binance_ws": 0.0, "hl_ws": 0.0, "binance_flush": 0.0, "liq_flush": 0.0,
+            "okx_ws": 0.0, "bybit_ws": 0.0,
         }
-        self.ws_alive: dict[str, bool] = {"binance": False, "hl": False}
+        self.ws_alive: dict[str, bool] = {"binance": False, "hl": False, "okx": False, "bybit": False}
         self._lock = threading.RLock()
 
     # -------- writers --------

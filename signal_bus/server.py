@@ -92,7 +92,21 @@ class Handler(BaseHTTPRequestHandler):
         if len(parts) == 2 and parts[0] == "funding":
             coin = parts[1].upper()
             hours = int(q.get("hours", "12"))
-            return _json_resp(self, 200, CACHE.get_funding(coin, hours))
+            venue = q.get("venue")
+            rows = CACHE.get_funding(coin, hours)
+            if venue:
+                rows = [r for r in rows if r.get("venue") == venue]
+            return _json_resp(self, 200, rows)
+
+        if len(parts) == 2 and parts[0] == "funding_multi":
+            # /funding_multi/{coin}?hours=12  → per-venue grouped
+            coin = parts[1].upper()
+            hours = int(q.get("hours", "12"))
+            rows = CACHE.get_funding(coin, hours)
+            out: dict[str, list] = {}
+            for r in rows:
+                out.setdefault(r.get("venue", "unknown"), []).append({"ts": r["ts"], "rate": r["rate"]})
+            return _json_resp(self, 200, out)
 
         if len(parts) == 2 and parts[0] == "markprice":
             coin = parts[1].upper()
@@ -177,6 +191,19 @@ def main() -> None:
             log.info("hl ws started for wallet %s", hl_wallet)
     except Exception:
         log.warning("hl_ws not started", exc_info=True)
+
+    # cross-venue (OKX/Bybit) funding WS — for cex_dex_arb (Session 10)
+    if config.get_bool("CROSS_VENUE_WS_ENABLED", default=False):
+        try:
+            from signal_bus import cross_venue_ws  # noqa: F401
+            cv_coins = (config.get("CROSS_VENUE_COINS",
+                "BTC,ETH,SOL,XRP,BNB,DOGE,AVAX,LINK,LTC,NEAR,SUI,APT,ARB,OP,INJ,SEI,TIA,WIF,JUP,DOT") or "").strip()
+            coins = [c.strip().upper() for c in cv_coins.split(",") if c.strip()]
+            threading.Thread(target=cross_venue_ws.run_in_thread, args=(coins, CACHE),
+                             daemon=True, name="cross_venue_ws").start()
+            log.info("cross-venue ws started for %d coins", len(coins))
+        except Exception:
+            log.warning("cross_venue_ws not started", exc_info=True)
 
     port = config.get_int("HTTP_PORT", 10000)
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)

@@ -32,8 +32,16 @@ class BusClient:
         r.raise_for_status()
         return r.json()
 
-    def funding(self, coin: str, hours: int = 12) -> list[dict]:
-        r = self._client.get(f"{self.base_url}/funding/{coin}", params={"hours": hours})
+    def funding(self, coin: str, hours: int = 12, venue: Optional[str] = None) -> list[dict]:
+        params = {"hours": hours}
+        if venue:
+            params["venue"] = venue
+        r = self._client.get(f"{self.base_url}/funding/{coin}", params=params)
+        r.raise_for_status()
+        return r.json()
+
+    def funding_multi(self, coin: str, hours: int = 12) -> dict:
+        r = self._client.get(f"{self.base_url}/funding_multi/{coin}", params={"hours": hours})
         r.raise_for_status()
         return r.json()
 
