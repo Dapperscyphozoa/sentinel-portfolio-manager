@@ -51,6 +51,14 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load ICT confluence engines")
 
+    # 1.6) Cascade Sniper (council 5/6 pick — Binance liq → HL execution)
+    try:
+        from .strategies.cascade_sniper import CascadeSniperHL
+        register(CascadeSniperHL)
+        log.info("Loaded cascade sniper: %s", CascadeSniperHL.NAME)
+    except Exception:
+        log.exception("failed to load cascade sniper")
+
     # 2) Legacy 9 strategies — combined with OOS per operator spec
     import os
     if os.environ.get("STRATEGY_LEGACY_LOAD", "1") == "1":   # default ON for combined deployment

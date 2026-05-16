@@ -76,6 +76,11 @@ ENGINE_REGISTRY: dict[str, dict] = {
                              "bt_pf": 1.21, "cap_frac": 0.00},   # cap_frac=0: live_safety controls sizing
     "ict_confluence_1d":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
                              "bt_pf": 1.21, "cap_frac": 0.00},
+    # ─── Cascade Sniper (council 5/6 pick — Binance liq → HL execution) ───
+    # Event-driven, NOT bar-driven. Sub-1s response on $500K+ cascades.
+    # Same live_safety controls as ICT: 0.25% risk, 3x lev, max 1 concurrent.
+    "cascade_sniper_hl":   {"affinity": ["high_vol", "trend_up", "trend_down", "range", "chop"],
+                             "bt_pf": 0.00, "cap_frac": 0.00},   # bt_pf=0: untested, paper only
 }
 
 # CUT engines — hard-blocked from check() regardless of env (audit verdict)
@@ -170,10 +175,11 @@ def check(conn, strategy: str, signal: dict, regime: dict,
     if notional < _f("MIN_TRADE_USD", 10.0):
         return CheckResult(False, 0.0, "size_below_min")
 
-    # 8) Live-safety gate for ICT signals (council Phase 1 spec)
-    # Only ICT engines route through live_safety; OOS/legacy engines use
+    # 8) Live-safety gate for ICT signals + cascade sniper (council Phase 1 spec)
+    # ICT + cascade sniper route through live_safety; OOS/legacy engines use
     # flat 5% margin × 5x lev as before.
-    if strategy.startswith("ict_") and get_safety is not None:
+    LIVE_SAFETY_ENGINES = {"ict_confluence_4h", "ict_confluence_1d", "cascade_sniper_hl"}
+    if strategy in LIVE_SAFETY_ENGINES and get_safety is not None:
         try:
             safety = get_safety()
             sr = safety.check(signal, account_value_usd, open_positions)
