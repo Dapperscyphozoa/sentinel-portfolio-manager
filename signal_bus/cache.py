@@ -103,6 +103,9 @@ class Cache:
         }
         self.ws_alive: dict[str, bool] = {"binance": False, "hl": False, "okx": False, "bybit": False}
         self._lock = threading.RLock()
+        # Sentinel fix: flush cursor for liq events. Without this, each flush
+        # re-wrote every event in the ring buffer (50k×12/hour duplicates).
+        self._last_flushed_liq_ts: int = 0
 
     # -------- writers --------
 
@@ -193,9 +196,13 @@ class Cache:
         return n
 
     def flush_liqs(self) -> int:
-        """Write liq events newer than last flush to SQLite. Every 5min."""
+        """Write liq events newer than last flush cursor to SQLite. Every 5min."""
         with self._lock:
-            snapshot = list(self.liqs)
+            cursor = self._last_flushed_liq_ts
+            # snapshot only NEW events
+            snapshot = [e for e in self.liqs if e["ts"] > cursor]
+            if snapshot:
+                self._last_flushed_liq_ts = max(e["ts"] for e in snapshot)
         n = 0
         with _DB_LOCK:
             for e in snapshot:
@@ -233,6 +240,9 @@ class Cache:
             for r in liq_rows:
                 self.liqs.append({"ts": r["ts"], "coin": r["coin"], "side": r["side"],
                                   "qty": r["qty"], "price": r["price"], "usd": r["usd"]})
+            # Seed cursor so the cold-loaded events are not re-flushed
+            if liq_rows:
+                self._last_flushed_liq_ts = max(r["ts"] for r in liq_rows)
 
     def stats(self) -> dict:
         with self._lock:

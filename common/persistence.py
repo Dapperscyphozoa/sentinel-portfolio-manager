@@ -91,6 +91,12 @@ CREATE TABLE IF NOT EXISTS spend (
 );
 CREATE INDEX IF NOT EXISTS idx_spend_ts ON spend(ts);
 CREATE INDEX IF NOT EXISTS idx_spend_routine_ts ON spend(routine, ts);
+
+CREATE TABLE IF NOT EXISTS kv_state (
+    k     TEXT PRIMARY KEY,
+    v     TEXT NOT NULL,
+    ts    REAL NOT NULL
+) WITHOUT ROWID;
 """
 
 
@@ -115,3 +121,16 @@ def table_names(conn: sqlite3.Connection) -> list[str]:
         "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
     ).fetchall()
     return [r["name"] for r in rows]
+
+
+def kv_get(conn: sqlite3.Connection, key: str) -> Optional[str]:
+    row = conn.execute("SELECT v FROM kv_state WHERE k=?", (key,)).fetchone()
+    return row["v"] if row else None
+
+
+def kv_set(conn: sqlite3.Connection, key: str, value: str) -> None:
+    import time as _t
+    conn.execute(
+        "INSERT OR REPLACE INTO kv_state(k, v, ts) VALUES(?, ?, ?)",
+        (key, value, _t.time()),
+    )

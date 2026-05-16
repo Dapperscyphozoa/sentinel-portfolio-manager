@@ -115,14 +115,21 @@ def check(conn, strategy: str, signal: dict, regime: dict,
         return CheckResult(False, 0.0, "no_notional_headroom")
     proposed = min(proposed, headroom)
 
-    # coin concentration: existing this-coin notional × 2 must still fit
+    # coin concentration: after adding `proposed`, total this-coin notional
+    # must not exceed coin_conc_max × current this-coin notional.
+    #   (coin_notional + add) ≤ coin_conc_max · coin_notional
+    #   add ≤ coin_notional · (coin_conc_max - 1)
     coin_notional = sum(abs(float(p.get("notional", 0))) for p in open_positions if p.get("coin") == coin)
-    if coin_notional > 0 and coin_notional * coin_conc_max < proposed + coin_notional:
-        proposed = max(0.0, coin_conc_max * coin_notional - coin_notional)
-        if proposed < _f("MIN_TRADE_USD", 25.0):
+    min_trade = _f("MIN_TRADE_USD", 25.0)
+    if coin_notional > 0:
+        if coin_conc_max <= 1.0:
+            return CheckResult(False, 0.0, "coin_concentration_full")
+        max_additional = coin_notional * (coin_conc_max - 1.0)
+        if max_additional < min_trade:
             return CheckResult(False, 0.0, "coin_concentration")
+        proposed = min(proposed, max_additional)
 
-    if proposed < _f("MIN_TRADE_USD", 25.0):
+    if proposed < min_trade:
         return CheckResult(False, 0.0, "size_below_min")
 
     return CheckResult(True, round(proposed, 2), "ok")

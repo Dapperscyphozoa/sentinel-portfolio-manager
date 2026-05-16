@@ -220,14 +220,32 @@ def metrics(trades: list[Trade]) -> dict:
 
 
 def load_strategy(name: str) -> type[StrategyBase]:
-    mod = importlib.import_module(f"strategy_runner.strategies.{name}")
-    for attr in dir(mod):
-        obj = getattr(mod, attr)
-        if isinstance(obj, type) and issubclass(obj, StrategyBase) and obj is not StrategyBase and obj.NAME == name.replace("range_breakout", "range_bo"):
-            return obj
-        if isinstance(obj, type) and issubclass(obj, StrategyBase) and obj is not StrategyBase and obj.__module__.endswith(name):
-            return obj
-    raise SystemExit(f"strategy {name} not found in module")
+    """Load a strategy class by NAME. Handles module/NAME drift cleanly.
+
+    Tries each candidate module name; in each, returns the first concrete
+    StrategyBase subclass found. Surface candidates the user can pass:
+        fsp, vsq, range_fade, range_bo, range_breakout, fd1, lh1, precog,
+        liq_cascade, cex_dex_arb.
+    """
+    # Hard mapping for known NAME → module-file mismatches.
+    name_to_modules: dict[str, list[str]] = {
+        "range_bo": ["range_breakout", "range_bo"],
+        "range_breakout": ["range_breakout"],
+    }
+    candidates = name_to_modules.get(name, [name])
+    last_err: Exception | None = None
+    for mod_name in candidates:
+        try:
+            mod = importlib.import_module(f"strategy_runner.strategies.{mod_name}")
+        except ImportError as e:
+            last_err = e
+            continue
+        for attr in dir(mod):
+            obj = getattr(mod, attr)
+            if (isinstance(obj, type) and issubclass(obj, StrategyBase)
+                    and obj is not StrategyBase and getattr(obj, "NAME", None)):
+                return obj
+    raise SystemExit(f"strategy {name!r} not found (last error: {last_err})")
 
 
 def main():

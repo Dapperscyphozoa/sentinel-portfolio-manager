@@ -154,6 +154,16 @@ def _on_active_asset_ctx(cache: Cache, data) -> None:
             "hl_mid": mid,
         }
         dq.append(merged)
+    # Sentinel fix: also extract funding rate (cex_dex_arb requires this).
+    # HL activeAssetCtx provides funding as 'funding' (perp annualized -> per-hour
+    # converted by HL). We store as-is, venue='hyperliquid'.
+    fr = ctx.get("funding")
+    if fr is not None:
+        try:
+            rate = float(fr)
+            cache.push_funding(coin, int(time.time() * 1000), rate, venue="hyperliquid")
+        except Exception:
+            pass
 
 
 async def _runner(wallet: str, cache: Cache, mark_coins: list[str]) -> None:
