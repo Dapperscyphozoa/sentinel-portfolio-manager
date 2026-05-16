@@ -652,9 +652,12 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/orderbook/"):
             coin = path.split("/")[-1]
             return self._serve_orderbook(coin)
-        # Sentinel proxy: pulls /status from the separate sentinel service
-        if path == "/sentinel" or path == "/sentinel/":
+        # Sentinel: JSON data at /sentinel.json (fetched by the panel),
+        #           styled landing at /sentinel (browser navigation)
+        if path == "/sentinel.json":
             return self._serve_sentinel()
+        if path == "/sentinel" or path == "/sentinel/":
+            return self._serve_landing()
         # Landing sub-nav paths — serve the landing HTML so the page stays styled
         # (originally these were separate sub-pages in precog-hl, not yet ported).
         if path in ("/engines", "/audit", "/system", "/macro",

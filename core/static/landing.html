@@ -2899,7 +2899,7 @@ async function loadSentinel() {
   }
   const body = document.getElementById('sentinel-body');
   try {
-    const r = await fetch('/sentinel');
+    const r = await fetch('/sentinel.json?t=' + Date.now());
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     if (d.error) throw new Error(d.error);
@@ -2939,7 +2939,13 @@ async function loadSentinel() {
     body.innerHTML = '<span style="color:var(--blood);opacity:0.7;">// sentinel unreachable: ' + (e.message || e) + '</span>';
   }
 }
-loadSentinel();
+loadSentinel().then(() => {
+  // If user navigated to /sentinel directly, scroll the panel into view
+  if (location.pathname === '/sentinel' || location.pathname === '/sentinel/') {
+    const panel = document.getElementById('sentinel-panel');
+    if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+});
 setInterval(loadSentinel, 30000);
 </script>
 </body>
