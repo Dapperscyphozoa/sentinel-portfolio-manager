@@ -24,6 +24,11 @@ try:
 except Exception:
     CooldownTracker = None
 
+try:
+    from common.live_safety import get_safety
+except Exception:
+    get_safety = None
+
 
 log = logging.getLogger("pretrade")
 
@@ -66,6 +71,11 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "e08_dip3d7_td_4h":    {"affinity": ["trend_down"],             "bt_pf":  1.50, "cap_frac": 0.06},
     "e16_bb_fade_hv_4h":   {"affinity": ["high_vol"],               "bt_pf":  1.50, "cap_frac": 0.06},
     "e17_bb_fade_bt_4h":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.30, "cap_frac": 0.10},
+    # ─── ICT Confluence (operator-mandated live deploy, council tightened safety) ───
+    "ict_confluence_4h":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
+                             "bt_pf": 1.21, "cap_frac": 0.00},   # cap_frac=0: live_safety controls sizing
+    "ict_confluence_1d":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
+                             "bt_pf": 1.21, "cap_frac": 0.00},
 }
 
 # CUT engines — hard-blocked from check() regardless of env (audit verdict)
@@ -159,6 +169,21 @@ def check(conn, strategy: str, signal: dict, regime: dict,
     notional = margin_usd * leverage
     if notional < _f("MIN_TRADE_USD", 10.0):
         return CheckResult(False, 0.0, "size_below_min")
+
+    # 8) Live-safety gate for ICT signals (council Phase 1 spec)
+    # Only ICT engines route through live_safety; OOS/legacy engines use
+    # flat 5% margin × 5x lev as before.
+    if strategy.startswith("ict_") and get_safety is not None:
+        try:
+            safety = get_safety()
+            sr = safety.check(signal, account_value_usd, open_positions)
+            if not sr.allow:
+                return CheckResult(False, 0.0, f"live_safety:{sr.reason}")
+            # Override sizing with safety-controlled value (smaller, ATR-aware)
+            margin_usd = sr.margin_usd
+        except Exception as e:
+            log.exception("live_safety check failed: %s", e)
+            return CheckResult(False, 0.0, "live_safety_error")
 
     return CheckResult(True, round(margin_usd, 2), "ok", bt_pf=bt_pf)
 

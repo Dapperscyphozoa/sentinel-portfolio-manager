@@ -41,6 +41,16 @@ def _load_registered() -> None:
     except Exception:
         log.exception("CRITICAL: failed to load OOS engines")
 
+    # 1.5) ICT Confluence (live deploy with tightened safety per council)
+    try:
+        from .strategies.ict_confluence import ICT_Confluence_4h, ICT_Confluence_1d
+        register(ICT_Confluence_4h)
+        register(ICT_Confluence_1d)
+        log.info("Loaded ICT confluence engines: %s",
+                 [ICT_Confluence_4h.NAME, ICT_Confluence_1d.NAME])
+    except Exception:
+        log.exception("failed to load ICT confluence engines")
+
     # 2) Legacy 9 strategies — combined with OOS per operator spec
     import os
     if os.environ.get("STRATEGY_LEGACY_LOAD", "1") == "1":   # default ON for combined deployment
