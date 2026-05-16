@@ -18,9 +18,16 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# Ensure the project root is on sys.path so 'sniper.X' imports work when
+# Render runs us with rootDir=sniper (cwd would otherwise hide the package)
+_PROJ_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJ_ROOT not in sys.path:
+    sys.path.insert(0, _PROJ_ROOT)
 
 from sniper.listing_detector import ListingDetector
 from sniper.oracle_lag import evaluate_snipe, fetch_hl_mark

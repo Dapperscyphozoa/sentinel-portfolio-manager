@@ -36,7 +36,7 @@ class Trader:
         self.pm = pm
         self.hl = hl
         self.live_default = config.get_bool("LIVE_TRADING", default=False)
-        self.leverage = config.get_int("LEVERAGE", 5)
+        self.leverage = config.get_float("LEVERAGE", 5.0)
 
     def _is_live(self, strategy: str) -> bool:
         # Per-strategy override > global default
