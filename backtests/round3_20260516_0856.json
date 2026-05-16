@@ -1,0 +1,74 @@
+[
+  {
+    "name": "don_1d_20_10",
+    "tf": "1d",
+    "trades": 33,
+    "win_rate": 0.3333333333333333,
+    "profit_factor": 0.8409637658142884,
+    "return_pct": -0.17154260846393024,
+    "final_capital": 406.9714090181789
+  },
+  {
+    "name": "don_12h_20_10",
+    "tf": "12h",
+    "trades": 149,
+    "win_rate": 0.2751677852348993,
+    "profit_factor": 0.5322477802149513,
+    "return_pct": -0.9619166341386779,
+    "final_capital": 18.708072645715838
+  },
+  {
+    "name": "don_8h_20_10",
+    "tf": "8h",
+    "trades": 247,
+    "win_rate": 0.29554655870445345,
+    "profit_factor": 0.8311960772067821,
+    "return_pct": -0.9269843608700379,
+    "final_capital": 35.86820256620257
+  },
+  {
+    "name": "don_12h_40_20",
+    "tf": "12h",
+    "trades": 100,
+    "win_rate": 0.34,
+    "profit_factor": 0.7548199328290879,
+    "return_pct": -0.6313213780564195,
+    "final_capital": 181.10968624356445
+  },
+  {
+    "name": "don_8h_40_20",
+    "tf": "8h",
+    "trades": 175,
+    "win_rate": 0.3142857142857143,
+    "profit_factor": 0.8417311420122661,
+    "return_pct": -0.6387732752618556,
+    "final_capital": 177.44901626036608
+  },
+  {
+    "name": "connors_rsi2_1d",
+    "tf": "1d",
+    "trades": 39,
+    "win_rate": 0.46153846153846156,
+    "profit_factor": 0.8702908774856866,
+    "return_pct": -0.1558554185430169,
+    "final_capital": 414.6775841949284
+  },
+  {
+    "name": "macd_trend_1d",
+    "tf": "1d",
+    "trades": 25,
+    "win_rate": 0.4,
+    "profit_factor": 0.7103749894858759,
+    "return_pct": -0.330035281426643,
+    "final_capital": 329.1134683519759
+  },
+  {
+    "name": "zscore_mr_1d",
+    "tf": "1d",
+    "trades": 68,
+    "win_rate": 0.5735294117647058,
+    "profit_factor": 0.5209701036799286,
+    "return_pct": -0.5591369280075632,
+    "final_capital": 216.56957548556468
+  }
+]

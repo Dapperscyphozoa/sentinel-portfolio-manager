@@ -1,0 +1,74 @@
+{
+  "config": {
+    "days": 365,
+    "coins": [
+      "BTC",
+      "ETH",
+      "SOL"
+    ],
+    "risk": 0.05,
+    "capital": 491.24
+  },
+  "results": [
+    {
+      "name": "vol_rsi",
+      "tf": "1h",
+      "trades": 21,
+      "win_rate": 0.19047619047619047,
+      "profit_factor": 0.28271688972400755,
+      "return_pct": -0.15579795680067604,
+      "final_capital": 414.7058117012359,
+      "avg_win": 7.541480958980263,
+      "avg_loss": 6.276477184393251,
+      "expectancy_R": -0.5806577559377082
+    },
+    {
+      "name": "bb_squeeze",
+      "tf": "4h",
+      "trades": 395,
+      "win_rate": 0.4050632911392405,
+      "profit_factor": 0.8378895010462194,
+      "return_pct": -0.6612584270851128,
+      "final_capital": 166.40341027870915,
+      "avg_win": 10.49350480997875,
+      "avg_loss": 8.526797273693155,
+      "expectancy_R": -0.0964454867193379
+    },
+    {
+      "name": "keltner_adx",
+      "tf": "4h",
+      "trades": 615,
+      "win_rate": 0.43577235772357725,
+      "profit_factor": 0.9029525374859378,
+      "return_pct": -0.5224130708107827,
+      "final_capital": 234.60980309491111,
+      "avg_win": 8.909507576799818,
+      "avg_loss": 7.62068653454594,
+      "expectancy_R": -0.054756860963218926
+    },
+    {
+      "name": "vwrsi_ema",
+      "tf": "1h",
+      "trades": 0,
+      "win_rate": 0,
+      "profit_factor": 0,
+      "return_pct": 0.0,
+      "final_capital": 491.24,
+      "avg_win": 0,
+      "avg_loss": 0,
+      "expectancy_R": 0
+    },
+    {
+      "name": "volspike_ema",
+      "tf": "1h",
+      "trades": 362,
+      "win_rate": 0.42265193370165743,
+      "profit_factor": 0.7528355087850589,
+      "return_pct": -0.5980546571843454,
+      "final_capital": 197.45163020476215,
+      "avg_win": 5.8486709120521185,
+      "avg_loss": 5.6872488963598675,
+      "expectancy_R": -0.14269994106056003
+    }
+  ]
+}

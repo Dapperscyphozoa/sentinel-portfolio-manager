@@ -149,3 +149,108 @@ def donchian(highs: Sequence[float], lows: Sequence[float], n: int):
         upper[i] = max(highs[i - n + 1: i + 1])
         lower[i] = min(lows[i - n + 1: i + 1])
     return upper, lower
+
+
+def bb_width(closes: Sequence[float], n: int = 20, k: float = 2.0) -> list[float | None]:
+    """Bollinger band width (upper - lower) / mid — measures volatility regime."""
+    upper, mid, lower = bollinger(closes, n, k)
+    out: list[float | None] = []
+    for u, m, l in zip(upper, mid, lower):
+        if u is None or m is None or l is None or m == 0:
+            out.append(None)
+        else:
+            out.append((u - l) / m)
+    return out
+
+
+def adx(highs: Sequence[float], lows: Sequence[float], closes: Sequence[float], n: int = 14):
+    """ADX + DI+ / DI-. Returns (adx, plus_di, minus_di) — all lists of length N.
+
+    Wilder's smoothing. Standard 14-period.
+    """
+    L = len(closes)
+    out_adx: list[float | None] = [None] * L
+    out_pdi: list[float | None] = [None] * L
+    out_mdi: list[float | None] = [None] * L
+    if L < 2 * n + 1:
+        return out_adx, out_pdi, out_mdi
+    plus_dm: list[float] = [0.0]
+    minus_dm: list[float] = [0.0]
+    tr: list[float] = [0.0]
+    for i in range(1, L):
+        up = highs[i] - highs[i - 1]
+        dn = lows[i - 1] - lows[i]
+        pdm = up if (up > dn and up > 0) else 0.0
+        mdm = dn if (dn > up and dn > 0) else 0.0
+        plus_dm.append(pdm)
+        minus_dm.append(mdm)
+        tr_v = max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        )
+        tr.append(tr_v)
+    # Wilder-smoothed sums
+    s_tr = sum(tr[1: n + 1])
+    s_pdm = sum(plus_dm[1: n + 1])
+    s_mdm = sum(minus_dm[1: n + 1])
+    dx_list: list[float] = []
+    for i in range(n, L):
+        if i > n:
+            s_tr = s_tr - (s_tr / n) + tr[i]
+            s_pdm = s_pdm - (s_pdm / n) + plus_dm[i]
+            s_mdm = s_mdm - (s_mdm / n) + minus_dm[i]
+        if s_tr <= 0:
+            continue
+        pdi = 100 * s_pdm / s_tr
+        mdi = 100 * s_mdm / s_tr
+        out_pdi[i] = pdi
+        out_mdi[i] = mdi
+        denom = pdi + mdi
+        dx = 100 * abs(pdi - mdi) / denom if denom > 0 else 0.0
+        dx_list.append(dx)
+        if len(dx_list) >= n:
+            if len(dx_list) == n:
+                out_adx[i] = sum(dx_list) / n
+            else:
+                out_adx[i] = (out_adx[i - 1] * (n - 1) + dx) / n
+    return out_adx, out_pdi, out_mdi
+
+
+def vwrsi(closes: Sequence[float], volumes: Sequence[float], n: int = 14) -> list[float | None]:
+    """Volume-Weighted RSI. Weights each up/down move by the bar's volume so
+    high-volume moves count more than low-volume noise.
+    """
+    L = len(closes)
+    out: list[float | None] = [None] * L
+    if L < n + 1:
+        return out
+    up_vol_sum = 0.0
+    dn_vol_sum = 0.0
+    for i in range(1, n + 1):
+        diff = closes[i] - closes[i - 1]
+        if diff > 0:
+            up_vol_sum += diff * volumes[i]
+        elif diff < 0:
+            dn_vol_sum += -diff * volumes[i]
+    if dn_vol_sum > 0:
+        rs = up_vol_sum / dn_vol_sum
+        out[n] = 100 - 100 / (1 + rs)
+    elif up_vol_sum > 0:
+        out[n] = 100.0
+    else:
+        out[n] = 50.0
+    for i in range(n + 1, L):
+        diff = closes[i] - closes[i - 1]
+        u = diff * volumes[i] if diff > 0 else 0.0
+        d = -diff * volumes[i] if diff < 0 else 0.0
+        up_vol_sum = (up_vol_sum * (n - 1) + u) / n
+        dn_vol_sum = (dn_vol_sum * (n - 1) + d) / n
+        if dn_vol_sum > 0:
+            rs = up_vol_sum / dn_vol_sum
+            out[i] = 100 - 100 / (1 + rs)
+        elif up_vol_sum > 0:
+            out[i] = 100.0
+        else:
+            out[i] = 50.0
+    return out

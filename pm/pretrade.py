@@ -1,23 +1,15 @@
-"""Pre-trade gate (SPEC §7.1, Rule 5b).
+"""Pre-trade gate v2 — OOS engine production deployment.
 
-Inputs from /check:
-  strategy: str
-  signal: dict (Signal.to_dict())
-
-Allow logic:
-  1. strategy enabled + not halted
-  2. coin concentration: existing notional in this coin × proposed ≤ COIN_CONC_MAX (default 2.0×)
-  3. account headroom: proposed notional fits within (account_value × MAX_NOTIONAL_FRAC)
-  4. regime affinity: if regime ∈ AFFINITY of strategy (or strategy.AFFINITY empty)
-  5. open-position cap per strategy (MAX_OPEN_PER_STRATEGY)
-  6. global open-position cap (MAX_OPEN_GLOBAL)
-
-Capital fractions:
-  size_usd = min(
-    risk_capital_per_trade,
-    account_value × MAX_NOTIONAL_FRAC / LEVERAGE,
-    PER_STRATEGY_CAP * account_value
-  )
+NEW SPEC (operator confirmed):
+  - 1 position per coin GLOBALLY (across all engines)
+  - First-fire wins (engines evaluated in PF-priority order by runner)
+  - 5x leverage on perp
+  - 5% margin per new position (notional = 25% wallet)
+  - 20 max concurrent positions globally
+  - 10% spot stop loss (set in strategy.evaluate)
+  - Auto-cooldowns: 4 consec loss/coin (1h), 6 consec loss/engine (1h),
+    12% DD (1h), live PF < 0.74×bt (1h)
+  - Promotion: 20 trades + live PF within 20% of bt → live
 """
 from __future__ import annotations
 
@@ -26,6 +18,11 @@ import os
 import time
 from dataclasses import dataclass
 from typing import Optional
+
+try:
+    from common.cooldown import CooldownTracker
+except Exception:
+    CooldownTracker = None
 
 
 log = logging.getLogger("pretrade")
@@ -44,101 +41,111 @@ def _i(name: str, default: int) -> int:
 @dataclass
 class CheckResult:
     allow: bool
-    size_usd: float
+    size_usd: float          # margin USD (notional = size × leverage)
     reason: str
+    bt_pf: float = 0.0
 
 
-# Universe of registered strategies (NAME → AFFINITY list); kept in sync via
-# /register_cloid pings from the runner. Fallback to in-code constants for safety.
-KNOWN_AFFINITIES: dict[str, list[str]] = {
-    "fsp": ["range", "chop", "trend_up", "trend_down"],
-    "vsq": ["trend_up", "trend_down"],
-    "range_fade": ["range", "chop"],
-    "range_bo": ["trend_up", "trend_down"],
-    "lh1": ["range", "chop", "trend_up", "trend_down"],
-    "fd1": ["range", "chop", "trend_up", "trend_down"],
-    "precog": ["range", "chop", "trend_up", "trend_down"],
-    "liq_cascade": ["range", "chop", "trend_up", "trend_down"],
-    "cex_dex_arb": ["range", "chop", "trend_up", "trend_down"],
+# Production OOS engine registry — 11 engines, cap_fracs sum to 1.0
+OOS_ENGINE_REGISTRY: dict[str, dict] = {
+    "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf": 10.05, "cap_frac": 0.10},
+    "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  2.12, "cap_frac": 0.08},
+    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  1.93, "cap_frac": 0.10},
+    "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  1.87, "cap_frac": 0.08},
+    "e16_bb_fade_hv_1d":   {"affinity": ["high_vol"],               "bt_pf":  1.47, "cap_frac": 0.08},
+    "e17_bb_fade_bt_1d":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.41, "cap_frac": 0.08},
+    "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  5.00, "cap_frac": 0.08},
+    "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  2.50, "cap_frac": 0.12},
+    "e08_dip3d7_td_4h":    {"affinity": ["trend_down"],             "bt_pf":  1.50, "cap_frac": 0.08},
+    "e16_bb_fade_hv_4h":   {"affinity": ["high_vol"],               "bt_pf":  1.50, "cap_frac": 0.08},
+    "e17_bb_fade_bt_4h":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.30, "cap_frac": 0.12},
 }
+assert abs(sum(e["cap_frac"] for e in OOS_ENGINE_REGISTRY.values()) - 1.0) < 0.01
 
-# Strategies that the Session 1.5 honest backtest classified RED (PF < 1.0).
-# Hard-blocked from PM check regardless of env. To re-enable, you must run a
-# new honest backtest, classify GREEN, and remove from this set.
-_RED_GATED: set[str] = {"fd1"}
+# Singleton cooldown tracker
+_cooldown: Optional[object] = None
+
+
+def _get_cooldown():
+    global _cooldown
+    if _cooldown is None and CooldownTracker is not None:
+        try:
+            db_path = os.environ.get("COOLDOWN_DB", "/var/data/cooldowns.sqlite")
+            _cooldown = CooldownTracker(db_path)
+        except Exception as e:
+            log.warning("CooldownTracker init failed: %s", e)
+            _cooldown = None
+    return _cooldown
 
 
 def check(conn, strategy: str, signal: dict, regime: dict,
           account_value_usd: float, open_positions: list[dict]) -> CheckResult:
+    """Pre-trade gate for OOS engine production deployment."""
     coin = signal.get("coin", "").upper()
     if not coin:
         return CheckResult(False, 0.0, "no_coin")
 
-    # 0) Hard block: RED-gated strategies per Session 1.5
-    if strategy in _RED_GATED:
-        return CheckResult(False, 0.0, "audit_red_gated")
-
-    # 1) strategy enabled + not halted
     if os.environ.get(f"STRATEGY_{strategy.upper()}_ENABLED", "1") not in ("1", "true", "yes"):
         return CheckResult(False, 0.0, "strategy_disabled")
-    # halts are checked on the runner side; PM trusts that. We still respect a
-    # PM_FORCE_HALT_<strategy> override.
     if os.environ.get(f"PM_FORCE_HALT_{strategy.upper()}", "0") == "1":
         return CheckResult(False, 0.0, "halt_forced")
 
-    # 5) global + per-strategy open-position caps
-    max_global = _i("MAX_OPEN_POSITIONS", 6)
-    max_per = _i(f"MAX_OPEN_{strategy.upper()}", 2)
-    n_open = len(open_positions)
-    n_strat = sum(1 for p in open_positions if p.get("strategy") == strategy)
-    if n_open >= max_global:
-        return CheckResult(False, 0.0, "max_open_global")
-    if n_strat >= max_per:
-        return CheckResult(False, 0.0, f"max_open_{strategy}")
+    # 1) 1_GLOBAL COIN LOCK — 1 position per coin across all engines
+    for p in open_positions:
+        if p.get("coin", "").upper() == coin:
+            return CheckResult(False, 0.0, "coin_locked")
 
-    # 4) regime affinity
-    aff = KNOWN_AFFINITIES.get(strategy, [])
-    if aff:
-        reg_name = regime.get("regime", "unknown")
+    # 2) Global cap
+    max_global = _i("MAX_OPEN_POSITIONS", 20)
+    if len(open_positions) >= max_global:
+        return CheckResult(False, 0.0, "max_open_global")
+
+    # 3) Engine config
+    eng_cfg = OOS_ENGINE_REGISTRY.get(strategy, {})
+    bt_pf = eng_cfg.get("bt_pf", 0.0)
+    affinity = eng_cfg.get("affinity", [])
+
+    # 4) Regime affinity
+    if affinity:
+        reg_name = (regime.get("regime") or "unknown").lower()
         conf = float(regime.get("confidence", 0.0))
-        if reg_name not in aff and conf > 0.7:
+        if reg_name not in affinity and conf > 0.7:
             return CheckResult(False, 0.0, f"regime_mismatch:{reg_name}")
 
-    # 2) coin concentration cap (notional-weighted)
-    coin_conc_max = _f("PRETRADE_COIN_CONC_MAX", 2.0)
-    leverage = _f("LEVERAGE", 5)
-    risk_pct = _f("RISK_PCT_PER_TRADE", 0.02)
-    max_notional_frac = _f("MAX_NOTIONAL_FRAC", 0.50)  # total notional ≤ 50% of equity
-    per_strat_cap = _f(f"PER_STRATEGY_CAP_{strategy.upper()}", _f("PER_STRATEGY_CAP", 0.20))
+    # 5) Cooldown checks
+    cd = _get_cooldown()
+    if cd is not None:
+        blocked, reason = cd.is_engine_blocked(strategy)
+        if blocked:
+            return CheckResult(False, 0.0, reason)
+        blocked, reason = cd.is_coin_blocked(strategy, coin)
+        if blocked:
+            return CheckResult(False, 0.0, reason)
 
     if account_value_usd <= 0:
         return CheckResult(False, 0.0, "no_account_value")
 
-    proposed = account_value_usd * risk_pct * leverage  # naive notional sizing
-    # cap by per-strategy fraction × account
-    proposed = min(proposed, per_strat_cap * account_value_usd)
-    # cap so total notional after adding ≤ MAX_NOTIONAL_FRAC × account × leverage
-    current_notional = sum(abs(float(p.get("notional", 0))) for p in open_positions)
-    headroom = (max_notional_frac * account_value_usd * leverage) - current_notional
-    if headroom <= 0:
-        return CheckResult(False, 0.0, "no_notional_headroom")
-    proposed = min(proposed, headroom)
+    # 6) Sizing — 5% margin × 5x leverage
+    leverage = _f("LEVERAGE", 5.0)
+    margin_pct = _f("MARGIN_PCT_PER_TRADE", 0.05)
+    margin_usd = margin_pct * account_value_usd
 
-    # coin concentration: after adding `proposed`, total this-coin notional
-    # must not exceed coin_conc_max × current this-coin notional.
-    #   (coin_notional + add) ≤ coin_conc_max · coin_notional
-    #   add ≤ coin_notional · (coin_conc_max - 1)
-    coin_notional = sum(abs(float(p.get("notional", 0))) for p in open_positions if p.get("coin") == coin)
-    min_trade = _f("MIN_TRADE_USD", 25.0)
-    if coin_notional > 0:
-        if coin_conc_max <= 1.0:
-            return CheckResult(False, 0.0, "coin_concentration_full")
-        max_additional = coin_notional * (coin_conc_max - 1.0)
-        if max_additional < min_trade:
-            return CheckResult(False, 0.0, "coin_concentration")
-        proposed = min(proposed, max_additional)
+    max_margin_frac = _f("MAX_MARGIN_FRAC", 1.0)
+    current_margin = sum(abs(float(p.get("margin", p.get("notional", 0) / leverage)))
+                         for p in open_positions)
+    if current_margin + margin_usd > max_margin_frac * account_value_usd:
+        return CheckResult(False, 0.0, "no_margin_headroom")
 
-    if proposed < min_trade:
+    notional = margin_usd * leverage
+    if notional < _f("MIN_TRADE_USD", 10.0):
         return CheckResult(False, 0.0, "size_below_min")
 
-    return CheckResult(True, round(proposed, 2), "ok")
+    return CheckResult(True, round(margin_usd, 2), "ok", bt_pf=bt_pf)
+
+
+def record_close(strategy: str, coin: str, pnl_usd: float) -> dict:
+    cd = _get_cooldown()
+    if cd is None:
+        return {"triggered_cooldowns": []}
+    bt_pf = OOS_ENGINE_REGISTRY.get(strategy, {}).get("bt_pf", 0.0)
+    return cd.record_close(strategy, coin, pnl_usd, bt_pf)

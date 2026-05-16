@@ -25,22 +25,39 @@ def register(*classes: Type[StrategyBase]) -> None:
 
 
 def _load_registered() -> None:
-    """Lazy-import every strategy module currently shipped. Imports that fail
-    (e.g. missing extras) are logged but do not crash the runner."""
-    from .strategies import fsp
-    register(fsp.FSP)
-    # Subsequent sessions add more imports here.
-    for modname in ("range_fade", "range_breakout", "vsq", "fd1", "lh1", "precog", "liq_cascade", "cex_dex_arb", "donchian"):
-        try:
-            mod = __import__(f"strategy_runner.strategies.{modname}", fromlist=["*"])
-            for attr in dir(mod):
-                obj = getattr(mod, attr)
-                if isinstance(obj, type) and issubclass(obj, StrategyBase) and obj is not StrategyBase and obj.NAME:
-                    register(obj)
-        except ImportError:
-            pass
-        except Exception:
-            log.exception("failed to load strategy %s", modname)
+    """Lazy-import strategy modules. PRODUCTION DEPLOYMENT: only OOS-validated
+    engines are loaded by default. Legacy strategies remain importable for
+    backtesting but are not registered automatically.
+
+    Order matters: registry order = first-fire arbitration order. OOS engines
+    are loaded in PF-priority order (highest bt_PF first → wins ties).
+    """
+    # PRODUCTION — 11 OOS-validated engines in PF-priority order
+    try:
+        from .strategies.oos_engines import OOS_ENGINES
+        for cls in OOS_ENGINES:
+            register(cls)
+        log.info("Loaded %d OOS engines: %s", len(OOS_ENGINES), [c.NAME for c in OOS_ENGINES])
+    except Exception:
+        log.exception("CRITICAL: failed to load OOS engines")
+
+    # LEGACY — only loaded if STRATEGY_LEGACY_LOAD=1 env (default off)
+    import os
+    if os.environ.get("STRATEGY_LEGACY_LOAD", "0") == "1":
+        log.warning("Loading legacy strategies — production should keep STRATEGY_LEGACY_LOAD=0")
+        for modname in ("fsp", "range_fade", "range_breakout", "vsq", "fd1",
+                        "lh1", "precog", "liq_cascade", "cex_dex_arb", "donchian"):
+            try:
+                mod = __import__(f"strategy_runner.strategies.{modname}", fromlist=["*"])
+                for attr in dir(mod):
+                    obj = getattr(mod, attr)
+                    if (isinstance(obj, type) and issubclass(obj, StrategyBase)
+                            and obj is not StrategyBase and obj.NAME):
+                        register(obj)
+            except ImportError:
+                pass
+            except Exception:
+                log.exception("failed to load legacy strategy %s", modname)
 
 
 def scan_once(bus: BusClient, pm: PMClient, on_signal) -> int:
