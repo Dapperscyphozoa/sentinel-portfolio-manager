@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS trades (
     tp_px           REAL,
     max_hold_bars   INTEGER,
     status          TEXT NOT NULL,
+    close_retries   INTEGER NOT NULL DEFAULT 0,
     extras_json     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_trades_strategy_status ON trades(strategy, status);
@@ -117,6 +118,10 @@ def connect(db_path: str) -> sqlite3.Connection:
 def init_db(db_path: str) -> sqlite3.Connection:
     conn = connect(db_path)
     conn.executescript(SCHEMA)
+    # Idempotent migrations for existing databases
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(trades)").fetchall()}
+    if "close_retries" not in cols:
+        conn.execute("ALTER TABLE trades ADD COLUMN close_retries INTEGER NOT NULL DEFAULT 0")
     return conn
 
 

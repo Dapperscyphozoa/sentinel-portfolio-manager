@@ -119,23 +119,65 @@ class Trader:
             closed += 1
         return closed
 
+    MAX_CLOSE_RETRIES = 5
+
     def _close(self, trade_row, close_px: float, reason: str, ts: float) -> None:
         cloid = trade_row["cloid"]
         coin = trade_row["coin"]
+        strategy = trade_row["strategy"]
         is_long = bool(trade_row["is_long"])
         size_coin = float(trade_row["size_coin"])
         open_px = float(trade_row["open_px"])
-        pnl = (close_px - open_px) * size_coin * (1 if is_long else -1)
-        if self.hl is not None and self._is_live(trade_row["strategy"]):
+        live = self.hl is not None and self._is_live(strategy)
+
+        # LIVE close: must succeed on HL before we mark closed in our DB. If
+        # we mark closed prematurely, the position is orphaned: still open on
+        # HL with no SL/TP protection, but our position_loop won't see it.
+        # On failure: increment retries, leave status='open', let next tick
+        # retry. After MAX_CLOSE_RETRIES halts the strategy and alerts.
+        if live:
             try:
-                self.hl.market_close(coin=coin, size_coin=size_coin, cloid=cloid)
-            except Exception:
-                log.exception("hl close")
+                res = self.hl.market_close(coin=coin, size_coin=size_coin, cloid=cloid)
+            except Exception as e:
+                log.exception("hl close raised")
+                res = None
+                err = str(e)
+            else:
+                err = None if res.ok else (res.error or "unknown")
+
+            if res is None or not res.ok:
+                # leave open, bump retry counter
+                self.conn.execute(
+                    "UPDATE trades SET close_retries = close_retries + 1 WHERE cloid=?",
+                    (cloid,),
+                )
+                cur = self.conn.execute(
+                    "SELECT close_retries FROM trades WHERE cloid=?", (cloid,)
+                ).fetchone()
+                retries = int(cur["close_retries"]) if cur else 0
+                log.error("hl close FAILED (retry %d/%d) %s/%s reason=%s err=%s",
+                          retries, self.MAX_CLOSE_RETRIES, strategy, coin, reason, err)
+                if retries >= self.MAX_CLOSE_RETRIES:
+                    # Halt the strategy via halts table so no new opens.
+                    # Existing trades remain open and the operator must
+                    # manually reconcile (or the next deploy's reconciler will).
+                    try:
+                        self.conn.execute(
+                            "INSERT INTO halts(ts, strategy, halted, reason, actor) VALUES (?, ?, 1, ?, ?)",
+                            (ts, strategy, f"close_failed cloid={cloid} after {retries} retries", "trader"),
+                        )
+                        log.critical("HALT %s — close failures (cloid=%s)", strategy, cloid)
+                    except Exception:
+                        log.exception("halt insert failed")
+                return  # do NOT mark closed
+
+        # PAPER (or live success): mark closed and write closure row
+        pnl = (close_px - open_px) * size_coin * (1 if is_long else -1)
         self.conn.execute("UPDATE trades SET status='closed' WHERE cloid=?", (cloid,))
         self.conn.execute(
             "INSERT INTO closures(cloid,strategy,coin,is_long,open_ts,close_ts,open_px,close_px,size_coin,"
             "pnl_usd,fees_usd,close_reason,extras_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (cloid, trade_row["strategy"], coin, int(is_long), float(trade_row["open_ts"]), ts,
+            (cloid, strategy, coin, int(is_long), float(trade_row["open_ts"]), ts,
              open_px, close_px, size_coin, pnl, 0.0, reason, "{}"),
         )
-        log.info("closed %s/%s %s pnl=%.2f", trade_row["strategy"], coin, reason, pnl)
+        log.info("closed %s/%s %s pnl=%.2f", strategy, coin, reason, pnl)
