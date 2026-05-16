@@ -547,6 +547,22 @@ class Handler(BaseHTTPRequestHandler):
             pass
         self._json(200, {"per_coin": per_coin, "hours": 24, "ts": int(time.time() * 1000)})
 
+    def _serve_sentinel(self) -> None:
+        """Proxy to the sentinel service /status endpoint (separate Render service)."""
+        url = os.environ.get("SENTINEL_URL", "https://sentinel-eug3.onrender.com")
+        try:
+            with httpx.Client(timeout=5.0) as cli:
+                r = cli.get(f"{url}/status")
+                if r.status_code == 200:
+                    data = r.json()
+                    data["_source"] = url
+                    return self._json(200, data)
+                return self._json(r.status_code, {"error": f"sentinel http {r.status_code}",
+                                                   "url": url})
+        except Exception as e:
+            return self._json(502, {"error": "sentinel_unreachable",
+                                     "detail": str(e), "url": url})
+
     def _serve_orderbook(self, coin: str) -> None:
         """Real L2 book from HL info API."""
         coin = coin.upper()
@@ -636,6 +652,9 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/orderbook/"):
             coin = path.split("/")[-1]
             return self._serve_orderbook(coin)
+        # Sentinel proxy: pulls /status from the separate sentinel service
+        if path == "/sentinel" or path == "/sentinel/":
+            return self._serve_sentinel()
         # Landing sub-nav paths — serve the landing HTML so the page stays styled
         # (originally these were separate sub-pages in precog-hl, not yet ported).
         if path in ("/engines", "/audit", "/system", "/macro",

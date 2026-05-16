@@ -2876,8 +2876,71 @@ document.addEventListener('visibilitychange', () => {
         loadDash(); loadSignals(); loadWhales();
         loadMacroStrip(); loadSystems(); loadEngines();
         loadPMRail();
+        loadSentinel();
     }
 });
+
+// ─── SENTINEL PANEL (graph + ledger + council) ────────────────────────
+async function loadSentinel() {
+  let el = document.getElementById('sentinel-panel');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'sentinel-panel';
+    el.style.cssText = 'margin:24px 16px;padding:18px;border:1px solid var(--line);'
+      + 'background:linear-gradient(180deg,var(--carbon),var(--void));'
+      + 'border-radius:6px;font-family:JetBrains Mono,monospace;';
+    el.innerHTML = '<div style="font-family:Cormorant Garamond,serif;font-style:italic;'
+      + 'font-size:13px;color:var(--chrome);letter-spacing:0.12em;text-transform:uppercase;'
+      + 'margin-bottom:14px;border-bottom:1px solid var(--line);padding-bottom:8px;">'
+      + '// sentinel · graph memory + 9-llm council</div>'
+      + '<div id="sentinel-body" style="font-size:11px;color:var(--bone);opacity:0.85;">'
+      + 'loading…</div>';
+    document.body.appendChild(el);
+  }
+  const body = document.getElementById('sentinel-body');
+  try {
+    const r = await fetch('/sentinel');
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    const g = d.graph || {};
+    const led = d.ledger || {};
+    const prov = d.providers_configured || {};
+    const provLive = Object.entries(prov).filter(([k,v]) => v).map(([k]) => k);
+    const rating = led.avg_rating != null ? Number(led.avg_rating).toFixed(2) : '—';
+    const ratingColor = led.avg_rating >= 3 ? 'var(--gain)' : led.avg_rating >= 1.5 ? 'var(--oxide)' : 'var(--loss)';
+    body.innerHTML = `
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;">
+        <div>
+          <div style="font-size:9px;letter-spacing:0.15em;color:var(--chrome);opacity:0.5;text-transform:uppercase;margin-bottom:4px;">graph</div>
+          <div style="font-family:Cormorant Garamond,serif;font-size:28px;color:var(--acid);">${g.nodes || 0}</div>
+          <div style="font-size:9px;opacity:0.5;">nodes · ${g.edges || 0} edges · ${g.embeddings_count || 0} embeddings</div>
+        </div>
+        <div>
+          <div style="font-size:9px;letter-spacing:0.15em;color:var(--chrome);opacity:0.5;text-transform:uppercase;margin-bottom:4px;">ledger</div>
+          <div style="font-family:Cormorant Garamond,serif;font-size:28px;color:var(--acid-bright);">${led.total || 0}</div>
+          <div style="font-size:9px;opacity:0.5;">asks · ${led.with_outcome || 0} rated · ${led.pending || 0} pending</div>
+        </div>
+        <div>
+          <div style="font-size:9px;letter-spacing:0.15em;color:var(--chrome);opacity:0.5;text-transform:uppercase;margin-bottom:4px;">avg rating</div>
+          <div style="font-family:Cormorant Garamond,serif;font-size:28px;color:${ratingColor};">${rating}</div>
+          <div style="font-size:9px;opacity:0.5;">n=${led.n_ratings || 0} ratings</div>
+        </div>
+        <div>
+          <div style="font-size:9px;letter-spacing:0.15em;color:var(--chrome);opacity:0.5;text-transform:uppercase;margin-bottom:4px;">council</div>
+          <div style="font-family:Cormorant Garamond,serif;font-size:28px;color:var(--heat);">${provLive.length}/${Object.keys(prov).length}</div>
+          <div style="font-size:9px;opacity:0.5;">providers · ${provLive.join('·') || 'none'}</div>
+        </div>
+      </div>
+      <div style="margin-top:10px;font-size:9px;opacity:0.4;letter-spacing:0.06em;">
+        // sentinel-eug3.onrender.com · domains: ${Object.entries(g.domains || {}).map(([k,v]) => k+':'+v).join(' · ')}
+      </div>`;
+  } catch (e) {
+    body.innerHTML = '<span style="color:var(--blood);opacity:0.7;">// sentinel unreachable: ' + (e.message || e) + '</span>';
+  }
+}
+loadSentinel();
+setInterval(loadSentinel, 30000);
 </script>
 </body>
 </html>
