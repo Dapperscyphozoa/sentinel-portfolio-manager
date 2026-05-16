@@ -146,3 +146,114 @@ services:
         value: "5"
       - key: STATE_DIR
         value: /var/data
+
+  # ──────────────────────────────────────────────────────────────────────
+  # ICT Confluence engine (deployed at precog-i8c3.onrender.com)
+  # Phase 1 live deploy per council convergence:
+  #   - 0.25% risk × 3x lev × max 1 concurrent
+  #   - Circuit breakers active
+  #   - Kronos gate currently disabled (enable via KRONOS_GATE_ENABLED=1
+  #     + uncomment Kronos deps in requirements.txt)
+  # ──────────────────────────────────────────────────────────────────────
+  - type: web
+    name: precog
+    runtime: python
+    region: oregon
+    plan: starter
+    branch: main
+    rootDir: strategy_runner
+    buildCommand: pip install -r ../requirements.txt
+    startCommand: python3 server.py
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: precog-state
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      # Wire into existing signal-bus + PM
+      - key: SIGNAL_BUS_URL
+        value: https://spm-signal-bus.onrender.com
+      - key: PM_URL
+        value: https://spm-pm.onrender.com
+      - key: PM_AUTH_TOKEN
+        sync: false
+      # HL agent (paper/canary mode — no real trading yet)
+      - key: HL_AGENT_WALLET
+        value: "0xD27751815dBD5373629D0064bE85aedA349E0eD5"
+      - key: HL_PRIVATE_KEY
+        sync: false
+      - key: LIVE_TRADING
+        value: "0"
+      # ICT confluence engines ONLY — disable OOS & legacy on this service
+      - key: STRATEGY_LEGACY_LOAD
+        value: "0"
+      - key: STRATEGY_ICT_CONFLUENCE_4H_ENABLED
+        value: "1"
+      - key: STRATEGY_ICT_CONFLUENCE_1D_ENABLED
+        value: "1"
+      # Disable all OOS engines on this service
+      - key: STRATEGY_E01_ZFADE3S_TU_1D_ENABLED
+        value: "0"
+      - key: STRATEGY_E07_ZFADE2S_TU_1D_ENABLED
+        value: "0"
+      - key: STRATEGY_E08_DIP3D10_TD_1D_ENABLED
+        value: "0"
+      - key: STRATEGY_E09_PUMP3D10_TD_1D_ENABLED
+        value: "0"
+      - key: STRATEGY_E16_BB_FADE_HV_1D_ENABLED
+        value: "0"
+      - key: STRATEGY_E17_BB_FADE_BT_1D_ENABLED
+        value: "0"
+      - key: STRATEGY_E01_ZFADE3S_TU_4H_ENABLED
+        value: "0"
+      - key: STRATEGY_E07_ZFADE2S_TU_4H_ENABLED
+        value: "0"
+      - key: STRATEGY_E08_DIP3D7_TD_4H_ENABLED
+        value: "0"
+      - key: STRATEGY_E16_BB_FADE_HV_4H_ENABLED
+        value: "0"
+      - key: STRATEGY_E17_BB_FADE_BT_4H_ENABLED
+        value: "0"
+      - key: STRATEGY_FSP_ENABLED
+        value: "0"
+      - key: STRATEGY_LIQ_CASCADE_ENABLED
+        value: "0"
+      # Council-mandated live safety controls
+      - key: PM_FORCE_KILL_ALL
+        value: "0"
+      - key: LIVE_SAFETY_DB
+        value: /var/data/live_safety.sqlite
+      - key: RISK_PCT_PER_TRADE
+        value: "0.0025"
+      - key: LEVERAGE_LIVE
+        value: "3.0"
+      - key: MAX_CONCURRENT_LIVE
+        value: "1"
+      - key: CB_CONSEC_LOSSES
+        value: "3"
+      - key: CB_DD_7D_PCT
+        value: "0.10"
+      - key: DAILY_LOSS_LIMIT_PCT
+        value: "0.02"
+      - key: MAX_MARGIN_PCT
+        value: "0.03"
+      - key: MIN_TRADE_USD
+        value: "10.0"
+      # Kronos gate — disabled by default (no torch in base requirements)
+      # Enable by uncommenting torch deps in requirements.txt + flipping this to "1"
+      - key: KRONOS_GATE_ENABLED
+        value: "0"
+      - key: KRONOS_DEVICE
+        value: "cpu"
+      - key: KRONOS_FLAT_THRESHOLD
+        value: "0.005"
+      # Halt token + cooldown DB
+      - key: HALT_TOKEN
+        sync: false
+      - key: COOLDOWN_DB
+        value: /var/data/cooldowns.sqlite
+      - key: STATE_DIR
+        value: /var/data
+      - key: HTTP_PORT
+        value: "10000"

@@ -8,3 +8,11 @@ requests>=2.32
 apscheduler>=3.10
 pyyaml>=6.0
 pytest>=8.0
+# Kronos deps (optional — only loaded if KRONOS_GATE_ENABLED=1)
+# Commented for initial deploy. Operator uncomments to enable Kronos confirmation gate.
+# torch>=2.0,<2.5
+# transformers>=4.40
+# huggingface_hub>=0.20
+# einops>=0.7
+# safetensors>=0.4
+# scipy>=1.11

@@ -349,22 +349,44 @@ class ICT_Confluence_4h(StrategyBase):
         else:
             tp_px = entry_px - risk_dist * cls.R_MULT_TP
 
+        # ────────── KRONOS CONFIRMATION GATE ──────────
+        # Per council Option A unanimous: use Kronos as direction-only confirmation.
+        # If Kronos disagrees with ICT direction, skip the trade.
+        # If Kronos unavailable or FLAT, allow (default-allow on indecision).
+        kronos_info = None
+        try:
+            from common import kronos_gate
+            if kronos_gate.is_enabled():
+                kronos_info = kronos_gate.predict_direction(coin, bars, pred_len=6)
+                if kronos_info is not None:
+                    if not kronos_gate.agrees(kronos_info["direction"], is_long):
+                        return None    # Kronos disagrees → skip
+        except Exception:
+            pass    # silent fail-open if Kronos errors
+
+        extras = {
+            "direction": direction, "bos_idx": bos_idx,
+            "n_zones": len(zones),
+            "has_ob": ob is not None, "has_fvg": fvg is not None,
+            "has_wick": wick is not None,
+            "zone_top": zone_top, "zone_bot": zone_bot,
+            "r_mult_tp": cls.R_MULT_TP,
+            "atr": a, "risk_pct_of_price": risk_dist / entry_px,
+            "tf": cls.TF,
+        }
+        if kronos_info is not None:
+            extras["kronos_direction"] = kronos_info["direction"]
+            extras["kronos_pred_return"] = kronos_info["pred_return"]
+            extras["kronos_cached"] = kronos_info.get("cached", False)
+
         return Signal(
             coin=coin, side="B" if is_long else "A", is_long=is_long,
             ref_price=entry_px, sl_px=sl_px, tp_px=tp_px,
             max_hold_bars=cls.HOLD_MAX_BARS,
             fire_ts=float(bars[i]["open_ts"]),
-            fire_reason=f"{direction}_BOS+{len(zones)}of3_confluence",
-            extras={
-                "direction": direction, "bos_idx": bos_idx,
-                "n_zones": len(zones),
-                "has_ob": ob is not None, "has_fvg": fvg is not None,
-                "has_wick": wick is not None,
-                "zone_top": zone_top, "zone_bot": zone_bot,
-                "r_mult_tp": cls.R_MULT_TP,
-                "atr": a, "risk_pct_of_price": risk_dist / entry_px,
-                "tf": cls.TF,
-            },
+            fire_reason=f"{direction}_BOS+{len(zones)}of3_confluence"
+                        + (f"+K_{kronos_info['direction']}" if kronos_info else ""),
+            extras=extras,
         )
 
 
