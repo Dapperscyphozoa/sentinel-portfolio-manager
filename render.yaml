@@ -1,220 +1,153 @@
 services:
-  - type: web
-    name: spm-signal-bus
-    runtime: python
-    region: oregon
-    plan: starter
-    branch: main
-    rootDir: signal_bus
-    buildCommand: pip install -r ../requirements.txt
-    startCommand: python3 server.py
-    healthCheckPath: /health
-    autoDeploy: true
-    disk:
-      name: signal-bus-state
-      mountPath: /var/data
-      sizeGB: 1
-    envVars:
-      - key: BINANCE_SYMBOLS
-        value: "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT,DOGEUSDT,AVAXUSDT,LINKUSDT,LTCUSDT,NEARUSDT,SUIUSDT,APTUSDT,ARBUSDT,OPUSDT,INJUSDT,SEIUSDT,TIAUSDT,WIFUSDT,JUPUSDT,DOTUSDT"
-      - key: HL_AGENT_WALLET
-        value: "0xaed87768d3b6a76c997b6c0048610ab1e718fdb2"
-      - key: STATE_DIR
-        value: /var/data
-      - key: HTTP_PORT
-        value: "10000"
-
-  - type: web
-    name: spm-strategy-runner
-    runtime: python
-    region: oregon
-    plan: starter
-    branch: main
-    rootDir: strategy_runner
-    buildCommand: pip install -r ../requirements.txt
-    startCommand: python3 server.py
-    healthCheckPath: /health
-    autoDeploy: true
-    disk:
-      name: strategy-runner-state
-      mountPath: /var/data
-      sizeGB: 1
-    envVars:
-      - key: SIGNAL_BUS_URL
-        value: https://spm-signal-bus.onrender.com
-      - key: PM_URL
-        value: https://spm-pm.onrender.com
-      - key: PM_AUTH_TOKEN
-        sync: false
-      - key: HL_AGENT_WALLET
-        value: "0xaed87768d3b6a76c997b6c0048610ab1e718fdb2"
-      - key: HL_PRIVATE_KEY
-        sync: false
-      - key: LIVE_TRADING
-        value: "0"
-      - key: RISK_PCT_PER_TRADE
-        value: "0.02"
-      - key: LEVERAGE
-        value: "5"
-      - key: MAX_OPEN_POSITIONS
-        value: "6"
-      - key: SCAN_INTERVAL_SEC
-        value: "300"
-      - key: HALT_TOKEN
-        sync: false
-      - key: STATE_DIR
-        value: /var/data
-      - key: STRATEGY_FSP_ENABLED
-        value: "1"
-      - key: STRATEGY_VSQ_ENABLED
-        value: "1"
-      - key: STRATEGY_RANGE_FADE_ENABLED
-        value: "1"
-      - key: STRATEGY_RANGE_BO_ENABLED
-        value: "1"
-      - key: STRATEGY_LH1_ENABLED
-        value: "1"
-      - key: STRATEGY_FD1_ENABLED
-        value: "0"  # DEAD per Session 1.5 honest backtest (PF 0.85)
-      - key: STRATEGY_PRECOG_ENABLED
-        value: "1"
-      - key: STRATEGY_LIQ_CASCADE_ENABLED
-        value: "1"
-      - key: STRATEGY_CEX_DEX_ARB_ENABLED
-        value: "1"
-
-  - type: web
-    name: spm-pm
-    runtime: python
-    region: oregon
-    plan: starter
-    branch: main
-    rootDir: pm
-    buildCommand: pip install -r ../requirements.txt
-    startCommand: python3 server.py
-    healthCheckPath: /health
-    autoDeploy: true
-    disk:
-      name: pm-state
-      mountPath: /var/data
-      sizeGB: 1
-    envVars:
-      - key: SIGNAL_BUS_URL
-        value: https://spm-signal-bus.onrender.com
-      - key: PM_AUTH_TOKEN
-        sync: false
-      - key: HL_AGENT_WALLET
-        value: "0xaed87768d3b6a76c997b6c0048610ab1e718fdb2"
-      - key: STATE_DIR
-        value: /var/data
-      - key: PRETRADE_COIN_CONC_MAX
-        value: "2.0"
-
-  - type: web
-    name: spm-monitor
-    runtime: python
-    region: oregon
-    plan: starter
-    branch: main
-    rootDir: monitor
-    buildCommand: pip install -r ../requirements.txt
-    startCommand: python3 server.py
-    healthCheckPath: /health
-    autoDeploy: true
-    disk:
-      name: monitor-state
-      mountPath: /var/data
-      sizeGB: 1
-    envVars:
-      - key: CLAUDE_CODE_API_KEY
-        sync: false
-      - key: SIGNAL_BUS_URL
-        value: https://spm-signal-bus.onrender.com
-      - key: PM_URL
-        value: https://spm-pm.onrender.com
-      - key: PM_AUTH_TOKEN
-        sync: false
-      - key: RENDER_API_TOKEN
-        sync: false
-      - key: DASH_PUSH_SECRET
-        sync: false
-      - key: VAPID_PUBLIC_KEY
-        sync: false
-      - key: VAPID_PRIVATE_KEY
-        sync: false
-      - key: DAILY_API_BUDGET_USD
-        value: "5"
-      - key: STATE_DIR
-        value: /var/data
-
-  # ──────────────────────────────────────────────────────────────────────
-  # SNIPER bot — pre-listing arbitrage + oracle-lag detection.
-  # Deployed at precog-i8c3.onrender.com (URL slug from prior service —
-  # the service name is "sniper", not "precog". Precog the strategy is DEAD.)
-  #
-  # Council-validated path: 1.5-2.1 years from $491 → $50M (3/3 voters).
-  # Edge: new HL listings have lagging oracle vs CEX consensus.
-  # ──────────────────────────────────────────────────────────────────────
-  - type: web
-    name: sniper
-    runtime: python
-    region: oregon
-    plan: starter
-    branch: main
-    rootDir: sniper
-    buildCommand: pip install -r ../requirements.txt
-    startCommand: python3 server.py
-    healthCheckPath: /health
-    autoDeploy: true
-    disk:
-      name: sniper-state
-      mountPath: /var/data
-      sizeGB: 1
-    envVars:
-      # HL agent (paper mode initially)
-      - key: HL_AGENT_WALLET
-        value: "0xD27751815dBD5373629D0064bE85aedA349E0eD5"
-      - key: HL_PRIVATE_KEY
-        sync: false
-      # Paper mode for initial run — flip to "1" only after operator approval
-      - key: SNIPER_LIVE_TRADING
-        value: "0"
-      # Listing detector
-      - key: SNIPER_POLL_INTERVAL_S
-        value: "10"
-      - key: SNIPER_LISTING_DB
-        value: /var/data/sniper_listings.sqlite
-      - key: SNIPER_SETTLE_DELAY_S
-        value: "5"
-      # Oracle-lag detection
-      - key: SNIPER_DIVERGENCE_THRESHOLD
-        value: "0.05"
-      # Risk controls (council spec)
-      - key: SNIPER_RISK_DB
-        value: /var/data/sniper_risk.sqlite
-      - key: SNIPER_MAX_PER_DAY
-        value: "1"
-      - key: SNIPER_CB_CONSEC_LOSSES
-        value: "3"
-      - key: SNIPER_SIZE_PCT
-        value: "0.50"
-      - key: SNIPER_LEVERAGE
-        value: "5.0"
-      - key: SNIPER_MIN_TRADE_USD
-        value: "10.0"
-      - key: SNIPER_MIN_ACCOUNT_USD
-        value: "50.0"
-      # First 10 trades require operator approval
-      - key: SNIPER_REQUIRE_APPROVAL
-        value: "1"
-      - key: SNIPER_APPROVAL_TRADES
-        value: "10"
-      # Kill switches
-      - key: SNIPER_FORCE_KILL
-        value: "0"
-      - key: SNIPER_AUTH_TOKEN
-        sync: false
-      - key: STATE_DIR
-        value: /var/data
-      - key: HTTP_PORT
-        value: "10000"
+- type: web
+  name: core
+  runtime: python
+  region: oregon
+  plan: starter
+  branch: main
+  rootDir: core
+  buildCommand: pip install -r ../requirements.txt
+  startCommand: python3 server.py
+  healthCheckPath: /health
+  autoDeploy: true
+  disk:
+    name: core-state
+    mountPath: /var/data
+    sizeGB: 1
+  envVars:
+  - key: HL_AGENT_WALLET
+    value: '0xaed87768d3b6a76c997b6c0048610ab1e718fdb2'
+  - key: HL_PRIVATE_KEY
+    sync: false
+  - key: LIVE_TRADING
+    value: '0'
+  - key: BINANCE_SYMBOLS
+    value: BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT,DOGEUSDT,AVAXUSDT,LINKUSDT,LTCUSDT,NEARUSDT,SUIUSDT,APTUSDT,ARBUSDT,OPUSDT,INJUSDT,SEIUSDT,TIAUSDT,WIFUSDT,JUPUSDT,DOTUSDT
+  - key: STRATEGY_LEGACY_LOAD
+    value: '1'
+  - key: STRATEGY_E01_ZFADE3S_TU_1D_ENABLED
+    value: '1'
+  - key: STRATEGY_E07_ZFADE2S_TU_1D_ENABLED
+    value: '1'
+  - key: STRATEGY_E08_DIP3D10_TD_1D_ENABLED
+    value: '1'
+  - key: STRATEGY_E09_PUMP3D10_TD_1D_ENABLED
+    value: '1'
+  - key: STRATEGY_E16_BB_FADE_HV_1D_ENABLED
+    value: '1'
+  - key: STRATEGY_E17_BB_FADE_BT_1D_ENABLED
+    value: '1'
+  - key: STRATEGY_E01_ZFADE3S_TU_4H_ENABLED
+    value: '1'
+  - key: STRATEGY_E07_ZFADE2S_TU_4H_ENABLED
+    value: '1'
+  - key: STRATEGY_E08_DIP3D7_TD_4H_ENABLED
+    value: '1'
+  - key: STRATEGY_E16_BB_FADE_HV_4H_ENABLED
+    value: '1'
+  - key: STRATEGY_E17_BB_FADE_BT_4H_ENABLED
+    value: '1'
+  - key: STRATEGY_FSP_ENABLED
+    value: '1'
+  - key: STRATEGY_LIQ_CASCADE_ENABLED
+    value: '1'
+  - key: STRATEGY_ICT_CONFLUENCE_4H_ENABLED
+    value: '1'
+  - key: STRATEGY_ICT_CONFLUENCE_1D_ENABLED
+    value: '0'
+  - key: RISK_PCT_PER_TRADE
+    value: '0.02'
+  - key: LEVERAGE
+    value: '5.0'
+  - key: MAX_OPEN_POSITIONS
+    value: '20'
+  - key: SCAN_INTERVAL_SEC
+    value: '300'
+  - key: LIVE_SAFETY_DB
+    value: /var/data/live_safety.sqlite
+  - key: RISK_PCT_PER_TRADE_ICT
+    value: '0.0025'
+  - key: LEVERAGE_LIVE
+    value: '3.0'
+  - key: MAX_CONCURRENT_LIVE
+    value: '1'
+  - key: CB_CONSEC_LOSSES
+    value: '3'
+  - key: CB_DD_7D_PCT
+    value: '0.10'
+  - key: DAILY_LOSS_LIMIT_PCT
+    value: '0.02'
+  - key: PM_FORCE_KILL_ALL
+    value: '0'
+  - key: PM_AUTH_TOKEN
+    sync: false
+  - key: HALT_TOKEN
+    sync: false
+  - key: COOLDOWN_DB
+    value: /var/data/cooldowns.sqlite
+  - key: CLAUDE_CODE_API_KEY
+    sync: false
+  - key: DAILY_API_BUDGET_USD
+    value: '5'
+  - key: KRONOS_GATE_ENABLED
+    value: '0'
+  - key: STATE_DIR
+    value: /var/data
+  - key: HTTP_PORT
+    value: '10000'
+- type: web
+  name: sniper
+  runtime: python
+  region: oregon
+  plan: starter
+  branch: main
+  rootDir: sniper
+  buildCommand: pip install -r ../requirements.txt
+  startCommand: python3 server.py
+  healthCheckPath: /health
+  autoDeploy: true
+  disk:
+    name: sniper-state
+    mountPath: /var/data
+    sizeGB: 1
+  envVars:
+  - key: HL_AGENT_WALLET
+    value: '0xD27751815dBD5373629D0064bE85aedA349E0eD5'
+  - key: HL_PRIVATE_KEY
+    sync: false
+  - key: SNIPER_LIVE_TRADING
+    value: '0'
+  - key: SNIPER_POLL_INTERVAL_S
+    value: '10'
+  - key: SNIPER_LISTING_DB
+    value: /var/data/sniper_listings.sqlite
+  - key: SNIPER_SETTLE_DELAY_S
+    value: '5'
+  - key: SNIPER_DIVERGENCE_THRESHOLD
+    value: '0.05'
+  - key: SNIPER_RISK_DB
+    value: /var/data/sniper_risk.sqlite
+  - key: SNIPER_MAX_PER_DAY
+    value: '1'
+  - key: SNIPER_CB_CONSEC_LOSSES
+    value: '3'
+  - key: SNIPER_SIZE_PCT
+    value: '0.50'
+  - key: SNIPER_LEVERAGE
+    value: '5.0'
+  - key: SNIPER_MIN_TRADE_USD
+    value: '10.0'
+  - key: SNIPER_MIN_ACCOUNT_USD
+    value: '50.0'
+  - key: SNIPER_REQUIRE_APPROVAL
+    value: '1'
+  - key: SNIPER_APPROVAL_TRADES
+    value: '10'
+  - key: SNIPER_FORCE_KILL
+    value: '0'
+  - key: SNIPER_AUTH_TOKEN
+    sync: false
+  - key: STATE_DIR
+    value: /var/data
+  - key: HTTP_PORT
+    value: '10000'
