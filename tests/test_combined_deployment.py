@@ -4,17 +4,17 @@ from __future__ import annotations
 import os
 
 
-def test_registry_has_20_engines():
+def test_registry_has_13_engines_after_cuts():
     from pm.pretrade import ENGINE_REGISTRY
-    assert len(ENGINE_REGISTRY) == 20
+    assert len(ENGINE_REGISTRY) == 13
 
 
-def test_registry_includes_all_legacy_9():
+def test_registry_includes_legacy_provisional_2():
+    """After audit: only fsp + liq_cascade are KEPT from legacy 9."""
     from pm.pretrade import ENGINE_REGISTRY
-    legacy_9 = {"fsp", "vsq", "range_fade", "range_bo", "lh1", "fd1",
-                "precog", "liq_cascade", "cex_dex_arb"}
-    missing = legacy_9 - set(ENGINE_REGISTRY.keys())
-    assert not missing, f"missing legacy engines: {missing}"
+    kept = {"fsp", "liq_cascade"}
+    missing = kept - set(ENGINE_REGISTRY.keys())
+    assert not missing, f"missing kept legacy engines: {missing}"
 
 
 def test_registry_includes_all_oos_11():
@@ -92,3 +92,54 @@ def test_runner_loads_combined_by_default():
     legacy_present = names & legacy_known
     assert legacy_present, f"no legacy strategies loaded: {names}"
     print(f"Total registry: {len(names)} strategies")
+
+
+# ---------- Audit cuts ----------
+def test_cut_engines_blocked():
+    """Cut engines are hard-blocked regardless of env."""
+    import os
+    os.environ["STRATEGY_VSQ_ENABLED"] = "1"   # even with enabled flag, audit cut wins
+    from pm.pretrade import check, CUT_ENGINES
+    assert "vsq" in CUT_ENGINES
+    signal = {"coin": "BTC", "side": "B"}
+    regime = {"regime": "trend_up", "confidence": 0.8}
+    result = check(None, "vsq", signal, regime, 491.24, [])
+    assert not result.allow
+    assert result.reason == "engine_cut_by_audit"
+
+
+def test_all_7_cut_engines():
+    """All 7 audit-cut engines are blocked."""
+    import os
+    from pm.pretrade import check, CUT_ENGINES
+    expected_cuts = {"vsq", "range_fade", "range_bo", "lh1", "fd1", "cex_dex_arb", "precog"}
+    assert CUT_ENGINES == expected_cuts
+    signal = {"coin": "BTC", "side": "B"}
+    regime = {"regime": "trend_up", "confidence": 0.8}
+    for sname in expected_cuts:
+        os.environ[f"STRATEGY_{sname.upper()}_ENABLED"] = "1"
+        result = check(None, sname, signal, regime, 491.24, [])
+        assert not result.allow, f"{sname} should be cut but was allowed"
+        assert result.reason == "engine_cut_by_audit"
+
+
+def test_provisional_legacy_still_works():
+    """fsp and liq_cascade are KEPT provisional, not cut."""
+    import os
+    from pm.pretrade import check, CUT_ENGINES, ENGINE_REGISTRY
+    assert "fsp" not in CUT_ENGINES
+    assert "liq_cascade" not in CUT_ENGINES
+    assert "fsp" in ENGINE_REGISTRY
+    assert "liq_cascade" in ENGINE_REGISTRY
+    # Pretrade should allow fsp through
+    os.environ["STRATEGY_FSP_ENABLED"] = "1"
+    signal = {"coin": "BTC", "side": "B"}
+    regime = {"regime": "trend_up", "confidence": 0.8}
+    result = check(None, "fsp", signal, regime, 491.24, [])
+    assert result.allow, f"fsp should be allowed, got {result.reason}"
+
+
+def test_registry_is_13_engines():
+    """Final registry: 11 OOS + 2 legacy provisional = 13."""
+    from pm.pretrade import ENGINE_REGISTRY
+    assert len(ENGINE_REGISTRY) == 13

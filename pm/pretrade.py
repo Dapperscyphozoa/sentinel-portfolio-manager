@@ -46,34 +46,34 @@ class CheckResult:
     bt_pf: float = 0.0
 
 
-# Combined engine registry — 9 LEGACY + 11 OOS = 20 engines
+# Combined engine registry — 13 active = 11 OOS + 2 legacy provisional
+# 7 legacy cut after audit: vsq, range_fade, range_bo, lh1, fd1, cex_dex_arb, precog
 # All routed through same PM gate (coin lock + regime + cooldown + sizing).
 # cap_frac is advisory only; sizing is flat 5% margin per trade.
 ENGINE_REGISTRY: dict[str, dict] = {
-    # ─── LEGACY 9 (from SPEC.md, bt_PFs are from original backtests) ───
-    "fsp":          {"affinity": ["trend_up", "trend_down", "range", "chop"], "bt_pf": 2.65, "cap_frac": 0.05},
-    "vsq":          {"affinity": ["trend_up", "trend_down"],                  "bt_pf": 1.50, "cap_frac": 0.04},  # claimed 3.04 — never honestly re-validated
-    "range_fade":   {"affinity": ["range", "chop"],                           "bt_pf": 1.64, "cap_frac": 0.04},
-    "range_bo":     {"affinity": ["trend_up", "trend_down"],                  "bt_pf": 1.70, "cap_frac": 0.04},
-    "lh1":          {"affinity": ["range", "chop", "trend_up", "trend_down"], "bt_pf": 1.30, "cap_frac": 0.03},
-    "fd1":          {"affinity": ["range", "chop", "trend_up", "trend_down"], "bt_pf": 1.30, "cap_frac": 0.03},
-    "precog":       {"affinity": ["trend_up", "trend_down"],                  "bt_pf": 2.00, "cap_frac": 0.05},
-    "liq_cascade":  {"affinity": ["trend_up", "trend_down"],                  "bt_pf": 1.30, "cap_frac": 0.03},
-    "cex_dex_arb":  {"affinity": ["range", "chop"],                           "bt_pf": 1.30, "cap_frac": 0.03},
+    # ─── LEGACY 2 PROVISIONAL (need signal-bus HL/Binance feeds to truly validate) ───
+    "fsp":          {"affinity": ["trend_up", "trend_down", "range", "chop"], "bt_pf": 2.65, "cap_frac": 0.08},  # untested in offline BT
+    "liq_cascade":  {"affinity": ["trend_up", "trend_down"],                  "bt_pf": 1.30, "cap_frac": 0.04},  # needs Binance liq feed
     # ─── OOS 11 (validated 365d HL, 116 coins, train/test split) ───
-    "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf": 10.05, "cap_frac": 0.08},
-    "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  2.12, "cap_frac": 0.05},
-    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  1.93, "cap_frac": 0.06},
-    "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  1.87, "cap_frac": 0.05},
-    "e16_bb_fade_hv_1d":   {"affinity": ["high_vol"],               "bt_pf":  1.47, "cap_frac": 0.05},
-    "e17_bb_fade_bt_1d":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.41, "cap_frac": 0.05},
-    "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  5.00, "cap_frac": 0.06},
-    "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  2.50, "cap_frac": 0.08},  # top PnL contributor
-    "e08_dip3d7_td_4h":    {"affinity": ["trend_down"],             "bt_pf":  1.50, "cap_frac": 0.05},
-    "e16_bb_fade_hv_4h":   {"affinity": ["high_vol"],               "bt_pf":  1.50, "cap_frac": 0.05},
-    "e17_bb_fade_bt_4h":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.30, "cap_frac": 0.08},
+    "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf": 10.05, "cap_frac": 0.12},
+    "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  2.12, "cap_frac": 0.06},
+    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  1.93, "cap_frac": 0.08},
+    "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  1.87, "cap_frac": 0.07},
+    "e16_bb_fade_hv_1d":   {"affinity": ["high_vol"],               "bt_pf":  1.47, "cap_frac": 0.06},
+    "e17_bb_fade_bt_1d":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.41, "cap_frac": 0.06},
+    "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  5.00, "cap_frac": 0.07},
+    "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  2.50, "cap_frac": 0.14},  # top PnL contributor
+    "e08_dip3d7_td_4h":    {"affinity": ["trend_down"],             "bt_pf":  1.50, "cap_frac": 0.06},
+    "e16_bb_fade_hv_4h":   {"affinity": ["high_vol"],               "bt_pf":  1.50, "cap_frac": 0.06},
+    "e17_bb_fade_bt_4h":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.30, "cap_frac": 0.10},
 }
-# Backward-compat alias for any code referencing the old name
+
+# CUT engines — hard-blocked from check() regardless of env (audit verdict)
+# To re-enable, remove from this set + re-validate via signal-bus integration
+CUT_ENGINES: set = {"vsq", "range_fade", "range_bo", "lh1", "fd1",
+                    "cex_dex_arb", "precog"}
+
+# Backward-compat alias
 OOS_ENGINE_REGISTRY = ENGINE_REGISTRY
 assert abs(sum(e["cap_frac"] for e in ENGINE_REGISTRY.values()) - 1.0) < 0.02, \
     f"cap_fracs sum to {sum(e['cap_frac'] for e in ENGINE_REGISTRY.values())}"
@@ -105,6 +105,10 @@ def check(conn, strategy: str, signal: dict, regime: dict,
         return CheckResult(False, 0.0, "strategy_disabled")
     if os.environ.get(f"PM_FORCE_HALT_{strategy.upper()}", "0") == "1":
         return CheckResult(False, 0.0, "halt_forced")
+
+    # 0) Hard-block: CUT engines (audit verdict — see CUT_ENGINES set)
+    if strategy in CUT_ENGINES:
+        return CheckResult(False, 0.0, "engine_cut_by_audit")
 
     # 1) 1_GLOBAL COIN LOCK — 1 position per coin across all engines
     for p in open_positions:
