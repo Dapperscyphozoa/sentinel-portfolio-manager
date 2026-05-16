@@ -102,7 +102,11 @@ CREATE TABLE IF NOT EXISTS kv_state (
 
 def connect(db_path: str) -> sqlite3.Connection:
     os.makedirs(os.path.dirname(db_path) or ".", exist_ok=True)
-    conn = sqlite3.connect(db_path, timeout=30, isolation_level=None)
+    # check_same_thread=False: HTTP servers in this stack serve requests from
+    # worker threads but share a single Connection. Python's sqlite3 with WAL
+    # journal + isolation_level=None is safe for many readers + one serialized
+    # writer; we accept that pattern over per-thread connection pools for v1.
+    conn = sqlite3.connect(db_path, timeout=30, isolation_level=None, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")

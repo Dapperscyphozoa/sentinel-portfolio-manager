@@ -200,6 +200,19 @@ def main() -> None:
         from signal_bus import okx_data_ws  # noqa: E402
         threading.Thread(target=okx_data_ws.run_in_thread, args=(coins, CACHE),
                          daemon=True, name="okx_data_ws").start()
+
+        # Warm-start: REST backfill ~200 bars per (coin, tf) so strategies and
+        # PM regime detector have history at first tick instead of waiting days.
+        if config.get_bool("BACKFILL_ON_BOOT", default=True):
+            from signal_bus import okx_rest_backfill  # noqa: E402
+
+            def _do_backfill():
+                try:
+                    n = okx_rest_backfill.backfill_all(coins, CACHE)
+                    log.info("REST backfill complete: %d bars total", n)
+                except Exception:
+                    log.exception("REST backfill failed")
+            threading.Thread(target=_do_backfill, daemon=True, name="rest_backfill").start()
     threading.Thread(target=_flush_loop, args=(CACHE,), daemon=True, name="flush").start()
 
     # HL WS thread is wired up in Session 3 via hl_ws.run_in_thread
