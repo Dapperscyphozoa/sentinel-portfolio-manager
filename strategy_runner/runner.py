@@ -25,14 +25,14 @@ def register(*classes: Type[StrategyBase]) -> None:
 
 
 def _load_registered() -> None:
-    """Lazy-import strategy modules. PRODUCTION DEPLOYMENT: only OOS-validated
-    engines are loaded by default. Legacy strategies remain importable for
-    backtesting but are not registered automatically.
+    """Lazy-import strategy modules. COMBINED DEPLOYMENT: 9 legacy strategies +
+    11 OOS-validated engines load together (per operator: combine with already-live
+    system). All routed through unified PM gate (coin lock + regime + cooldowns).
 
-    Order matters: registry order = first-fire arbitration order. OOS engines
-    are loaded in PF-priority order (highest bt_PF first → wins ties).
+    Registry order = first-fire arbitration. OOS engines load first (higher PF),
+    then legacy strategies fill remaining regimes.
     """
-    # PRODUCTION — 11 OOS-validated engines in PF-priority order
+    # 1) OOS-validated engines first (PF-priority order)
     try:
         from .strategies.oos_engines import OOS_ENGINES
         for cls in OOS_ENGINES:
@@ -41,10 +41,10 @@ def _load_registered() -> None:
     except Exception:
         log.exception("CRITICAL: failed to load OOS engines")
 
-    # LEGACY — only loaded if STRATEGY_LEGACY_LOAD=1 env (default off)
+    # 2) Legacy 9 strategies — combined with OOS per operator spec
     import os
-    if os.environ.get("STRATEGY_LEGACY_LOAD", "0") == "1":
-        log.warning("Loading legacy strategies — production should keep STRATEGY_LEGACY_LOAD=0")
+    if os.environ.get("STRATEGY_LEGACY_LOAD", "1") == "1":   # default ON for combined deployment
+        legacy_loaded = []
         for modname in ("fsp", "range_fade", "range_breakout", "vsq", "fd1",
                         "lh1", "precog", "liq_cascade", "cex_dex_arb", "donchian"):
             try:
@@ -54,10 +54,13 @@ def _load_registered() -> None:
                     if (isinstance(obj, type) and issubclass(obj, StrategyBase)
                             and obj is not StrategyBase and obj.NAME):
                         register(obj)
+                        legacy_loaded.append(obj.NAME)
             except ImportError:
                 pass
             except Exception:
                 log.exception("failed to load legacy strategy %s", modname)
+        log.info("Loaded %d legacy strategies: %s", len(legacy_loaded), legacy_loaded)
+    log.info("REGISTRY total: %d strategies (first-fire order)", len(REGISTRY))
 
 
 def scan_once(bus: BusClient, pm: PMClient, on_signal) -> int:
