@@ -1,0 +1,2883 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
+<title>PSYCHO PM TERMINAL</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;800&family=Cormorant+Garamond:ital,wght@0,300;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+    --void: #07080a;
+    --carbon: #0d0e11;
+    --steel: #1a1c20;
+    --chrome: #c8ccd4;
+    --bone: #d9d6cd;
+    --blood: #c1272d;
+    --acid: #3b82f6;          /* was #3b82f6 (acid green) — now electric blue (PSYCHO PM v2 theme) */
+    --acid-bright: #60a5fa;   /* lighter blue for highlights/hover */
+    --acid-deep: #1d4ed8;     /* darker for shadows */
+    --heat: #b8ff2f;          /* preserved lime for orderbook bids + WR heatmap (semantic green for "good") */
+    --heat-soft: rgba(184,255,47,0.4);
+    --oxide: #d97706;
+    --cyan: #00e5ff;
+    --pulse: #ff0055;
+    --gain: #10b981;
+    --loss: #ef4444;
+    --line: rgba(200,204,212,0.12);
+    --glow: rgba(59,130,246,0.5);   /* matched to new acid */
+}
+
+/* PnL colour utility classes — used on $-PnL, W/L, Avg Win, Avg Loss.
+   Always render in green/red regardless of the blue theme so winners/losers
+   are visually obvious. */
+.pnl-pos { color: var(--gain); }
+.pnl-neg { color: var(--loss); }
+
+/* === VIEW-BASED SECTION TOGGLE ===
+   Same landing.html serves /, /engines, /system, /macro.
+   An inline script after the nav block reads location.pathname and sets
+   body[data-view=X]. These rules show/hide sections per view. */
+
+/* DASH (default /) — hide engine breakdown grid */
+body[data-view="dash"] [data-section="engines"] { display: none !important; }
+
+/* ENGINES (/engines) — show only the systems grid + nav */
+body[data-view="engines"] .hero,
+body[data-view="engines"] .metrics-bar,
+body[data-view="engines"] .grid:not(#systems-grid),
+body[data-view="engines"] .footer { display: none !important; }
+body[data-view="engines"] [data-section="engines"] { display: grid !important; }
+
+/* SYSTEM and MACRO sub-pages: hide everything except the placeholder block */
+body[data-view="system"] .hero,
+body[data-view="system"] .metrics-bar,
+body[data-view="system"] .grid,
+body[data-view="system"] [data-section="engines"],
+body[data-view="system"] .footer,
+body[data-view="macro"]  .hero,
+body[data-view="macro"]  .metrics-bar,
+body[data-view="macro"]  .grid,
+body[data-view="macro"]  [data-section="engines"],
+body[data-view="macro"]  .footer { display: none !important; }
+
+.subpage-placeholder { display: none; padding: 80px 20px; text-align: center; font-family: 'Cormorant Garamond', serif; color: var(--chrome); }
+body[data-view="system"] .subpage-placeholder.system,
+body[data-view="macro"]  .subpage-placeholder.macro { display: block; }
+.subpage-placeholder h2 { font-size: 36px; letter-spacing: 0.3em; margin-bottom: 16px; color: var(--bone); font-weight: 400; }
+.subpage-placeholder p { font-size: 13px; letter-spacing: 0.2em; opacity: 0.6; }
+.subpage-placeholder .links { margin-top: 32px; display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+.subpage-placeholder .links a { padding: 10px 18px; border: 1px solid var(--line); color: var(--chrome); text-decoration: none; font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase; transition: all 0.15s; }
+.subpage-placeholder .links a:hover { border-color: var(--cyan); color: var(--cyan); }
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body {
+    background: var(--void);
+    color: var(--bone);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    overflow-x: hidden;
+    min-height: 100vh;
+}
+body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background:
+        radial-gradient(ellipse at 20% 30%, rgba(193,39,45,0.08), transparent 50%),
+        radial-gradient(ellipse at 80% 70%, rgba(0,229,255,0.05), transparent 50%),
+        repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(255,255,255,0.008) 2px, rgba(255,255,255,0.008) 3px);
+    pointer-events: none;
+    z-index: 0;
+}
+body::after {
+    content: '';
+    position: fixed; inset: 0;
+    background: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence baseFrequency='0.9' /></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.4'/></svg>");
+    opacity: 0.04; pointer-events: none; z-index: 1;
+    mix-blend-mode: overlay;
+}
+.container { position: relative; z-index: 2; max-width: 1600px; margin: 0 auto; padding: 32px 40px; }
+
+/* HEADER */
+.header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 40px; position: relative; }
+.header::after {
+    content: ''; position: absolute; bottom: -12px; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, var(--bone) 20%, var(--bone) 80%, transparent);
+    opacity: 0.3;
+}
+.logo { display: flex; align-items: center; gap: 16px; }
+.logo-mark { width: 48px; height: 48px; position: relative; }
+.logo-mark svg { width: 100%; height: 100%; }
+.logo-text { font-family: 'Cormorant Garamond', serif; font-size: 28px; font-weight: 600; letter-spacing: 0.3em; color: var(--bone); }
+.logo-sub { font-size: 9px; letter-spacing: 0.4em; opacity: 0.5; margin-top: 2px; color: var(--acid); }
+
+.status-cluster { display: flex; gap: 24px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.status-item { font-size: 10px; letter-spacing: 0.2em; text-transform: uppercase; color: var(--chrome); opacity: 0.7; white-space: nowrap; }
+.status-item strong { color: var(--acid); font-weight: 600; letter-spacing: 0.1em; }
+.audit-btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 16px; font-size: 11px; letter-spacing: 0.3em; text-transform: uppercase; color: var(--acid); text-decoration: none; border: 1px solid var(--acid); background: rgba(59,130,246,0.05); font-weight: 600; transition: all 0.15s ease; white-space: nowrap; }
+.audit-btn:hover { background: var(--acid); color: var(--void); }
+.audit-btn::after { content: '→'; font-size: 13px; }
+.pulse-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--acid); margin-right: 8px; box-shadow: 0 0 12px var(--glow); animation: pulse 1.5s ease-in-out infinite; vertical-align: middle; }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+/* HERO */
+.hero { display: grid; grid-template-columns: 1fr 1fr; gap: 32px; margin-bottom: 32px; position: relative; min-height: 360px; max-height: 70vh; }
+.hero-text { display: flex; flex-direction: column; justify-content: center; position: relative; z-index: 3; }
+.hero-kicker { font-size: 10px; letter-spacing: 0.5em; color: var(--oxide); margin-bottom: 16px; text-transform: uppercase; }
+.hero-title { font-family: 'Cormorant Garamond', serif; font-size: clamp(40px, 4.5vw, 80px); font-weight: 300; line-height: 0.9; letter-spacing: -0.02em; margin-bottom: 16px; }
+.hero-title em { font-style: italic; color: var(--oxide); }
+.hero-title .blood { color: var(--blood); font-weight: 600; }
+.hero-lede { font-size: 12px; line-height: 1.6; color: var(--chrome); max-width: 440px; margin-bottom: 20px; opacity: 0.85; }
+.hero-stats { display: flex; gap: 32px; margin-top: auto; padding-top: 16px; border-top: 1px solid var(--line); }
+.hero-stat-val { font-size: 24px; font-weight: 300; letter-spacing: -0.02em; color: var(--bone); font-family: 'Cormorant Garamond', serif; }
+.hero-stat-val.pos { color: var(--gain); }
+.hero-stat-val.neg { color: var(--blood); }
+.hero-stat-lbl { font-size: 9px; letter-spacing: 0.3em; opacity: 0.5; text-transform: uppercase; margin-top: 4px; }
+
+/* BIOMECH */
+.biomech-stage {
+  position: relative;
+  display: flex; align-items: center; justify-content: center;
+  perspective: 1400px; perspective-origin: 50% 50%;
+  filter: brightness(0.9);
+}
+.biomech {
+  width: 100%; height: 100%; max-width: 560px;
+  position: relative;
+  transform-style: preserve-3d;
+  aspect-ratio: 1/1;
+}
+.biomech svg {
+  width: 100%; height: 100%;
+  filter: drop-shadow(0 0 30px rgba(0,229,255,0.2)) drop-shadow(0 20px 40px rgba(0,0,0,0.5));
+  transform-style: preserve-3d;
+  overflow: visible;
+}
+
+/* GYRO: each ring rotates around orb centre on a single pure axis
+   Uses SVG rotate() which pivots around cx,cy — locks rings to orb centre.
+   Different rings = different rotation speeds + opposite directions = gyroscope. */
+@keyframes spin-cw  { from { transform: rotate(0deg); }   to { transform: rotate(360deg); } }
+@keyframes spin-ccw { from { transform: rotate(0deg); }   to { transform: rotate(-360deg); } }
+
+@keyframes flicker { 0%,100% { opacity: 1; } 48% { opacity: 1; } 50% { opacity: 0.3; } 52% { opacity: 1; } }
+@keyframes thrum { 0%,100% { transform: scale(1); opacity: 0.85; } 50% { transform: scale(1.05); opacity: 1; } }
+
+/* All rings pivot around orb centre (300,300) at different rates + directions.
+   transform-box: view-box keeps origin in absolute SVG coords regardless of nesting. */
+.ring-3d-1 { transform-origin: 300px 300px; transform-box: view-box; animation: spin-cw  22s linear infinite; }
+.ring-3d-2 { transform-origin: 300px 300px; transform-box: view-box; animation: spin-ccw 16s linear infinite; }
+.ring-3d-3 { transform-origin: 300px 300px; transform-box: view-box; animation: spin-cw  30s linear infinite; }
+.ring-3d-4 { transform-origin: 300px 300px; transform-box: view-box; animation: spin-ccw 18s linear infinite; }
+.ring-3d-5 { transform-origin: 300px 300px; transform-box: view-box; animation: spin-cw  26s linear infinite; }
+.ring-3d-6 { transform-origin: 300px 300px; transform-box: view-box; animation: spin-ccw 40s linear infinite; }
+
+.orbit-outer { transform-origin: 300px 300px; transform-box: view-box; animation: spin-cw  36s linear infinite; }
+.orbit-inner { transform-origin: 300px 300px; transform-box: view-box; animation: spin-ccw 24s linear infinite; }
+.core-pulse  { transform-origin: 300px 300px; transform-box: view-box; animation: thrum 2.4s ease-in-out infinite; }
+.flicker     { animation: flicker 5s infinite; }
+
+/* Back-half rings: dimmer (behind orb), keep spinning on own axis */
+/* Ring depth is now handled by gradient stroke (top=pale/behind, bottom=bold/front) */
+
+/* GRID PANELS */
+.grid { display: grid; grid-template-columns: 1.3fr 1fr 1fr; gap: 24px; margin-bottom: 32px; }
+.panel {
+    background: linear-gradient(135deg, var(--carbon) 0%, var(--steel) 100%);
+    border: 1px solid var(--line);
+    padding: 24px 28px;
+    position: relative;
+    overflow: hidden;
+}
+.panel::before {
+    content: ''; position: absolute; top: 0; left: 0; width: 20px; height: 20px;
+    border-top: 2px solid var(--acid); border-left: 2px solid var(--acid);
+}
+.panel::after {
+    content: ''; position: absolute; bottom: 0; right: 0; width: 20px; height: 20px;
+    border-bottom: 2px solid var(--blood); border-right: 2px solid var(--blood);
+}
+.panel-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.panel-title { font-size: 10px; letter-spacing: 0.4em; text-transform: uppercase; color: var(--chrome); }
+.panel-meta { font-size: 9px; letter-spacing: 0.2em; color: var(--oxide); opacity: 0.8; }
+
+/* POSITIONS */
+.pos-row { display: grid; grid-template-columns: 60px 1fr auto auto; gap: 12px; padding: 10px 0; border-bottom: 1px dashed var(--line); font-size: 12px; align-items: center; }
+.pos-row:last-child { border-bottom: none; }
+.pos-coin { font-weight: 600; letter-spacing: 0.05em; }
+.pos-side { font-size: 9px; padding: 2px 6px; letter-spacing: 0.15em; display: inline-block; }
+.side-L { background: rgba(16,185,129,0.15); color: var(--gain); border: 1px solid rgba(16,185,129,0.35); }
+.side-S { background: rgba(193,39,45,0.15); color: var(--blood); border: 1px solid rgba(193,39,45,0.3); }
+/* Stage badge — paper / shadow / live tag shown alongside side. Paper rows
+   also get a faint background tint + amber left border so they cannot be
+   visually confused with live wallet positions. */
+.stage-tag { font-size: 8px; padding: 2px 5px; letter-spacing: 0.18em; display: inline-block; margin-right: 4px; font-weight: 600; }
+.stage-paper { background: rgba(245,158,11,0.12); color: #f59e0b; border: 1px solid rgba(245,158,11,0.35); }
+.stage-shadow { background: rgba(139,92,246,0.12); color: #a78bfa; border: 1px solid rgba(139,92,246,0.35); }
+.stage-live { background: rgba(16,185,129,0.12); color: var(--gain); border: 1px solid rgba(16,185,129,0.35); }
+.pos-row.is-paper { background: rgba(245,158,11,0.04); border-left: 2px solid rgba(245,158,11,0.5); padding-left: 10px; margin-left: -2px; }
+.pos-row.is-shadow { background: rgba(139,92,246,0.04); border-left: 2px solid rgba(139,92,246,0.5); padding-left: 10px; margin-left: -2px; }
+.pos-size { font-size: 10px; opacity: 0.6; text-align: right; }
+.pos-pnl { font-family: 'JetBrains Mono', monospace; font-weight: 600; text-align: right; min-width: 80px; }
+/* .pnl-pos / .pnl-neg defined globally above with --gain/--loss (proper green/red). */
+
+/* NEWS */
+.news-item { padding: 12px 0; border-bottom: 1px dashed var(--line); }
+.news-item:last-child { border-bottom: none; }
+.news-mag { display: inline-block; font-size: 9px; padding: 2px 8px; letter-spacing: 0.2em; margin-bottom: 6px; }
+.mag-5 { background: var(--blood); color: var(--bone); }
+.mag-4 { background: var(--oxide); color: var(--void); }
+.mag-3 { background: var(--steel); color: var(--chrome); border: 1px solid var(--line); }
+.news-title { font-size: 12px; line-height: 1.5; color: var(--bone); margin-bottom: 6px; }
+.news-meta { font-size: 9px; letter-spacing: 0.15em; opacity: 0.5; }
+
+/* ENGINE STATUS */
+.engine-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.engine { padding: 10px 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--line); position: relative; }
+.engine-name { font-size: 10px; letter-spacing: 0.15em; color: var(--chrome); margin-bottom: 4px; }
+.engine-val { font-size: 16px; font-weight: 600; color: var(--acid); font-family: 'JetBrains Mono'; }
+.engine.active::before { content: ''; position: absolute; top: 6px; right: 6px; width: 6px; height: 6px; background: var(--acid); border-radius: 50%; box-shadow: 0 0 8px var(--glow); }
+
+/* METRICS BAR */
+.metrics-bar { display: grid; grid-template-columns: repeat(6, 1fr); gap: 16px; margin-bottom: 32px; padding: 20px 28px; background: linear-gradient(90deg, var(--carbon), transparent); border-top: 1px solid var(--acid); border-bottom: 1px solid var(--line); }
+.metric-cell { padding: 0 16px; border-left: 1px solid var(--line); }
+.metric-cell:first-child { border-left: none; }
+.metric-val { font-family: 'Cormorant Garamond', serif; font-size: 28px; font-weight: 400; color: var(--bone); line-height: 1; }
+.metric-lbl { font-size: 9px; letter-spacing: 0.3em; text-transform: uppercase; color: var(--chrome); opacity: 0.6; margin-top: 6px; }
+
+/* TICKER */
+.ticker { position: fixed; bottom: 0; left: 0; right: 0; background: var(--void); border-top: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; white-space: nowrap; padding: 10px 16px; z-index: 100; font-size: 11px; letter-spacing: 0.15em; }
+.ticker-track { display: inline-flex; gap: 28px; align-items: center; }
+.ticker-track span { display: inline-block; color: var(--chrome); }
+.ticker-track span strong { color: var(--gain); margin-right: 8px; font-weight: 600; }
+.ticker-track span.bear strong { color: var(--loss); }
+
+/* FOOTER */
+.footer { margin-top: 60px; margin-bottom: 60px; padding-top: 24px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; font-size: 10px; letter-spacing: 0.2em; opacity: 0.5; text-transform: uppercase; }
+
+/* NUMBERS SHIFT */
+@keyframes digitShift { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-1px); } }
+.digit-live { animation: digitShift 3s ease-in-out infinite; display: inline-block; }
+
+@media (max-width: 1200px) {
+    .hero { grid-template-columns: 1fr; }
+    .grid { grid-template-columns: 1fr; }
+    .metrics-bar { grid-template-columns: repeat(3, 1fr); }
+}
+@media (max-width: 720px) {
+    .container { padding: 20px 16px; }
+    .header { flex-direction: column; align-items: stretch; gap: 16px; }
+    .status-cluster { justify-content: flex-start; gap: 14px; }
+    .audit-btn { align-self: flex-start; }
+    .logo-text { font-size: 22px; letter-spacing: 0.2em; }
+    .logo-mark { width: 36px; height: 36px; }
+}
+</style>
+</head>
+<body>
+
+<div class="pm-layout">
+<div class="pm-main">
+<div class="container" style="max-width:none;padding:0;">
+
+<!-- HEADER -->
+<div class="header">
+    <div class="logo">
+        <div class="logo-mark">
+            <svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <linearGradient id="lg1" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stop-color="#3b82f6"/>
+                        <stop offset="100%" stop-color="#c1272d"/>
+                    </linearGradient>
+                </defs>
+                <circle cx="24" cy="24" r="22" fill="none" stroke="url(#lg1)" stroke-width="1.5"/>
+                <circle cx="24" cy="24" r="14" fill="none" stroke="#c8ccd4" stroke-width="0.5" opacity="0.5"/>
+                <path d="M24 4 L24 44 M4 24 L44 24" stroke="#c8ccd4" stroke-width="0.3" opacity="0.4"/>
+                <circle cx="24" cy="24" r="4" fill="#3b82f6">
+                    <animate attributeName="r" values="4;6;4" dur="2s" repeatCount="indefinite"/>
+                </circle>
+            </svg>
+        </div>
+        <div>
+            <div class="logo-text">PSYCHO PM</div>
+            <div class="logo-sub">TERMINAL · CYBER · V1.0</div>
+        </div>
+    </div>
+    <div class="status-cluster">
+        <div class="status-item"><span class="pulse-dot"></span>SYS ONLINE</div>
+        <div class="status-item">SESSION · <strong id="session-name">LONDON</strong></div>
+        <div class="status-item">UTC · <strong id="utc-clock">—</strong></div>
+    </div>
+</div>
+
+<!-- UNIFIED NAV (shared across all pages) -->
+<style>
+.precog-nav{position:sticky;top:0;z-index:1000;background:rgba(7,8,10,0.92);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);border-bottom:1px solid rgba(200,204,212,0.08);padding:10px 16px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-family:'JetBrains Mono',monospace;margin:0 0 20px 0}
+.precog-nav .nav-brand{font-family:'Cormorant Garamond',serif;font-size:15px;color:#d9d6cd;padding-right:12px;margin-right:4px;letter-spacing:0.15em;text-transform:uppercase;font-weight:300;opacity:0.85;border-right:1px solid rgba(200,204,212,0.1);text-decoration:none}
+.precog-nav a{display:inline-flex;align-items:center;gap:5px;padding:6px 10px;font-size:10px;letter-spacing:0.2em;text-transform:uppercase;color:#c8ccd4;text-decoration:none;border:1px solid rgba(200,204,212,0.12);background:transparent;transition:all 0.12s ease;white-space:nowrap;font-weight:500}
+.precog-nav a:hover{border-color:#3b82f6;color:#3b82f6;background:rgba(59,130,246,0.06)}
+.precog-nav a.current{border-color:#3b82f6;color:#3b82f6;background:rgba(59,130,246,0.1)}
+.precog-nav a .nav-ico{font-size:11px;opacity:0.7}
+.precog-nav a:hover .nav-ico{opacity:1}
+.precog-nav .nav-sep{flex:1}
+.precog-nav .nav-tag{font-size:9px;color:#64748b;letter-spacing:0.25em;opacity:0.6;padding-left:6px}
+@media(max-width:700px){.precog-nav{padding:8px 10px;gap:4px}.precog-nav .nav-brand{font-size:13px;width:100%;padding:0 0 6px 0;margin:0 0 4px 0;border-right:none;border-bottom:1px solid rgba(200,204,212,0.1)}.precog-nav a{padding:5px 7px;font-size:9px;letter-spacing:0.15em}.precog-nav .nav-tag{width:100%;padding:6px 0 0 0;text-align:center}}
+
+/* ═══ PSYCHO PM TERMINAL — FIXED RHS DATA RAIL (always-on, full-height) ═══
+   Rail is hoisted out of pm-layout grid into a fixed-position sidebar so it
+   fills the RHS for the WHOLE page, not just the dashboard cards section.
+   pm-layout is now single-column; body gets right-padding equal to rail
+   width + gap so existing content never slides under the rail. */
+.pm-layout {
+  position: relative;
+  z-index: 2;
+  width: 100%;
+  margin: 0 auto;
+  display: block;
+  padding: 14px 17px 14px 17px;
+  box-sizing: border-box;
+}
+.pm-main { min-width: 0; overflow-x: hidden; }
+.pm-engine-rail {
+  position: fixed;
+  top: 46px;            /* below precog-nav (40-44px tall) */
+  right: 0;
+  width: 220px;
+  height: calc(100vh - 46px);
+  max-height: calc(100vh - 46px);
+  z-index: 50;
+  overflow: hidden;
+  background: linear-gradient(180deg, var(--carbon) 0%, rgba(13,14,17,0.97) 100%);
+  border-left: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+}
+/* push every page-level region clear of the fixed rail */
+body { padding-right: 232px; }
+.precog-nav { padding-right: 232px; }
+.pm-rail-head {
+  padding: 10px 12px 9px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(59,130,246,0.04);
+  flex-shrink: 0;
+}
+.pm-rail-title {
+  font-family: 'Cormorant Garamond', serif;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  color: var(--bone);
+  text-transform: uppercase;
+  line-height: 1.2;
+}
+.pm-rail-sub {
+  font-size: 9px;
+  letter-spacing: 0.25em;
+  color: var(--oxide);
+  opacity: 0.75;
+  margin-top: 4px;
+  text-transform: uppercase;
+}
+.pm-rail-counts {
+  display: flex;
+  gap: 14px;
+  margin-top: 9px;
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--chrome);
+}
+.pm-rail-count strong { font-weight: 600; }
+.pm-rail-count.live strong { color: var(--acid); }
+.pm-rail-count.off strong { color: var(--blood); }
+
+.pm-rail-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+  position: relative;
+}
+.pm-rail-scroll::-webkit-scrollbar { width: 3px; }
+.pm-rail-scroll::-webkit-scrollbar-track { background: var(--void); }
+.pm-rail-scroll::-webkit-scrollbar-thumb { background: var(--steel); }
+
+/* Continuous rolling animation: DISABLED per user request — gates are now
+   static 4-up grid; users couldn't read them while rolling.
+   Distance and duration vars remain for safety in case animation re-enabled. */
+@keyframes pm-rail-roll {
+  0%   { transform: translateY(0); }
+  92%  { transform: translateY(calc(-1 * var(--rail-distance, 0px))); }
+  100% { transform: translateY(0); }
+}
+.pm-rail-scroll.cycling .pm-rail-list {
+  /* animation disabled — was: pm-rail-roll var(--rail-cycle, 40s) linear infinite */
+  animation: none;
+}
+.pm-rail-scroll.cycling:hover .pm-rail-list {
+  animation-play-state: paused;
+}
+
+/* Gate-card grid — stacked single-column on RHS rail (per user 2026-05-10) */
+.pm-gate-section { padding: 8px 8px 3px; }
+.pm-gate-section-label {
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--blood);
+  opacity: 0.85;
+  margin-bottom: 7px;
+  font-weight: 500;
+}
+.pm-gate-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+}
+.pm-gate-card {
+  position: relative;
+  padding: 0;
+  border: 1px solid var(--line);
+  background: rgba(0,0,0,0.4);
+  min-height: 38px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.pm-gate-card:hover {
+  border-color: var(--acid);
+  box-shadow: 0 0 12px rgba(59,130,246,0.15);
+}
+/* Flux image — top of card, compact strip (was 130/80, now 130/40 for 4-up density) */
+.pm-gate-card .pm-gate-img {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 130 / 40;
+  background: var(--steel);
+  overflow: hidden;
+}
+.pm-gate-card .pm-gate-img img {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+  filter: contrast(1.05) saturate(0.85) brightness(0.85);
+  transition: filter 0.4s ease, transform 0.6s ease;
+}
+/* Venue cards show real exchange favicons instead of biomech images.
+   Logos need contain (not cover) + padding + plain dark bg + no biomech filter. */
+.pm-gate-card[data-group="VENUES"] .pm-gate-img {
+  background: #0a0d12;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.pm-gate-card[data-group="VENUES"] .pm-gate-img img {
+  width: auto;
+  height: 70%;
+  max-width: 70%;
+  object-fit: contain;
+  filter: none;
+}
+.pm-gate-card[data-group="VENUES"]:hover .pm-gate-img img {
+  filter: brightness(1.15);
+  transform: none;
+}
+.pm-gate-card[data-group="VENUES"] .pm-gate-img-overlay {
+  background: linear-gradient(180deg, transparent 0%, transparent 65%, rgba(7,8,10,0.7) 100%);
+}
+.pm-gate-card:hover .pm-gate-img img {
+  filter: contrast(1.15) saturate(1.0) brightness(0.95);
+  transform: scale(1.04);
+}
+.pm-gate-card .pm-gate-img-overlay {
+  position: absolute; inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg, rgba(7,8,10,0.0) 0%, rgba(7,8,10,0.0) 60%, rgba(7,8,10,0.85) 100%),
+    repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(59,130,246,0.03) 2px, rgba(59,130,246,0.03) 3px),
+    radial-gradient(ellipse at 70% 30%, rgba(59,130,246,0.08), transparent 60%);
+  mix-blend-mode: screen;
+}
+.pm-gate-card.off .pm-gate-img img {
+  filter: contrast(0.95) saturate(0.25) brightness(0.5);
+}
+.pm-gate-card.off .pm-gate-img-overlay {
+  background:
+    linear-gradient(180deg, rgba(7,8,10,0.4) 0%, rgba(7,8,10,0.0) 50%, rgba(7,8,10,0.9) 100%),
+    radial-gradient(ellipse at center, rgba(193,39,45,0.12), transparent 70%);
+}
+/* Gate text body — compact bottom (was 7px 9px 8px 9px) */
+.pm-gate-card .pm-gate-body {
+  padding: 4px 5px 5px 5px;
+}
+.pm-gate-card .pm-gate-name {
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  color: var(--chrome);
+  text-transform: uppercase;
+  line-height: 1.15;
+  margin-bottom: 2px;
+  font-weight: 500;
+  word-break: break-all;
+}
+.pm-gate-card .pm-gate-status {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  font-family: 'JetBrains Mono', monospace;
+  line-height: 1;
+}
+.pm-gate-card.on .pm-gate-status { color: var(--acid); }
+.pm-gate-card.off .pm-gate-status { color: var(--bone); opacity: 0.55; }
+.pm-gate-card .pm-gate-dot {
+  position: absolute;
+  top: 4px; right: 4px;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  z-index: 2;
+  box-shadow: 0 0 0 1px rgba(0,0,0,0.6);
+}
+.pm-gate-card.on .pm-gate-dot {
+  background: var(--acid);
+  box-shadow: 0 0 6px var(--glow), 0 0 0 1px rgba(0,0,0,0.6);
+  animation: pulse 2s ease-in-out infinite;
+}
+.pm-gate-card.off .pm-gate-dot {
+  background: var(--blood);
+  opacity: 0.6;
+}
+
+.pm-rail-foot {
+  padding: 9px 14px;
+  border-top: 1px solid var(--line);
+  font-size: 9px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--chrome);
+  opacity: 0.6;
+  display: flex;
+  justify-content: space-between;
+  flex-shrink: 0;
+}
+.pm-rail-foot a { color: var(--acid); text-decoration: none; }
+.pm-rail-foot a:hover { color: var(--acid-bright); }
+
+@media (max-width: 1100px) {
+  .pm-layout { padding: 12px; }
+  .pm-rail-title { font-size: 13px; }
+  .pm-gate-section { padding: 8px 8px 2px; }
+  .pm-gate-card .pm-gate-status { font-size: 10px; }
+  .pm-gate-grid { gap: 3px; }
+  body { padding-right: 200px; }
+  .precog-nav { padding-right: 200px; }
+  .pm-engine-rail { width: 188px; }
+}
+@media (max-width: 800px) {
+  body { padding-right: 0; }
+  .precog-nav { padding-right: 16px; }
+  .pm-engine-rail {
+    position: relative;
+    top: 0; right: auto;
+    width: 100%;
+    height: auto;
+    max-height: 70vh;
+    margin: 16px 0;
+    border-left: none;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+  }
+}
+</style>
+<nav class="precog-nav">
+<a href="/" class="nav-brand">PRECOG</a>
+<a href="/" data-page="dashboard">Dash</a>
+<a href="/engines" data-page="engines">Engines</a>
+<a href="/audit" data-page="audit">Audit</a>
+<a href="/system" data-page="system">System</a>
+<a href="/macro" data-page="macro">Macro</a>
+<div class="nav-sep"></div>
+<span class="nav-tag">V1.0 · phase 1</span>
+</nav>
+<script>(function(){var p=location.pathname,c="",v="dash";
+if(p==="/"||p===""){c="dashboard";v="dash";}
+else if(p.indexOf("/engines")===0){c="engines";v="engines";}
+else if(p.indexOf("/audit")===0||p.indexOf("/violations")===0||p.indexOf("/shadow")===0){c="audit";v="audit";}
+else if(p.indexOf("/system")===0||p.indexOf("/enforce")===0||p.indexOf("/experiment")===0){c="system";v="system";}
+else if(p.indexOf("/macro")===0){c="macro";v="macro";}
+document.body.setAttribute("data-view",v);
+document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.getAttribute("data-page")===c)a.classList.add("current")})})();</script>
+
+<!-- SUB-PAGE PLACEHOLDERS (only displayed on /system and /macro; CSS controls visibility) -->
+<div class="subpage-placeholder system">
+    <h2>SYSTEM</h2>
+    <p>// operator tools — enforcement contract & promotion-engine A/B</p>
+    <div class="links">
+        <a href="/enforce">Enforce · Protection</a>
+        <a href="/experiment">Experiment · Promotion</a>
+    </div>
+</div>
+<!-- MACRO PAGE — renders MER from portfolio-manager /mer/today -->
+<div class="subpage-placeholder macro" id="macro-page">
+    <h2 style="margin-bottom:8px">MACRO</h2>
+    <p style="margin-bottom:24px">// daily macro economic report — internal · national · global</p>
+    <div id="mer-meta" style="font-size:11px; opacity:0.5; letter-spacing:0.2em; margin-bottom:24px"></div>
+    <div id="mer-next-event" style="margin-bottom:32px"></div>
+    <div class="mer-grid">
+        <div class="mer-section">
+            <div class="mer-cat">INTERNAL</div>
+            <div id="mer-internal" class="mer-list">loading…</div>
+        </div>
+        <div class="mer-section">
+            <div class="mer-cat">NATIONAL</div>
+            <div id="mer-national" class="mer-list">loading…</div>
+        </div>
+        <div class="mer-section">
+            <div class="mer-cat">GLOBAL</div>
+            <div id="mer-global" class="mer-list">loading…</div>
+        </div>
+    </div>
+</div>
+<style>
+.mer-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px; max-width: 1200px; margin: 0 auto; text-align: left; }
+.mer-section { background: rgba(13,14,17,0.5); border: 1px solid var(--line); padding: 20px; }
+.mer-cat { font-family: 'JetBrains Mono', monospace; font-size: 10px; letter-spacing: 0.4em; color: var(--cyan); padding-bottom: 12px; border-bottom: 1px solid var(--line); margin-bottom: 16px; }
+.mer-list { font-size: 12px; line-height: 1.5; }
+.mer-item { padding: 10px 0; border-bottom: 1px dashed rgba(200,204,212,0.08); }
+.mer-item:last-child { border-bottom: none; }
+.mer-item-title { color: var(--bone); font-weight: 400; margin-bottom: 4px; }
+.mer-item-title a { color: var(--bone); text-decoration: none; }
+.mer-item-title a:hover { color: var(--cyan); }
+.mer-item-meta { font-size: 10px; opacity: 0.5; letter-spacing: 0.1em; }
+.mer-item-summary { font-size: 11px; opacity: 0.7; margin-top: 4px; }
+.mer-internal-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed rgba(200,204,212,0.08); font-size: 12px; }
+.mer-internal-row:last-child { border-bottom: none; }
+.mer-internal-row .lbl { opacity: 0.6; }
+.mer-internal-row .val { color: var(--bone); }
+.mer-empty { opacity: 0.4; font-style: italic; padding: 20px 0; font-size: 11px; text-align: center; }
+.next-event-card { display: inline-flex; align-items: center; gap: 14px; padding: 12px 20px; border: 1px solid var(--cyan); background: rgba(0,229,255,0.04); font-size: 11px; letter-spacing: 0.18em; }
+.next-event-card .badge { color: var(--cyan); font-weight: 600; }
+.next-event-card .blackout { color: var(--loss); border-color: var(--loss); }
+@media (max-width: 900px) { .mer-grid { grid-template-columns: 1fr; } }
+</style>
+<script>
+(function(){
+    if (!document.body.matches('[data-view="macro"]')) return;
+    var PM_URL = (window.location.hostname.indexOf('localhost') !== -1) ?
+                 'http://localhost:10000' :
+                 'https://portfolio-manager-7df2.onrender.com';
+    function timeAgo(ms){
+        if (!ms) return '';
+        var diff = (Date.now() - ms) / 1000;
+        if (diff < 60) return Math.round(diff)+'s ago';
+        if (diff < 3600) return Math.round(diff/60)+'m ago';
+        if (diff < 86400) return Math.round(diff/3600)+'h ago';
+        return Math.round(diff/86400)+'d ago';
+    }
+    function renderInternal(items, el){
+        if (!items || !items.length) { el.innerHTML = '<div class="mer-empty">// no internal data</div>'; return; }
+        el.innerHTML = items.map(function(it){
+            return '<div class="mer-internal-row"><span class="lbl">'+it.label+'</span><span class="val">'+it.value+'</span></div>';
+        }).join('');
+    }
+    function renderNews(items, el){
+        if (!items || !items.length) { el.innerHTML = '<div class="mer-empty">// no items in window</div>'; return; }
+        el.innerHTML = items.map(function(it){
+            var meta = (it.source||'')+' · '+timeAgo(it.ts_ms);
+            var titleHtml = it.link ?
+                '<a href="'+it.link+'" target="_blank" rel="noopener">'+escapeHtml(it.title)+'</a>' :
+                escapeHtml(it.title);
+            var summaryHtml = it.summary ? '<div class="mer-item-summary">'+escapeHtml(it.summary)+'</div>' : '';
+            return '<div class="mer-item"><div class="mer-item-title">'+titleHtml+'</div><div class="mer-item-meta">'+meta+'</div>'+summaryHtml+'</div>';
+        }).join('');
+    }
+    function escapeHtml(s){ if (!s) return ''; return s.replace(/[&<>"']/g, function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];}); }
+    function renderNextEvent(ne, el, blackout){
+        if (blackout && blackout.active) {
+            var ev = blackout.active_event || {};
+            el.innerHTML = '<div class="next-event-card blackout"><span class="badge">⛔ MACRO BLACKOUT</span><span>'+escapeHtml(ev.currency||'')+' · '+escapeHtml(ev.title||'')+' · ends in '+(ev.ends_min_from_now||'?')+' min</span></div>';
+            return;
+        }
+        if (!ne) { el.innerHTML = ''; return; }
+        var inHrs = ne.in_hours != null ? ne.in_hours.toFixed(1)+'h' : ne.in_min+'m';
+        el.innerHTML = '<div class="next-event-card"><span class="badge">NEXT TIER-1</span><span>'+escapeHtml(ne.currency||'')+' · '+escapeHtml(ne.title||'')+' · in '+inHrs+'</span></div>';
+    }
+    function load(){
+        Promise.all([
+            fetch(PM_URL+'/mer/today').then(function(r){return r.json();}).catch(function(){return null;}),
+            fetch(PM_URL+'/macro_blackout').then(function(r){return r.json();}).catch(function(){return null;}),
+        ]).then(function(results){
+            var snap = results[0], bl = results[1];
+            if (!snap || snap.error) {
+                document.getElementById('mer-meta').textContent = 'MER unavailable: '+(snap && snap.error || 'PM unreachable');
+                return;
+            }
+            document.getElementById('mer-meta').textContent =
+                'snapshot for '+snap.day+' · generated '+(snap.generated_ts ? timeAgo(snap.generated_ts) : '?');
+            renderNextEvent(snap.next_event, document.getElementById('mer-next-event'), bl);
+            renderInternal(snap.internal, document.getElementById('mer-internal'));
+            renderNews(snap.national, document.getElementById('mer-national'));
+            renderNews(snap.global, document.getElementById('mer-global'));
+        });
+    }
+    load();
+    // Refresh every 5 minutes while page is open
+    setInterval(load, 5 * 60 * 1000);
+})();
+</script>
+
+<!-- HERO -->
+<div class="hero">
+    <div class="hero-text">
+        <div class="hero-kicker">// portfolio manager · multi-engine terminal</div>
+        <h1 class="hero-title">
+            psycho<br>
+            <em>pm</em><br>
+            <span class="blood">terminal</span>
+        </h1>
+        <p class="hero-lede">
+            Nine engines under one wallet. Cross-venue orderbook aggregation, whale tape,
+            liquidation cascades, news regime, funding map. Cross-engine attribution and risk.
+            Bloomberg's rival, built for one wallet — yours.
+        </p>
+        <div class="hero-stats">
+            <div>
+                <div class="hero-stat-val" id="hero-eq">$0</div>
+                <div class="hero-stat-lbl">LIVE EQUITY</div>
+            </div>
+            <div>
+                <div class="hero-stat-val" id="hero-pos">0</div>
+                <div class="hero-stat-lbl">POSITIONS</div>
+            </div>
+            <div>
+                <div class="hero-stat-val pos" id="hero-upnl">$0</div>
+                <div class="hero-stat-lbl">UNREALIZED</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- BIOMECH -->
+    <div class="biomech-stage">
+        <div class="biomech">
+            <svg viewBox="0 0 600 600" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <radialGradient id="core" cx="50%" cy="50%">
+                        <stop offset="0%" stop-color="#3b82f6" stop-opacity="1"/>
+                        <stop offset="25%" stop-color="#3b82f6" stop-opacity="0.6"/>
+                        <stop offset="50%" stop-color="#00e5ff" stop-opacity="0.25"/>
+                        <stop offset="100%" stop-color="#07080a" stop-opacity="0"/>
+                    </radialGradient>
+                    <radialGradient id="coreHot" cx="50%" cy="50%">
+                        <stop offset="0%" stop-color="#ffffff" stop-opacity="1"/>
+                        <stop offset="15%" stop-color="#3b82f6" stop-opacity="0.9"/>
+                        <stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/>
+                    </radialGradient>
+                    <radialGradient id="sphere" cx="35%" cy="35%">
+                        <stop offset="0%" stop-color="#ffffff" stop-opacity="0.35"/>
+                        <stop offset="40%" stop-color="#c8ccd4" stop-opacity="0.08"/>
+                        <stop offset="100%" stop-color="#07080a" stop-opacity="0"/>
+                    </radialGradient>
+
+                    <!-- ORB BODY: deep core glow radiating out -->
+                    <radialGradient id="orbBody" cx="50%" cy="50%" r="50%">
+                        <stop offset="0%" stop-color="#1a3a0a" stop-opacity="0.95"/>
+                        <stop offset="40%" stop-color="#0a2010" stop-opacity="0.9"/>
+                        <stop offset="80%" stop-color="#050a08" stop-opacity="0.85"/>
+                        <stop offset="100%" stop-color="#050a08" stop-opacity="0.8"/>
+                    </radialGradient>
+
+                    <!-- ORB INNER: soft inner haze through translucent glass -->
+                    <radialGradient id="orbInner" cx="50%" cy="50%" r="50%">
+                        <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.25"/>
+                        <stop offset="50%" stop-color="#00e5ff" stop-opacity="0.1"/>
+                        <stop offset="100%" stop-color="#07080a" stop-opacity="0"/>
+                    </radialGradient>
+
+                    <!-- ORB SHEEN: specular highlight top-left (off-center) -->
+                    <radialGradient id="orbSheen" cx="32%" cy="28%" r="45%">
+                        <stop offset="0%" stop-color="#3b82f6" stop-opacity="0.55"/>
+                        <stop offset="25%" stop-color="#3b82f6" stop-opacity="0.22"/>
+                        <stop offset="55%" stop-color="#3b82f6" stop-opacity="0.05"/>
+                        <stop offset="100%" stop-color="#3b82f6" stop-opacity="0"/>
+                    </radialGradient>
+
+                    <!-- ORB RIM: darkening at sphere edge (limb shadow = 3D cue) -->
+                    <radialGradient id="orbRim" cx="50%" cy="50%" r="50%">
+                        <stop offset="0%" stop-color="#000000" stop-opacity="0"/>
+                        <stop offset="70%" stop-color="#000000" stop-opacity="0"/>
+                        <stop offset="92%" stop-color="#000000" stop-opacity="0.4"/>
+                        <stop offset="100%" stop-color="#000000" stop-opacity="0.75"/>
+                    </radialGradient>
+                    <linearGradient id="shadow3d" x1="0%" y1="0%" x2="100%" y2="100%">
+                        <stop offset="0%" stop-color="#ffffff" stop-opacity="0.15"/>
+                        <stop offset="50%" stop-color="#07080a" stop-opacity="0"/>
+                        <stop offset="100%" stop-color="#000000" stop-opacity="0.5"/>
+                    </linearGradient>
+                    <!-- RING DEPTH: top = pale/behind orb, bottom = bold/in front of orb -->
+                    <linearGradient id="ringDepth" x1="0%" y1="0%" x2="0%" y2="100%" gradientUnits="objectBoundingBox">
+                        <stop offset="0%"   stop-color="#3b82f6" stop-opacity="0.15"/>
+                        <stop offset="40%"  stop-color="#3b82f6" stop-opacity="0.3"/>
+                        <stop offset="55%"  stop-color="#3b82f6" stop-opacity="0.55"/>
+                        <stop offset="100%" stop-color="#3b82f6" stop-opacity="1"/>
+                    </linearGradient>
+                    <linearGradient id="ringDepthChrome" x1="0%" y1="0%" x2="0%" y2="100%" gradientUnits="objectBoundingBox">
+                        <stop offset="0%"   stop-color="#c8ccd4" stop-opacity="0.12"/>
+                        <stop offset="55%"  stop-color="#c8ccd4" stop-opacity="0.45"/>
+                        <stop offset="100%" stop-color="#c8ccd4" stop-opacity="0.9"/>
+                    </linearGradient>
+                    <linearGradient id="ringDepthCyan" x1="0%" y1="0%" x2="0%" y2="100%" gradientUnits="objectBoundingBox">
+                        <stop offset="0%"   stop-color="#00e5ff" stop-opacity="0.12"/>
+                        <stop offset="55%"  stop-color="#00e5ff" stop-opacity="0.45"/>
+                        <stop offset="100%" stop-color="#00e5ff" stop-opacity="0.9"/>
+                    </linearGradient>
+                    <filter id="glow">
+                        <feGaussianBlur stdDeviation="2"/>
+                        <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+                    </filter>
+                    <filter id="glowBig">
+                        <feGaussianBlur stdDeviation="8"/>
+                        <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+                    </filter>
+                </defs>
+
+                <!-- Outer rotating ring with ticks -->
+                <g class="orbit-outer">
+                    <circle cx="300" cy="300" r="280" fill="none" stroke="#c8ccd4" stroke-width="0.5" opacity="0.15"/>
+                    <circle cx="300" cy="300" r="260" fill="none" stroke="#3b82f6" stroke-width="0.3" opacity="0.3" stroke-dasharray="2 6"/>
+                    <!-- tick marks -->
+                    <g stroke="#c8ccd4" stroke-width="0.5" opacity="0.3">
+                        <line x1="300" y1="20" x2="300" y2="35"/>
+                        <line x1="300" y1="565" x2="300" y2="580"/>
+                        <line x1="20" y1="300" x2="35" y2="300"/>
+                        <line x1="565" y1="300" x2="580" y2="300"/>
+                    </g>
+                    <!-- data nodes -->
+                    <g fill="#c1272d" class="flicker">
+                        <circle cx="300" cy="30" r="3"/>
+                        <circle cx="498" cy="102" r="3"/>
+                        <circle cx="570" cy="300" r="3"/>
+                        <circle cx="498" cy="498" r="3"/>
+                        <circle cx="300" cy="570" r="3"/>
+                        <circle cx="102" cy="498" r="3"/>
+                        <circle cx="30" cy="300" r="3"/>
+                        <circle cx="102" cy="102" r="3"/>
+                    </g>
+                </g>
+
+                <!-- ═══ BIOMECHANICAL CAGE (massively expanded) ═══ -->
+
+                <!-- Main spine with articulated vertebrae -->
+                <g opacity="0.55">
+                    <path d="M300 80 L300 520" stroke="#c8ccd4" stroke-width="0.6" opacity="0.3"/>
+                    <g fill="none" stroke="#c8ccd4" stroke-width="0.8" opacity="0.5">
+                        <ellipse cx="300" cy="110" rx="18" ry="6"/>
+                        <ellipse cx="300" cy="138" rx="22" ry="7"/>
+                        <ellipse cx="300" cy="168" rx="26" ry="8"/>
+                        <ellipse cx="300" cy="198" rx="30" ry="9"/>
+                        <ellipse cx="300" cy="228" rx="34" ry="10"/>
+                        <ellipse cx="300" cy="260" rx="36" ry="11"/>
+                        <ellipse cx="300" cy="300" rx="38" ry="11"/>
+                        <ellipse cx="300" cy="340" rx="36" ry="11"/>
+                        <ellipse cx="300" cy="372" rx="34" ry="10"/>
+                        <ellipse cx="300" cy="402" rx="30" ry="9"/>
+                        <ellipse cx="300" cy="432" rx="26" ry="8"/>
+                        <ellipse cx="300" cy="462" rx="22" ry="7"/>
+                        <ellipse cx="300" cy="490" rx="18" ry="6"/>
+                    </g>
+                    <!-- Spinal nerve threads -->
+                    <g stroke="#c1272d" stroke-width="0.3" opacity="0.35" fill="none">
+                        <path d="M285 90 Q275 300 285 510"/>
+                        <path d="M315 90 Q325 300 315 510"/>
+                    </g>
+                </g>
+
+                <!-- Rib cage (expanded — 12 ribs both sides) -->
+                <g stroke="#c8ccd4" stroke-width="0.6" fill="none" opacity="0.35">
+                    <path d="M300 170 Q170 200 185 260"/>
+                    <path d="M300 170 Q430 200 415 260"/>
+                    <path d="M300 195 Q150 225 170 300"/>
+                    <path d="M300 195 Q450 225 430 300"/>
+                    <path d="M300 220 Q130 255 160 335"/>
+                    <path d="M300 220 Q470 255 440 335"/>
+                    <path d="M300 250 Q110 290 150 370"/>
+                    <path d="M300 250 Q490 290 450 370"/>
+                    <path d="M300 285 Q100 325 150 400"/>
+                    <path d="M300 285 Q500 325 450 400"/>
+                    <path d="M300 320 Q115 360 165 425"/>
+                    <path d="M300 320 Q485 360 435 425"/>
+                </g>
+
+                <!-- Tendons / connective tissue -->
+                <g stroke="#00e5ff" stroke-width="0.4" fill="none" opacity="0.3">
+                    <path d="M200 180 Q250 260 230 350 Q210 440 250 480" class="flicker"/>
+                    <path d="M400 180 Q350 260 370 350 Q390 440 350 480" class="flicker" style="animation-delay:2s"/>
+                    <path d="M180 240 Q240 310 210 400" class="flicker" style="animation-delay:1s"/>
+                    <path d="M420 240 Q360 310 390 400" class="flicker" style="animation-delay:3s"/>
+                </g>
+
+                <!-- Ligament anchors at joints -->
+                <g fill="#3b82f6" opacity="0.45">
+                    <circle cx="185" cy="260" r="2.5"/>
+                    <circle cx="415" cy="260" r="2.5"/>
+                    <circle cx="170" cy="300" r="2"/>
+                    <circle cx="430" cy="300" r="2"/>
+                    <circle cx="160" cy="335" r="2.5"/>
+                    <circle cx="440" cy="335" r="2.5"/>
+                    <circle cx="150" cy="370" r="2"/>
+                    <circle cx="450" cy="370" r="2"/>
+                </g>
+
+                <!-- Micro fiber bundles -->
+                <g stroke="#c8ccd4" stroke-width="0.25" opacity="0.22" fill="none">
+                    <path d="M220 200 L280 210 L220 220"/>
+                    <path d="M380 200 L320 210 L380 220"/>
+                    <path d="M215 340 L280 345 L215 350"/>
+                    <path d="M385 340 L320 345 L385 350"/>
+                    <path d="M230 260 L285 265 L230 270 L285 275 L230 280"/>
+                    <path d="M370 260 L315 265 L370 270 L315 275 L370 280"/>
+                </g>
+
+                <!-- Actuator joints -->
+                <g stroke="#c1272d" stroke-width="0.5" fill="none" opacity="0.5">
+                    <circle cx="170" cy="220" r="6"/>
+                    <circle cx="430" cy="220" r="6"/>
+                    <circle cx="150" cy="300" r="8"/>
+                    <circle cx="450" cy="300" r="8"/>
+                    <circle cx="170" cy="380" r="6"/>
+                    <circle cx="430" cy="380" r="6"/>
+                </g>
+
+                <!-- ═══ GYRO RINGS (gradient stroke: top=behind/pale, bottom=front/bold) ═══ -->
+                <g fill="none" stroke-width="1.2">
+                    <ellipse class="ring-3d-4" cx="300" cy="300" rx="200" ry="56" stroke="url(#ringDepth)"/>
+                    <ellipse class="ring-3d-5" cx="300" cy="300" rx="56" ry="200" stroke="url(#ringDepth)"/>
+                    <ellipse class="ring-3d-1" cx="300" cy="300" rx="210" ry="70" transform="rotate(45 300 300)" stroke="url(#ringDepthChrome)"/>
+                    <ellipse class="ring-3d-2" cx="300" cy="300" rx="210" ry="70" transform="rotate(-45 300 300)" stroke="url(#ringDepthCyan)"/>
+                    <ellipse class="ring-3d-3" cx="300" cy="300" rx="250" ry="32" stroke="url(#ringDepth)" stroke-width="0.8"/>
+                    <ellipse class="ring-3d-6" cx="300" cy="300" rx="170" ry="42" stroke="url(#ringDepth)" stroke-width="0.9"/>
+                    <!-- Telemetry nodes on ring-3d-3 (separate rotating group, locked to centre) -->
+                    <g class="ring-3d-3">
+                        <g fill="#3b82f6" opacity="0.7">
+                            <circle cx="550" cy="300" r="3"/>
+                            <circle cx="300" cy="268" r="2.5"/>
+                            <circle cx="50"  cy="300" r="3"/>
+                            <circle cx="300" cy="332" r="2.5"/>
+                        </g>
+                        <g font-family="JetBrains Mono" font-size="7" fill="#3b82f6" opacity="0.55" letter-spacing="1.5">
+                            <text x="562" y="303">PIVOT</text>
+                            <text x="300" y="258" text-anchor="middle">PULL</text>
+                            <text x="38"  y="303" text-anchor="end">WALL</text>
+                            <text x="300" y="350" text-anchor="middle">LIQ</text>
+                        </g>
+                    </g>
+                </g>
+
+                <!-- Mid ring with gear teeth -->
+                <g class="orbit-inner">
+                    <circle cx="300" cy="300" r="220" fill="none" stroke="#c8ccd4" stroke-width="1" opacity="0.3"/>
+                    <g stroke="#3b82f6" stroke-width="1" opacity="0.35">
+                        <line x1="300" y1="75" x2="300" y2="95"/>
+                        <line x1="459" y1="141" x2="445" y2="155"/>
+                        <line x1="525" y1="300" x2="505" y2="300"/>
+                        <line x1="459" y1="459" x2="445" y2="445"/>
+                        <line x1="300" y1="525" x2="300" y2="505"/>
+                        <line x1="141" y1="459" x2="155" y2="445"/>
+                        <line x1="75" y1="300" x2="95" y2="300"/>
+                        <line x1="141" y1="141" x2="155" y2="155"/>
+                    </g>
+                </g>
+
+                <!-- ═══ ORB (translucent glass sphere, 10% smaller: r=126) ═══ -->
+
+                <!-- Deep outer glow halo -->
+                <circle cx="300" cy="300" r="210" fill="url(#coreHot)" opacity="0.08" class="core-pulse"/>
+
+                <!-- Glass body: 20% translucent surface -->
+                <circle cx="300" cy="300" r="126" fill="url(#orbBody)" opacity="0.2"/>
+
+                <!-- Inner volumetric haze (gives depth through glass) -->
+                <circle cx="300" cy="300" r="126" fill="url(#orbInner)" opacity="0.35"/>
+
+                <!-- Specular sheen (top-left highlight) -->
+                <circle cx="300" cy="300" r="126" fill="url(#orbSheen)" opacity="0.55"/>
+
+                <!-- Rim refraction (edge catches light, inside darkens) -->
+                <circle cx="300" cy="300" r="126" fill="url(#orbRim)" opacity="0.4"/>
+
+                <!-- Thin glass edge outline -->
+                <circle cx="300" cy="300" r="126" fill="none" stroke="#3b82f6" stroke-width="0.6" opacity="0.5"/>
+
+                <!-- Contact shadow on floor -->
+                <ellipse cx="300" cy="455" rx="108" ry="12" fill="#000000" opacity="0.28" filter="url(#glow)"/>
+
+                <!-- Chamber rings (tight around orb) -->
+                <g fill="none" stroke="#3b82f6" stroke-width="0.7" opacity="0.25">
+                    <ellipse cx="300" cy="300" rx="142" ry="142"/>
+                    <ellipse cx="300" cy="300" rx="160" ry="36" opacity="0.35"/>
+                </g>
+
+                <!-- Data cables / tubes -->
+                <g stroke="#00e5ff" stroke-width="0.9" fill="none" opacity="0.35">
+                    <path d="M300 110 Q280 180 250 210" class="flicker"/>
+                    <path d="M300 110 Q320 180 350 210" class="flicker" style="animation-delay: 1s"/>
+                    <path d="M300 490 Q280 420 250 390" class="flicker" style="animation-delay: 2s"/>
+                    <path d="M300 490 Q320 420 350 390" class="flicker" style="animation-delay: 3s"/>
+                </g>
+
+                <!-- Central eye (bright core visible through glass) -->
+                <g filter="url(#glowBig)">
+                    <circle cx="300" cy="300" r="25" fill="#07080a" stroke="#3b82f6" stroke-width="1.6"/>
+                    <circle cx="300" cy="300" r="12" fill="#c1272d">
+                        <animate attributeName="r" values="12;9;12" dur="1.8s" repeatCount="indefinite"/>
+                    </circle>
+                    <circle cx="300" cy="300" r="4.5" fill="#ffffff" opacity="0.85">
+                        <animate attributeName="opacity" values="0.85;0.5;0.85" dur="1.8s" repeatCount="indefinite"/>
+                    </circle>
+                </g>
+
+                <!-- Corner markers -->
+                <g stroke="#3b82f6" stroke-width="1" fill="none" opacity="0.7">
+                    <path d="M40 40 L40 60 M40 40 L60 40"/>
+                    <path d="M560 40 L560 60 M560 40 L540 40"/>
+                    <path d="M40 560 L40 540 M40 560 L60 560"/>
+                    <path d="M560 560 L560 540 M560 560 L540 560"/>
+                </g>
+
+                <!-- Technical labels -->
+                <g font-family="JetBrains Mono" font-size="9" fill="#c8ccd4" opacity="0.6" letter-spacing="2">
+                    <text x="50" y="90">SYS-01</text>
+                    <text x="520" y="90">V1.0</text>
+                    <text x="50" y="540">PRECOG</text>
+                    <text x="490" y="540">LIVE</text>
+                </g>
+            </svg>
+        </div>
+    </div>
+</div>
+
+<!-- METRICS BAR -->
+<div class="metrics-bar">
+    <div class="metric-cell"><div class="metric-val" id="m-venues">—</div><div class="metric-lbl">Venues</div></div>
+    <div class="metric-cell"><div class="metric-val" id="m-coins">—</div><div class="metric-lbl">Universe</div></div>
+    <div class="metric-cell"><div class="metric-val" id="m-walls">0</div><div class="metric-lbl">Verified Walls</div></div>
+    <div class="metric-cell"><div class="metric-val" id="m-whales">0</div><div class="metric-lbl">Whale Prints/h</div></div>
+    <div class="metric-cell"><div class="metric-val" id="m-funding">0</div><div class="metric-lbl">Funding Cached</div></div>
+    <div class="metric-cell"><div class="metric-val" id="m-risk">4%</div><div class="metric-lbl">Risk Tier</div></div>
+</div>
+
+
+<!-- GRID -->
+<div class="grid">
+    <!-- POSITIONS -->
+    <div class="panel">
+        <div class="panel-head">
+            <div class="panel-title">Positions · Live + Paper</div>
+            <div class="panel-meta" id="pos-meta">—</div>
+        </div>
+        <div id="positions"></div>
+    </div>
+
+    <!-- NEWS -->
+    <div class="panel">
+        <div class="panel-head">
+            <div class="panel-title">News Feed</div>
+            <div class="panel-meta">Auto-polled · 10m</div>
+        </div>
+        <div id="news"></div>
+    </div>
+
+    <!-- LIVE OPS COLUMN (positions + 24h equity pulse) — fills the 3rd grid slot -->
+    <div class="lops-col">
+        <div class="panel">
+            <div class="panel-head">
+                <div class="panel-title">Live Positions</div>
+                <div class="panel-meta" id="lpos-meta">— open</div>
+            </div>
+            <div id="lpos-body"><div class="lpos-empty">// loading…</div></div>
+        </div>
+        <div class="panel">
+            <div class="panel-head">
+                <div class="panel-title">24h Equity Pulse</div>
+                <div class="panel-meta" id="pulse-meta">—</div>
+            </div>
+            <svg id="pulse-svg" viewBox="0 0 280 96" preserveAspectRatio="none"
+                 style="width:100%;height:96px;display:block;margin-top:8px"></svg>
+            <div id="pulse-foot" style="display:flex;justify-content:space-between;
+                 font-size:9px;letter-spacing:0.18em;color:var(--chrome);opacity:0.55;
+                 margin-top:10px;text-transform:uppercase;font-family:'JetBrains Mono',monospace">
+                <span>−24h</span><span id="pulse-net">net —</span><span>now</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ENGINES panel removed: precog internal gates now render in the
+         RHS engine rail (rolling vertical bar). One canonical surface for
+         signal_engines / guards / venues / sizing. -->
+</div>
+
+<style>
+/* Hide the legacy engine grid containers since rail owns this view now. */
+#eng-signal, #eng-guards, #eng-venues, #eng-sizing { display: none; }
+
+/* ═══ LIVE OPS COLUMN (positions table + equity pulse) ═══
+   Slots into the 3rd column of the .grid. Uses .panel chrome so it sits
+   visually with the existing dashboard. Mono numbers, Cormorant title. */
+.lops-col { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+.lpos-tbl { width: 100%; border-collapse: collapse; font-size: 11px;
+  font-variant-numeric: tabular-nums; font-family: 'JetBrains Mono', monospace; }
+.lpos-tbl th { text-align: left; padding: 5px 8px; font-size: 8px;
+  letter-spacing: 0.22em; color: var(--oxide); text-transform: uppercase;
+  border-bottom: 1px solid var(--line); opacity: 0.85; font-weight: 500; }
+.lpos-tbl th.r, .lpos-tbl td.r { text-align: right; }
+.lpos-tbl td { padding: 7px 8px; border-bottom: 1px solid rgba(200,204,212,0.06);
+  color: var(--bone); }
+.lpos-tbl tr:last-child td { border-bottom: none; }
+.lpos-tbl tr:hover td { background: rgba(255,255,255,0.02); }
+.lpos-coin { font-weight: 600; letter-spacing: 0.05em; color: var(--bone); }
+.lpos-side { display: inline-block; padding: 1px 5px; font-size: 9px; font-weight: 700;
+  letter-spacing: 0.06em; border: 1px solid currentColor; }
+.lpos-side.L { color: var(--gain); }
+.lpos-side.S { color: var(--loss); }
+.lpos-pnl.pos { color: var(--gain); }
+.lpos-pnl.neg { color: var(--loss); }
+.lpos-empty { padding: 22px 12px; text-align: center; color: var(--chrome);
+  opacity: 0.45; font-size: 11px; letter-spacing: 0.1em;
+  font-family: 'JetBrains Mono', monospace; }
+</style>
+
+<div class="grid" style="display:none;">
+</div>
+
+<!-- ═══ SYSTEMS A–F · MOVED UP ═══ -->
+<!-- ENGINES GRID — dynamic, populated from PM /engines + each engine's /state, /pnl, /closures.
+     Replaces the old 6 hardcoded SYSTEM panels (A/C/D/E/H/I) which missed 16 engines. -->
+<div data-section="engines" style="display: none;" id="engines-dyn">
+    <!-- Group sections injected by JS:
+         LIVE / CANARY · PAPER / VALIDATING · DEMOTED / DEPRECATED -->
+    <div id="engines-summary" class="eng-summary">
+        <div class="eng-summary-stat"><div class="lbl">total</div><div class="val" id="esum-total">—</div></div>
+        <div class="eng-summary-stat"><div class="lbl">live</div><div class="val" id="esum-live" style="color:var(--gain)">—</div></div>
+        <div class="eng-summary-stat"><div class="lbl">paper</div><div class="val" id="esum-paper" style="color:var(--oxide)">—</div></div>
+        <div class="eng-summary-stat"><div class="lbl">dead</div><div class="val" id="esum-dead" style="color:var(--loss)">—</div></div>
+    </div>
+    <div id="engines-sections"></div>
+    <div id="engines-empty" class="dim" style="display:none;text-align:center;padding:24px;font-style:italic">no engines registered</div>
+</div>
+
+<style>
+/* ── Summary header ── */
+.eng-summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+               padding: 12px 14px; border: 1px solid var(--line); margin-bottom: 16px;
+               background: var(--carbon); }
+.eng-summary-stat .lbl { font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase;
+                          color: var(--chrome); opacity: 0.6; margin-bottom: 4px; }
+.eng-summary-stat .val { font-family: 'Cormorant Garamond', serif; font-size: 24px; font-weight: 300; color: var(--bone); }
+
+/* ── Group section header ── */
+.eng-section { margin-bottom: 22px; }
+.eng-section-head { display: flex; align-items: baseline; justify-content: space-between;
+                    padding: 6px 10px; margin-bottom: 8px; border-left: 2px solid var(--acid); }
+.eng-section-head .title { font-size: 11px; letter-spacing: 0.25em; text-transform: uppercase;
+                            font-weight: 600; color: var(--acid); }
+.eng-section-head .count { font-size: 10px; color: var(--chrome); opacity: 0.5; margin-left: 8px; }
+.eng-section-head .desc  { font-size: 10px; color: var(--chrome); opacity: 0.4; }
+.eng-section-head.live   { border-left-color: var(--gain); } .eng-section-head.live .title { color: var(--gain); }
+.eng-section-head.paper  { border-left-color: var(--oxide); } .eng-section-head.paper .title { color: var(--oxide); }
+.eng-section-head.dead   { border-left-color: var(--loss); } .eng-section-head.dead .title { color: var(--loss); }
+
+/* ── Engine card ── */
+.eng-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 14px; }
+.eng-card { background: var(--carbon); border: 1px solid var(--line); padding: 0; overflow: hidden;
+            display: flex; flex-direction: column; transition: border-color 0.15s; }
+.eng-card:hover { border-color: rgba(59,130,246,0.4); }
+.eng-card.dead { opacity: 0.6; border-color: rgba(239,68,68,0.25); }
+
+/* card header */
+.eng-card-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+                 border-bottom: 1px solid var(--line); background: rgba(13,14,17,0.5); }
+.eng-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.eng-dot.up    { background: var(--gain); box-shadow: 0 0 8px var(--gain); }
+.eng-dot.warn  { background: var(--oxide); animation: pulse 1.5s infinite; }
+.eng-dot.down  { background: var(--loss); }
+.eng-dot.muted { background: #4a4a4a; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.eng-name { font-size: 12px; font-weight: 600; color: var(--bone); flex: 1; min-width: 0;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.eng-mode { font-size: 9px; font-weight: 700; padding: 2px 6px; letter-spacing: 0.1em;
+            border: 1px solid; flex-shrink: 0; }
+.eng-mode.live  { color: var(--gain); border-color: var(--gain); background: rgba(16,185,129,0.1); }
+.eng-mode.paper { color: var(--oxide); border-color: var(--oxide); background: rgba(217,119,6,0.1); }
+.eng-mode.off   { color: var(--chrome); border-color: var(--line); opacity: 0.6; }
+
+/* strategy line */
+.eng-strategy { font-size: 10px; padding: 6px 12px; color: var(--chrome); opacity: 0.7;
+                border-bottom: 1px solid var(--line); line-height: 1.45;
+                display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+                overflow: hidden; max-height: 30px; }
+.eng-strategy .tf { color: var(--acid); font-weight: 600; }
+
+/* metric blocks */
+.eng-metric-block { padding: 8px 12px; border-bottom: 1px solid var(--line); }
+.eng-metric-block:last-child { border-bottom: none; }
+.eng-metric-title { font-size: 8.5px; letter-spacing: 0.22em; text-transform: uppercase;
+                    color: var(--chrome); opacity: 0.55; margin-bottom: 6px; }
+.eng-metric-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; font-size: 11px; }
+.eng-metric-grid.cols4 { grid-template-columns: repeat(4, 1fr); gap: 4px 8px; }
+.eng-kv { display: flex; justify-content: space-between; align-items: baseline; gap: 4px; }
+.eng-kv .k { color: var(--chrome); opacity: 0.55; font-size: 9.5px; }
+.eng-kv .v { color: var(--bone); font-variant-numeric: tabular-nums; font-weight: 500; }
+.eng-kv .v.pos { color: var(--gain); }
+.eng-kv .v.neg { color: var(--loss); }
+.eng-kv .v.warn { color: var(--oxide); }
+.eng-empty-msg { font-size: 10px; color: var(--chrome); opacity: 0.45; font-style: italic; padding: 2px 0; }
+
+/* audit badge */
+.eng-audit-row { display: flex; justify-content: space-between; align-items: center;
+                 padding: 6px 12px; border-bottom: 1px solid var(--line); }
+.eng-audit-row .lbl { font-size: 8.5px; letter-spacing: 0.2em; text-transform: uppercase;
+                       color: var(--chrome); opacity: 0.5; }
+.eng-audit-badge { font-size: 9px; padding: 2px 6px; border: 1px solid; letter-spacing: 0.1em; }
+.eng-audit-badge.pass { color: var(--gain); border-color: var(--gain); background: rgba(16,185,129,0.1); }
+.eng-audit-badge.fail { color: var(--loss); border-color: var(--loss); background: rgba(239,68,68,0.1); }
+.eng-audit-badge.warn { color: var(--oxide); border-color: var(--oxide); background: rgba(217,119,6,0.1); }
+
+/* footer */
+.eng-card-foot { display: flex; align-items: center; gap: 6px; padding: 8px 12px;
+                 background: rgba(13,14,17,0.4); margin-top: auto; flex-wrap: wrap; }
+.eng-tag { font-size: 9px; padding: 2px 6px; letter-spacing: 0.08em; text-transform: uppercase;
+           border: 1px solid var(--line); color: var(--chrome); }
+.eng-tag.stage-live   { color: var(--gain); border-color: rgba(16,185,129,0.4); }
+.eng-tag.stage-canary { color: var(--oxide); border-color: rgba(217,119,6,0.4); }
+.eng-tag.stage-paper  { color: var(--acid); border-color: rgba(59,130,246,0.4); }
+.eng-tag.stage-dead   { color: var(--loss); border-color: rgba(239,68,68,0.4); }
+.eng-warning { padding: 6px 12px; background: rgba(239,68,68,0.06); color: var(--loss);
+               font-size: 10px; border-top: 1px solid rgba(239,68,68,0.2); }
+
+/* responsive */
+@media (max-width: 600px) {
+    .eng-grid { grid-template-columns: 1fr; }
+    .eng-summary { grid-template-columns: repeat(2, 1fr); }
+}
+</style>
+
+<!-- SECONDARY GRID -->
+<div class="grid">
+    <!-- SIGNAL FEED -->
+    <div class="panel">
+        <div class="panel-head">
+            <div class="panel-title">Signal Feed · Live + Pending</div>
+            <div class="panel-meta" id="sig-meta">—</div>
+        </div>
+        <div id="signals" style="max-height: 320px; overflow-y: auto;"></div>
+    </div>
+
+    <!-- WHALE TICKER -->
+    <div class="panel">
+        <div class="panel-head">
+            <div class="panel-title">Whale Prints · >$100k</div>
+            <div class="panel-meta" id="whale-meta">—</div>
+        </div>
+        <div id="whales" style="max-height: 320px; overflow-y: auto;"></div>
+    </div>
+
+    <!-- MARKET DATA -->
+    <div class="panel">
+        <div class="panel-head">
+            <div class="panel-title">Aggregation · 6 Venues</div>
+            <div class="panel-meta">Bybit·Bin·OKX·CB·Bitget·Kraken</div>
+        </div>
+        <div id="aggregation" style="font-size: 11px; line-height: 2;"></div>
+    </div>
+</div>
+
+<!-- COIN WR HEATMAP -->
+<div class="panel" style="margin-bottom: 32px;">
+    <div class="panel-head">
+        <div class="panel-title">BTC Orderbook Heatmap · 6 Venues Aggregated</div>
+        <div class="panel-meta" id="ob-meta">—</div>
+    </div>
+    <div id="ob-heatmap" style="height: 520px; position: relative;"></div>
+</div>
+
+<!-- MACRO STATE STRIP -->
+<div class="panel" style="margin-bottom: 16px; padding: 8px 14px;">
+    <div id="macro-strip" style="font-size: 11px; letter-spacing: 0.05em; opacity: 0.85;">// macro: loading…</div>
+</div>
+
+
+<!-- COIN WR HEATMAP -->
+<div class="panel" style="margin-bottom: 32px;">
+    <div class="panel-head">
+        <div class="panel-title">Per-Coin Win Rate Heatmap</div>
+        <div class="panel-meta" id="heat-meta">—</div>
+    </div>
+    <div id="heatmap" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(70px, 1fr)); gap: 4px; font-size: 10px;"></div>
+
+<!-- FOOTER -->
+<div class="footer">
+    <div>PSYCHO PM TERMINAL // CYBER·PSYCHO // HYPERLIQUID</div>
+    <div id="foot-updated">Updated —</div>
+</div>
+
+</div>
+</div><!-- /pm-main -->
+
+<!-- ═══ RHS ENGINE RAIL — vertical rolling bar ═══ -->
+<aside class="pm-engine-rail">
+  <div class="pm-rail-head">
+    <div class="pm-rail-title">Precog · Internal Gates</div>
+    <div class="pm-rail-sub">// 8 signal · 9 guard · 6 venue · 1 sizing</div>
+    <div class="pm-rail-counts">
+      <span class="pm-rail-count live">live <strong id="rail-c-live">—</strong></span>
+      <span class="pm-rail-count off">off <strong id="rail-c-off">—</strong></span>
+    </div>
+  </div>
+  <div class="pm-rail-scroll" id="pm-rail-scroll">
+    <div class="pm-rail-list" id="pm-rail-list">
+      <div style="padding:24px 14px;font-size:10px;letter-spacing:0.2em;color:var(--chrome);opacity:0.5;text-transform:uppercase;">// loading gates…</div>
+    </div>
+  </div>
+  <div class="pm-rail-foot">
+    <span id="rail-foot-ts">—</span>
+    <a href="/violations" target="_blank">violations →</a>
+  </div>
+</aside>
+
+</div><!-- /pm-layout -->
+
+<!-- TICKER -->
+<div class="ticker">
+    <div class="ticker-track" id="ticker"></div>
+</div>
+
+<script>
+// ─────────────────────────────────────────────────────────────────────
+// Paper-engine open-trade aggregator. Pulls /state from each paper engine,
+// computes upnl using HL allMids, returns position-shaped objects tagged
+// with stage='paper'/'shadow' so the existing renderer can show them
+// alongside live wallet positions with clear visual distinction.
+// ─────────────────────────────────────────────────────────────────────
+const PAPER_ENGINES = [
+  { name: 'vol-squeeze-fade',         url: 'https://vol-squeeze-fade.onrender.com',         stage: 'paper' },
+  { name: 'vol-squeeze-breakout-v1',  url: 'https://vol-squeeze-breakout-v1.onrender.com',  stage: 'paper' },
+  { name: 'pairs-engine-v1',          url: 'https://pairs-engine-v1.onrender.com',          stage: 'paper' },
+  // V10 is a background_worker without HTTP. It pushes state to precog's
+  // /api/v10_state endpoint each tick. We fetch from there directly.
+  { name: 'V10',                      state_url: '/api/v10_state',                          stage: 'paper' },
+];
+
+async function _fetchAllMids() {
+  try {
+    const r = await fetch('https://api.hyperliquid.xyz/info', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: 'allMids' }),
+    });
+    return await r.json();  // { COIN: "price_string", ... }
+  } catch (e) {
+    return {};
+  }
+}
+
+async function _fetchPaperPositions() {
+  // Fetch HL allMids + each paper engine /state in parallel.
+  const [mids, ...stateResults] = await Promise.all([
+    _fetchAllMids(),
+    ...PAPER_ENGINES.map(e => {
+      const u = e.state_url || `${e.url}/state`;
+      return fetch(u, { signal: AbortSignal.timeout(8000) })
+        .then(r => r.ok ? r.json() : null)
+        .catch(() => null);
+    }),
+  ]);
+
+  const positions = [];
+  PAPER_ENGINES.forEach((eng, idx) => {
+    const state = stateResults[idx];
+    if (!state || !Array.isArray(state.open_trades)) return;
+    // Engine self-reports its mode (live | paper | dry_run). When LIVE_TRADING=1
+    // is set on Render, mode_effective='live' overrides the hardcoded stage.
+    // Per-trade `mode` field also exists (live | paper) and takes priority for
+    // mixed-mode engines.
+    const engineMode = state.mode_effective || eng.stage;
+    for (const t of state.open_trades) {
+      const mid = parseFloat(mids[t.coin]);
+      const entry = parseFloat(t.entry_px);
+      const size = parseFloat(t.size);
+      const isLong = t.side === 'B' || t.side === 'L';
+      let upnl = 0;
+      if (isFinite(mid) && isFinite(entry) && isFinite(size)) {
+        upnl = (mid - entry) * size * (isLong ? 1 : -1);
+      }
+      const tradeStage = t.mode || engineMode;
+      positions.push({
+        coin: t.coin,
+        side: isLong ? 'L' : 'S',
+        size: Number(size).toPrecision(5),
+        entry: Number(entry).toPrecision(5),
+        upnl,
+        lev: t.leverage || '-',
+        tp: t.tp_px,
+        sl: t.sl_px,
+        engine: eng.name,
+        stage: tradeStage,
+      });
+    }
+  });
+  return positions;
+}
+
+async function loadDash() {
+    try {
+        const r = await fetch('/dash');
+        const d = await r.json();
+        const eq = d.equity || 0;
+        // Cache for cross-panel reuse (e.g. confluence panel computes %PnL/equity)
+        window.__equity = eq;
+        // Cache full /dash payload so renderSystemA can avoid duplicate fetch
+        window.__dashCache = { ts: Date.now(), data: d };
+        const livePos = (d.positions || []).map(p => ({ ...p, stage: p.stage || 'live' }));
+        // Pull paper-engine open trades in parallel; render even if this fails
+        let paperPos = [];
+        try { paperPos = await _fetchPaperPositions(); } catch (e) { console.error('paper positions fetch failed', e); }
+        const pos = [...livePos, ...paperPos];
+        const upnl = pos.reduce((s,p)=>s+(p.upnl||0),0);
+        const liveCount = livePos.length;
+        const paperCount = paperPos.length;
+
+        document.getElementById('hero-eq').textContent = '$' + eq.toFixed(2);
+        document.getElementById('hero-pos').textContent = pos.length;
+        const upEl = document.getElementById('hero-upnl');
+        upEl.textContent = (upnl>=0?'+$':'-$') + Math.abs(upnl).toFixed(2);
+        upEl.className = 'hero-stat-val ' + (upnl>=0?'pos':'neg');
+
+        document.getElementById('session-name').textContent = (d.session?.name || '—').toUpperCase();
+        document.getElementById('m-walls').textContent = d.orderbook?.verified_coins || 0;
+        document.getElementById('m-whales').textContent = d.whale?.total_whales || 0;
+        document.getElementById('m-funding').textContent = d.funding_cached || 0;
+        document.getElementById('m-risk').textContent = ((d.risk_ladder?.risk || 0.04)*100).toFixed(0) + '%';
+        // Universe size — was hardcoded "91" (stale). Reads d.universe_size now (full HL universe).
+        const mc = document.getElementById('m-coins');
+        if (mc && d.universe_size != null) mc.textContent = d.universe_size;
+
+        // Positions
+        const posDiv = document.getElementById('positions');
+        const sorted = [...pos].sort((a,b)=>(b.upnl||0)-(a.upnl||0));
+        posDiv.innerHTML = sorted.map(p => {
+            const cls = (p.upnl||0)>=0?'pnl-pos':'pnl-neg';
+            const sign = (p.upnl||0)>=0?'+':'';
+            const lev = p.lev || '-';
+            const tp = (p.tp != null && p.tp !== '-') ? Number(p.tp).toPrecision(5) : '-';
+            const sl = (p.sl != null && p.sl !== '-') ? Number(p.sl).toPrecision(5) : '-';
+            const eng = p.engine ? `<span style="opacity:0.45;font-size:9px;letter-spacing:0.05em">${p.engine}</span>` : '';
+            // Stage badge: PAPER / SHADOW / LIVE — explicit and color-distinct
+            const stage = p.stage || 'live';
+            const stageLabel = stage.toUpperCase();
+            const stageBadge = `<span class="stage-tag stage-${stage}">${stageLabel}</span>`;
+            const rowCls = stage === 'paper' ? 'pos-row is-paper'
+                         : stage === 'shadow' ? 'pos-row is-shadow'
+                         : 'pos-row';
+            return `<div class="${rowCls}">
+                <div class="pos-coin">${p.coin}${eng?'<br>'+eng:''}</div>
+                <div>${stageBadge}<span class="pos-side side-${p.side}">${p.side}</span> <span style="opacity:0.5;font-size:9px">${lev}x</span></div>
+                <div class="pos-size">${p.size} @ ${p.entry}<br><span style="opacity:0.5;font-size:9px">TP ${tp} · SL ${sl}</span></div>
+                <div class="pos-pnl ${cls}">${sign}$${(p.upnl||0).toFixed(2)}</div>
+            </div>`;
+        }).join('') || '<div class="pos-row" style="opacity:0.5">// no active positions</div>';
+        // Show breakdown so the user instantly sees how many are real vs simulated
+        const metaParts = [];
+        if (liveCount)  metaParts.push(`${liveCount} live`);
+        if (paperCount) metaParts.push(`${paperCount} paper`);
+        document.getElementById('pos-meta').textContent = metaParts.join(' · ') || '0 active';
+
+        // Aggregation panel
+        document.getElementById('aggregation').innerHTML = `
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
+                <div>Orderbook: <strong style="color:var(--acid)">${d.orderbook?.depth_feeds||0}</strong></div>
+                <div>Walls: <strong style="color:var(--acid)">${d.orderbook?.tracked_walls||0}</strong></div>
+                <div>Verified: <strong style="color:var(--acid)">${d.orderbook?.verified_coins||0}</strong></div>
+                <div>Liquidations: <strong style="color:var(--blood)">${d.liquidation?.total_liqs_cached||0}</strong></div>
+                <div>Cascades: <strong style="color:var(--blood)">${d.liquidation?.recent_cascades||0}</strong></div>
+                <div>Whales/h: <strong style="color:var(--oxide)">${d.whale?.total_whales||0}</strong></div>
+                <div>CVD coins: <strong style="color:var(--cyan)">${d.cvd?.active||0}</strong></div>
+                <div>OI tracked: <strong style="color:var(--cyan)">${d.oi?.tracked||0}</strong></div>
+                <div>Spoof: <strong style="color:var(--pulse)">${d.spoof?.recent_spoofs||0}</strong></div>
+                <div>Funding arb: <strong style="color:var(--oxide)">${d.funding_arb?.hl_coins||0}</strong></div>
+            </div>`;
+
+        // Ticker — dedupe by coin (multi-engine attribution can produce
+        // duplicate rows for the same coin; show one entry per coin with
+        // the worst loss / best gain row preserved)
+        const seen = new Set();
+        const tickerRows = [];
+        for (const p of sorted) {
+            const k = (p.coin || '') + '|' + (p.side || '');
+            if (seen.has(k)) continue;
+            seen.add(k);
+            tickerRows.push(p);
+            if (tickerRows.length >= 8) break;
+        }
+        const tickerData = tickerRows.map(p => {
+            const cls = (p.upnl||0)>=0?'':'bear';
+            const sign = (p.upnl||0)>=0?'+':'';
+            return `<span class="${cls}"><strong>${p.coin} ${p.side}</strong>${sign}$${(p.upnl||0).toFixed(2)}</span>`;
+        }).join('');
+        document.getElementById('ticker').innerHTML = tickerData;
+
+        document.getElementById('foot-updated').textContent = 'Updated · ' + new Date().toISOString().substr(11,8);
+    } catch (e) { console.error(e); }
+}
+
+// Pull pending signals from paper engines (fired/extended/armed/pending stages):
+// these are the unfilled orders sitting in the engines' state machines waiting
+// for the entry condition to complete. Surfacing them in the Signal Feed shows
+// the user the queue of trades-in-progress, not just past fills.
+async function _fetchPaperPendingSignals() {
+    const ENGS = [
+        { name: 'vol-squeeze-fade',        url: 'https://vol-squeeze-fade.onrender.com' },
+        { name: 'vol-squeeze-breakout-v1', url: 'https://vol-squeeze-breakout-v1.onrender.com' },
+    ];
+    const results = await Promise.all(ENGS.map(e =>
+        Promise.all([
+            fetch(`${e.url}/state`,   { signal: AbortSignal.timeout(8000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+            fetch(`${e.url}/signals?limit=8`, { signal: AbortSignal.timeout(8000) }).then(r => r.ok ? r.json() : null).catch(() => null),
+        ]).then(([state, sigs]) => ({ engine: e.name, state, sigs }))
+    ));
+
+    const out = [];
+    for (const r of results) {
+        // Engine self-reports its mode_effective ('live' | 'paper' | 'dry_run').
+        // When LIVE_TRADING=1 + key + extraAgent validated, mode_effective='live'.
+        // Render the badge to match operational reality, not the engine's category.
+        const engineMode = (r.state && r.state.mode_effective) ? r.state.mode_effective : 'paper';
+        const badge = (engineMode === 'live') ? 'LIVE' : 'PAPER';
+        // 1) State-machine pending stages (breakout has fired/extended/armed)
+        const stages = r.state && r.state.stages ? r.state.stages : {};
+        // For breakout: pending = signals with stage in {fired, extended, armed}
+        try {
+            if (r.sigs && Array.isArray(r.sigs.signals)) {
+                for (const s of r.sigs.signals) {
+                    const stage = (s.stage || '').toLowerCase();
+                    if (['fired','extended','armed','pending'].includes(stage)) {
+                        out.push({
+                            coin: s.coin,
+                            kind: badge,
+                            stage: stage.toUpperCase(),
+                            side: s.fade_direction || s.raw_direction || s.armed_side || '',
+                            entry: s.armed_entry_px || s.ref_price || s.bb_mid_px || null,
+                            engine: r.engine,
+                            ts: s.ts || s.created_ts || null,
+                        });
+                    }
+                }
+            }
+        } catch (e) {}
+        // 2) Open trades that are still 'pending_fill' (limit-order awaiting fill)
+        const opn = r.state && Array.isArray(r.state.open_trades) ? r.state.open_trades : [];
+        for (const t of opn) {
+            if (t.status === 'pending_fill' || t.status === 'pending') {
+                out.push({
+                    coin: t.coin,
+                    kind: badge,
+                    stage: 'PENDING',
+                    side: t.side,
+                    entry: t.entry_px,
+                    engine: r.engine,
+                    ts: t.ts_open || null,
+                });
+            }
+        }
+    }
+    return out;
+}
+
+async function loadSignals() {
+    try {
+        // Live + paper pending in parallel
+        const [r, pendings] = await Promise.all([
+            fetch('/signals').then(x => x.json()).catch(() => ({ items: [] })),
+            _fetchPaperPendingSignals().catch(() => []),
+        ]);
+        const live = r.items || [];
+        const pending = pendings || [];
+        const total = live.length + pending.length;
+
+        const liveRows = live.map(s => {
+            const cls = s.kind === 'OPEN' ? 'pnl-pos' : (s.kind === 'CLOSED' ? 'pnl-neg' : '');
+            return `<div class="pos-row" style="grid-template-columns:70px 1fr auto;font-size:11px">
+                <div class="pos-coin">${s.coin}</div>
+                <div style="opacity:0.8"><span class="stage-tag stage-live" style="margin-right:6px">LIVE</span>${s.kind} ${s.side || ''}</div>
+                <div class="${cls}" style="font-size:9px;opacity:0.7">${s.ts || ''}</div>
+            </div>`;
+        }).join('');
+
+        const pendRows = pending.map(s => {
+            const px = s.entry != null ? Number(s.entry).toPrecision(5) : '—';
+            const eng = s.engine ? `<br><span style="opacity:0.4;font-size:9px;letter-spacing:0.05em">${s.engine}</span>` : '';
+            // Badge follows the engine's actual mode (kind set in _fetchPaperPendingSignals)
+            const isLive = s.kind === 'LIVE';
+            const rowCls = isLive ? 'pos-row' : 'pos-row is-paper';
+            const tagCls = isLive ? 'stage-tag stage-live' : 'stage-tag stage-paper';
+            return `<div class="${rowCls}" style="grid-template-columns:70px 1fr auto;font-size:11px">
+                <div class="pos-coin">${s.coin}${eng}</div>
+                <div style="opacity:0.8"><span class="${tagCls}" style="margin-right:6px">${s.kind}</span>${s.stage} ${s.side || ''} <span style="opacity:0.5">@ ${px}</span></div>
+                <div style="font-size:9px;opacity:0.55">unfilled</div>
+            </div>`;
+        }).join('');
+
+        document.getElementById('signals').innerHTML =
+            (liveRows + pendRows) ||
+            '<div class="pos-row" style="opacity:0.5">// no live or pending signals</div>';
+        const metaParts = [];
+        if (live.length)    metaParts.push(`${live.length} live`);
+        if (pending.length) metaParts.push(`${pending.length} pending`);
+        document.getElementById('sig-meta').textContent = metaParts.join(' · ') || '0 recent';
+    } catch (e) {
+        document.getElementById('signals').innerHTML = '<div class="pos-row" style="opacity:0.5">// loading</div>';
+    }
+}
+
+async function loadWhales() {
+    try {
+        const r = await fetch('/whales');
+        const d = await r.json();
+        const items = d.items || [];
+        document.getElementById('whales').innerHTML = items.map(w => {
+            const sideCls = w.side === 'BUY' ? 'pnl-pos' : 'pnl-neg';
+            return `<div class="pos-row" style="grid-template-columns:60px 50px 1fr;font-size:11px">
+                <div class="pos-coin">${w.coin}</div>
+                <div class="${sideCls}" style="font-weight:600">${w.side}</div>
+                <div style="text-align:right">$${(w.usd/1000).toFixed(0)}k</div>
+            </div>`;
+        }).join('') || '<div class="pos-row" style="opacity:0.5">// no whale prints yet</div>';
+        document.getElementById('whale-meta').textContent = items.length + ' last 5m';
+    } catch (e) {
+        document.getElementById('whales').innerHTML = '<div class="pos-row" style="opacity:0.5">// loading</div>';
+    }
+}
+
+async function loadNews() {
+    try {
+        const r = await fetch('/news');
+        const d = await r.json();
+        const items = (d.items || []).slice(0,5);
+        document.getElementById('news').innerHTML = items.map(n => {
+            const mag = n.magnitude || 3;
+            return `<div class="news-item">
+                <span class="news-mag mag-${mag}">MAG ${mag}</span>
+                <div class="news-title">${n.title || n.headline || '—'}</div>
+                <div class="news-meta">${n.source || ''} · ${n.direction > 0 ? 'BULL' : n.direction < 0 ? 'BEAR' : 'NEUTRAL'}</div>
+            </div>`;
+        }).join('') || '<div class="news-item" style="opacity:0.5">// awaiting feed</div>';
+    } catch (e) {
+        document.getElementById('news').innerHTML = '<div class="news-item" style="opacity:0.5">// news endpoint offline</div>';
+    }
+}
+
+function updateClock() {
+    const n = new Date();
+    document.getElementById('utc-clock').textContent = n.toISOString().substr(11,8);
+}
+
+async function loadOrderbook() {
+    try {
+        const r = await fetch('/orderbook/BTC');
+        const d = await r.json();
+        if (!d.mid) {
+            document.getElementById('ob-heatmap').innerHTML = '<div style="opacity:0.5;padding:40px;text-align:center">// BTC orderbook feeds warming up...</div>';
+            return;
+        }
+        const bids = d.bids || [];
+        const asks = d.asks || [];
+        const mid = d.mid;
+        const maxUsd = Math.max(...bids.map(b=>b.usd), ...asks.map(a=>a.usd), 1);
+
+        const H = 520;
+        // Dynamic range from actual data — not fixed ±1%
+        const allPrices = [...bids.map(b=>b.price), ...asks.map(a=>a.price)];
+        let dataMin = allPrices.length ? Math.min(...allPrices) : mid*0.98;
+        let dataMax = allPrices.length ? Math.max(...allPrices) : mid*1.02;
+        // Symmetrize around mid so mid stays centered
+        const span = Math.max(mid - dataMin, dataMax - mid) * 1.05;  // 5% padding
+        const priceMin = mid - span;
+        const priceMax = mid + span;
+        const priceToY = p => H - ((p - priceMin) / (priceMax - priceMin)) * H;
+
+        let svg = `<svg viewBox="0 0 1000 ${H}" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:100%;display:block">`;
+
+        // Bid bars (below mid, green, from right)
+        bids.forEach(b => {
+            const y = priceToY(b.price);
+            if (y < 0 || y > H) return;
+            const w = (b.usd / maxUsd) * 800;
+            const intensity = Math.min(1, b.usd / maxUsd);
+            svg += `<rect x="${1000-w}" y="${y-3}" width="${w}" height="6" fill="rgba(184,255,47,${0.3 + intensity*0.7})" />`;
+        });
+        // Ask bars
+        asks.forEach(a => {
+            const y = priceToY(a.price);
+            if (y < 0 || y > H) return;
+            const w = (a.usd / maxUsd) * 800;
+            const intensity = Math.min(1, a.usd / maxUsd);
+            svg += `<rect x="${1000-w}" y="${y-3}" width="${w}" height="6" fill="rgba(193,39,45,${0.3 + intensity*0.7})" />`;
+        });
+        // Mid price line
+        const midYLine = priceToY(mid);
+        svg += `<line x1="0" y1="${midYLine}" x2="1000" y2="${midYLine}" stroke="rgba(200,204,212,0.5)" stroke-width="1" stroke-dasharray="4 4" />`;
+        svg += `<text x="10" y="${midYLine-6}" fill="#c8ccd4" font-family="JetBrains Mono" font-size="11" letter-spacing="1">MID $${mid.toFixed(0)}</text>`;
+        // Price labels — top, mid-high, mid-low, bottom
+        const pctTop = ((priceMax-mid)/mid*100).toFixed(2);
+        const pctBot = ((mid-priceMin)/mid*100).toFixed(2);
+        svg += `<text x="10" y="16" fill="#c1272d" font-family="JetBrains Mono" font-size="10" opacity="0.7">+${pctTop}% · $${priceMax.toFixed(0)}</text>`;
+        svg += `<text x="10" y="${H-6}" fill="#3b82f6" font-family="JetBrains Mono" font-size="10" opacity="0.7">-${pctBot}% · $${priceMin.toFixed(0)}</text>`;
+        // Quarter gridlines
+        for (let q = 0.25; q < 1; q += 0.25) {
+            const yq = H * q;
+            const pq = priceMax - (priceMax-priceMin)*q;
+            svg += `<line x1="0" y1="${yq}" x2="1000" y2="${yq}" stroke="rgba(200,204,212,0.08)" stroke-width="1" />`;
+            svg += `<text x="10" y="${yq-3}" fill="#c8ccd4" font-family="JetBrains Mono" font-size="9" opacity="0.4">$${pq.toFixed(0)}</text>`;
+        }
+        svg += `<text x="985" y="${midYLine-20}" fill="#c1272d" font-family="JetBrains Mono" font-size="9" text-anchor="end" letter-spacing="2">ASKS ▲</text>`;
+        svg += `<text x="985" y="${midYLine+28}" fill="#3b82f6" font-family="JetBrains Mono" font-size="9" text-anchor="end" letter-spacing="2">BIDS ▼</text>`;
+
+        // Top 3 walls annotated
+        const topWalls = [...bids, ...asks].sort((a,b)=>b.usd-a.usd).slice(0,3);
+        topWalls.forEach((w, idx) => {
+            const ty = priceToY(w.price);
+            const side = bids.includes(w) ? 'BID' : 'ASK';
+            const color = side === 'BID' ? '#3b82f6' : '#c1272d';
+            svg += `<circle cx="200" cy="${ty}" r="${5-idx}" fill="${color}" />`;
+            svg += `<text x="215" y="${ty+3}" fill="${color}" font-family="JetBrains Mono" font-size="10" font-weight="600">$${(w.usd/1000).toFixed(0)}k @ ${w.price.toFixed(0)}</text>`;
+        });
+        svg += '</svg>';
+        document.getElementById('ob-heatmap').innerHTML = svg;
+        document.getElementById('ob-meta').textContent = `${d.venues||0} venues · ${bids.length}b / ${asks.length}a · ±${pctTop}% · mid $${mid.toFixed(0)}`;
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+async function loadHeatmap() {
+    try {
+        // Use /audit/deep which pulls HL fills (persistent across restarts)
+        // Default to 24h window for per-coin WR
+        const r = await fetch('/audit/deep?hours=24&format=json');
+        const d = await r.json();
+        const perCoin = d.per_coin || [];
+        if (perCoin.length === 0) {
+            document.getElementById('heatmap').innerHTML = '<div style="opacity:0.5;padding:20px">// no closed trades in last 24h</div>';
+            document.getElementById('heat-meta').textContent = '0 coins · 0 trades';
+            return;
+        }
+        // Sort by WR desc (wins/(wins+losses)), then by n desc
+        const rows = perCoin.map(c => {
+            const n = c.n || 0;
+            const w = c.w || 0;
+            const l = c.l || 0;
+            const concluded = w + l;
+            const wr = concluded > 0 ? (w / concluded) * 100 : 0;
+            return { coin: c.coin, n, w, l, wr, pnl: c.pnl || 0 };
+        })
+        .filter(r => r.n >= 1)
+        .sort((a, b) => b.wr - a.wr || b.n - a.n);
+
+        document.getElementById('heatmap').innerHTML = rows.map(s => {
+            let bg;
+            if (s.wr >= 70) bg = 'rgba(184,255,47,0.4)';
+            else if (s.wr >= 55) bg = 'rgba(184,255,47,0.15)';
+            else if (s.wr >= 40) bg = 'rgba(217,118,6,0.2)';
+            else bg = 'rgba(193,39,45,0.3)';
+            const pnlColor = s.pnl >= 0 ? 'var(--heat)' : 'var(--blood)';
+            return `<div style="padding:8px 6px;background:${bg};border:1px solid var(--line);text-align:center">
+                <div style="font-weight:600;font-size:11px">${s.coin}</div>
+                <div style="font-size:9px;opacity:0.7">${s.wr.toFixed(0)}% · ${s.n}</div>
+                <div style="font-size:9px;color:${pnlColor};margin-top:2px">${s.pnl >= 0 ? '+' : ''}${s.pnl.toFixed(2)}</div>
+            </div>`;
+        }).join('');
+        const totalTrades = rows.reduce((sum, s) => sum + s.n, 0);
+        document.getElementById('heat-meta').textContent = rows.length + ' coins · ' + totalTrades + ' trades · 24h';
+    } catch (e) {
+        document.getElementById('heatmap').innerHTML = `<div style="opacity:0.5;padding:20px">// data unavailable: ${e.message || e}</div>`;
+    }
+}
+
+async function loadEngines() {
+    try {
+        const r = await fetch('/api/engines');
+        const d = await r.json();
+        const ages = d.venue_ages || {};
+        // Venues count — was hardcoded "4" (stale). Reads from /api/engines.venues now.
+        const mv = document.getElementById('m-venues');
+        if (mv && d.venues) mv.textContent = Object.keys(d.venues).length;
+        const render = (container, obj, labels = {}, showAge = null) => {
+            document.getElementById(container).innerHTML = Object.entries(obj).map(([k, live]) => {
+                const name = labels[k] || k.replace(/_/g, '·');
+                const val = live ? 'LIVE' : 'OFF';
+                const cls = live ? 'engine active' : 'engine';
+                let age = '';
+                if (showAge && ages[showAge[k]] !== undefined) {
+                    age = `<div style="font-size:8px;opacity:0.5;margin-top:2px">${ages[showAge[k]]}s</div>`;
+                }
+                return `<div class="${cls}"><div class="engine-name">${name}</div><div class="engine-val">${val}</div>${age}</div>`;
+            }).join('');
+        };
+        render('eng-signal', d.signal_engines);
+        render('eng-guards', d.guards);
+        render('eng-venues', d.venues, {}, {BYBIT:'by', BINANCE:'bn', OKX:'okx', COINBASE:'cb', BITGET:'bg', KRAKEN:'kr'});
+        render('eng-sizing', d.sizing);
+    } catch (e) { console.error('engines', e); }
+}
+
+// loadEngines: scheduler-managed below
+
+// ─── UNIFIED SYSTEMS PANELS (SA + SB) ───────────────────────────────
+// Shared rendering pipeline so both systems show identical layout.
+// SA pulls /precog_status (engines+aggregates) + /dash (open positions).
+// SB pulls /confluence (everything in one shot).
+
+function fmtMoney(v) {
+    if (v == null || isNaN(v)) return '—';
+    const sign = v >= 0 ? '+' : '-';
+    return `${sign}$${Math.abs(v).toFixed(2)}`;
+}
+function fmtMoneyExact(v, dp) {
+    if (v == null || isNaN(v)) return '—';
+    const sign = v >= 0 ? '+' : '';
+    return `${sign}$${Number(v).toFixed(dp == null ? 3 : dp)}`;
+}
+function fmtPct(v, dp) {
+    if (v == null || isNaN(v)) return '—';
+    return `${Number(v).toFixed(dp == null ? 1 : dp)}%`;
+}
+function moneyColor(v) {
+    if (v == null || isNaN(v)) return '';
+    return v >= 0 ? 'color:var(--gain)' : 'color:var(--loss)';
+}
+
+function renderStatsGrid(elId, stats) {
+    // stats: array of {val, lbl, color, suffix}
+    const html = stats.map(s => {
+        const c = s.color ? `style="${s.color}"` : '';
+        return `<div class="metric-cell"><div class="metric-val" ${c}>${s.val}</div><div class="metric-lbl">${s.lbl}</div></div>`;
+    }).join('');
+    document.getElementById(elId).innerHTML = html;
+}
+
+function renderPositions(elId, positions, opts) {
+    // positions: [{coin, side, entry, engine, tp_pct, sl_pct, sl_at_be, mfe_pct, mae_pct, ts, age_min}]
+    opts = opts || {};
+    const el = document.getElementById(elId);
+    if (!positions || positions.length === 0) {
+        el.innerHTML = '<div class="sys-empty">// no open positions</div>';
+        return;
+    }
+    const header = `<div class="sys-tbl-head sys-tbl-pos">
+        <div>COIN</div><div>S</div><div>ENTRY</div><div>ENGINE</div>
+        <div>TP</div><div>SL</div><div>MFE</div><div>MAE</div><div>AGE</div>
+    </div>`;
+    const rows = positions.map(p => {
+        const sideShort = p.side === 'BUY' || p.side === 'L' ? 'L' : 'S';
+        const sideClass = sideShort === 'L' ? 'side-L' : 'side-S';
+        const tp = p.tp_pct ? fmtPct(p.tp_pct * 100, 2) : '—';
+        const sl = p.sl_at_be ? 'BE' : (p.sl_pct ? fmtPct(p.sl_pct * 100, 2) : '—');
+        const mfe = (p.mfe_pct != null) ? fmtPct(p.mfe_pct * 100, 2) : (p.upnl_pct != null ? fmtPct(p.upnl_pct, 2) : '—');
+        const mae = (p.mae_pct != null) ? fmtPct(p.mae_pct * 100, 2) : '—';
+        const ageMin = p.ts ? Math.floor((Date.now()/1000 - p.ts) / 60) + 'm' : '—';
+        const eng = (p.engine || '').replace(/^CONFLUENCE_/, '') || '—';
+        const entry = p.entry != null ? Number(p.entry).toString() : '?';
+        return `<div class="sys-tbl-row sys-tbl-pos">
+            <div><strong>${p.coin}</strong></div>
+            <div><span class="pos-side ${sideClass}">${sideShort}</span></div>
+            <div>${entry}</div>
+            <div style="font-size:10px;opacity:0.85" title="${p.engine||''}">${eng}</div>
+            <div style="color:var(--acid)">${tp}</div>
+            <div style="color:#f88">${sl}</div>
+            <div style="color:var(--acid);font-size:10px">${mfe}</div>
+            <div style="color:#f88;font-size:10px">${mae}</div>
+            <div style="opacity:0.6;font-size:10px">${ageMin}</div>
+        </div>`;
+    }).join('');
+    el.innerHTML = header + rows;
+}
+
+function renderEngines(elId, engines, autoPause) {
+    // engines: [{name, n, w, l, b, wr_pct, pnl_usd, paused}]
+    const el = document.getElementById(elId);
+    if (!engines || engines.length === 0) {
+        el.innerHTML = '<div class="sys-empty">// no closes in window</div>';
+        return;
+    }
+    const header = `<div class="sys-tbl-head sys-tbl-eng">
+        <div>ENGINE</div><div>n</div><div>W/L</div><div>WR</div><div>$ PnL</div>
+    </div>`;
+    const rows = engines.map(e => {
+        const pnlColor = (e.pnl_usd >= 0) ? 'color:var(--acid)' : 'color:#f88';
+        const pausedFlag = e.paused ? '<span class="badge-paused">PAUSED</span>' : '';
+        const wrStr = (e.wr_pct != null) ? `${e.wr_pct}%` : '—';
+        const pnlStr = `${e.pnl_usd >= 0 ? '+' : ''}$${Number(e.pnl_usd||0).toFixed(3)}`;
+        const shortName = e.name.replace(/^CONFLUENCE_/, '');
+        return `<div class="sys-tbl-row sys-tbl-eng">
+            <div><strong>${shortName}</strong>${pausedFlag}</div>
+            <div>${e.n}</div>
+            <div>${e.w||0}/${e.l||0}</div>
+            <div>${wrStr}</div>
+            <div style="${pnlColor}">${pnlStr}</div>
+        </div>`;
+    }).join('');
+    el.innerHTML = header + rows;
+}
+
+function buildStatsFromAggregate(d, includeOps) {
+    const usdPnl = (d.total_pnl_usd != null) ? Number(d.total_pnl_usd) : null;
+    const wrWin = (d.wr_pct_window != null) ? `${d.wr_pct_window.toFixed(1)}%` : '—';
+    const wWin = d.wins_window || 0;
+    const lWin = d.losses_window || 0;
+    const closed = d.closed_count || 0;
+    const avgW = (d.avg_win_usd != null) ? `+$${Number(d.avg_win_usd).toFixed(3)}` : '—';
+    const avgL = (d.avg_loss_usd != null) ? `$${Number(d.avg_loss_usd).toFixed(3)}` : '—';
+    const aw = Math.abs(Number(d.avg_win_usd || 0));
+    const al = Math.abs(Number(d.avg_loss_usd || 0));
+    const rr = (al > 0) ? (aw / al).toFixed(2) : '—';
+    const rrColor = (al > 0 && aw / al >= 1) ? 'color:var(--gain)' : 'color:var(--loss)';
+    const usdStr = (usdPnl != null) ? `${usdPnl >= 0 ? '+' : ''}$${usdPnl.toFixed(2)}` : '—';
+    const stats = [
+        { val: usdStr, lbl: '$ PnL', color: moneyColor(usdPnl) },
+        { val: wrWin, lbl: 'Win Rate' },
+        { val: `${wWin}/${lWin}`, lbl: 'W/L' },
+        { val: avgW, lbl: 'Avg Win', color: 'color:var(--gain)' },
+        { val: avgL, lbl: 'Avg Loss', color: 'color:var(--loss)' },
+        { val: rr, lbl: 'R:R', color: rrColor },
+        { val: closed, lbl: 'Closes' },
+    ];
+    return stats;
+}
+
+async function renderSystemA(d, used) {
+    try {
+        if (!d || d.err) {
+            document.getElementById('sa-status').innerHTML = `<span class="badge-disabled">ERROR</span> ${d?.err||''}`;
+            return;
+        }
+
+        const enabled = d.enabled !== false;
+        const disabled = d.disabled_engines || '';
+        const liveBadge = enabled ? '<span class="badge-live">LIVE</span>' : '<span class="badge-disabled">OFF</span>';
+        const disText = disabled ? ` · disable=<span style="color:#f88">${disabled}</span>` : '';
+        document.getElementById('sa-status').innerHTML = `${liveBadge} · ${used}h window${disText}`;
+
+        let saPositions = [];
+        try {
+            // Reuse loadDash cache if fresh (<8s) — avoids duplicate /dash hit per cycle
+            let dj;
+            const cache = window.__dashCache;
+            if (cache && (Date.now() - cache.ts) < 8000) {
+                dj = cache.data;
+            } else {
+                const dr = await fetch('/dash');
+                dj = await dr.json();
+            }
+            const all = dj.positions || [];
+            saPositions = all.filter(p => !((p.engine||'').startsWith('CONFLUENCE_')))
+                             .map(p => ({
+                                 coin: p.coin,
+                                 side: p.side,
+                                 entry: p.entry,
+                                 engine: p.engine || 'PRECOG',
+                                 tp_pct: p.tp_pct,
+                                 sl_pct: p.sl_pct,
+                                 upnl_pct: p.upnl != null && p.entry && p.size ? (p.upnl / (p.entry * p.size)) * 100 : null,
+                                 ts: p.entry_ts || p.ts,
+                             }));
+        } catch (_) {}
+
+        renderStatsGrid('sa-stats', [
+            ...buildStatsFromAggregate(d, false),
+            { val: saPositions.length, lbl: 'Open' },
+        ]);
+
+        renderPositions('sa-positions', saPositions);
+
+        const byEng = d.by_engine || {};
+        const ap = d.engine_auto_pause || {};
+        const engKeys = Object.keys(byEng).filter(k => k !== 'RECONCILED' && k !== '_untagged').sort();
+        const engines = engKeys.map(k => {
+            const v = byEng[k] || {};
+            return {
+                name: k, n: v.n || 0, w: v.w || 0, l: v.l || 0, b: v.b || 0,
+                wr_pct: v.wr_pct, pnl_usd: v.pnl_usd || 0,
+                paused: !!(ap[k] && ap[k].paused),
+            };
+        });
+        renderEngines('sa-engines', engines, ap);
+
+        const ftr = [];
+        ftr.push(`risk: ${(d.risk_pct||0)*100}%`);
+        if (d.losses_window != null) ftr.push(`losses_window: ${d.losses_window}`);
+        document.getElementById('sa-footer').innerHTML = `// ${ftr.join(' · ')}`;
+
+    } catch(e) {
+        console.error('SA render err', e);
+        document.getElementById('sa-status').innerHTML = '<span class="badge-disabled">RENDER FAILED</span>';
+    }
+}
+
+// Coordinated loader: both panels use the SAME window so SA vs SB are
+// comparable apples-to-apples. Pick the smallest window that gives BOTH
+// systems at least one closed trade — fall back through 12h, 24h, 72h, 168h.
+async function _probeWindow(endpoint, hrs) {
+    try {
+        const r = await fetch(`${endpoint}?hours=${hrs}`);
+        const d = await r.json();
+        return d && !d.err ? d : null;
+    } catch (_) { return null; }
+}
+
+async function renderEngineFromDash(panelPrefix, engineKey, dashEntry, used) {
+    /* Render one of the SMC v1 / v2 / loose / LSR panels using dash data,
+       through the same shared pipeline (renderStatsGrid / renderPositions /
+       renderEngines) the SA + SB panels use. */
+    const statusEl = document.getElementById(`${panelPrefix}-status`);
+    const panelEl = statusEl ? statusEl.closest('.panel') : null;
+
+    // Hide panel entirely when there is genuinely nothing to display:
+    //   - no dash entry / engine not present, OR
+    //   - present but zero open positions AND zero closes in window
+    const noPresence = !dashEntry || !dashEntry.present;
+    const noActivity = dashEntry && dashEntry.present
+        && ((dashEntry.open_positions || []).length === 0)
+        && ((dashEntry.wins || 0) + (dashEntry.losses || 0) === 0);
+    if (noPresence || noActivity) {
+        if (panelEl) panelEl.style.display = 'none';
+        return;
+    }
+    // Has data — make sure the panel is visible again
+    if (panelEl) panelEl.style.display = '';
+
+    const liveBadge = dashEntry.live
+        ? '<span class="badge-live">LIVE</span>'
+        : (dashEntry.stale ? '<span class="badge-stale">STALE</span>' : '<span class="badge-dry">DRY-RUN</span>');
+    const ageStr = dashEntry.age_sec != null
+        ? ` · age ${dashEntry.age_sec < 60 ? dashEntry.age_sec + 's' : Math.floor(dashEntry.age_sec/60) + 'm'}`
+        : '';
+    const openCap = dashEntry.max_concurrent ? ` · open ${dashEntry.positions ?? 0}/${dashEntry.max_concurrent}` : '';
+    statusEl.innerHTML = `${liveBadge} · ${used}h window${ageStr}${openCap}`;
+
+    /* Adapt dash → buildStatsFromAggregate's expected key shape */
+    const adapted = {
+        total_pnl_usd:      dashEntry.pnl_total,
+        wr_pct_window:      dashEntry.wr,
+        wins_window:        dashEntry.wins,
+        losses_window:      dashEntry.losses,
+        avg_win_usd:        dashEntry.avg_win,
+        avg_loss_usd:       dashEntry.avg_loss,
+        closed_count:       dashEntry.wins + dashEntry.losses,
+    };
+    const openCount = (dashEntry.open_positions || []).length;
+    renderStatsGrid(`${panelPrefix}-stats`, [
+        ...buildStatsFromAggregate(adapted, false),
+        { val: openCount, lbl: 'Open' },
+    ]);
+
+    /* Map dash open_positions → renderPositions shape */
+    const positions = (dashEntry.open_positions || []).map(p => {
+        const entry = Number(p.entry || 0);
+        const sl    = Number(p.sl || 0);
+        const tp1   = Number(p.tp1 || 0);
+        const isLong = (p.side || '').toUpperCase() === 'LONG';
+        const tp_pct = (entry > 0 && tp1 > 0)
+            ? (isLong ? (tp1 - entry) / entry : (entry - tp1) / entry) : null;
+        const sl_pct = (entry > 0 && sl > 0)
+            ? (isLong ? (entry - sl) / entry : (sl - entry) / entry) : null;
+        return {
+            coin:    p.coin,
+            side:    p.side,
+            entry:   entry,
+            engine:  engineKey.toUpperCase(),
+            tp_pct:  tp_pct,
+            sl_pct:  sl_pct,
+            mfe_pct: null, mae_pct: null,
+            ts:      p.opened_t ? Math.floor(p.opened_t / 1000) : null,
+            upnl_pct: null,
+        };
+    });
+    renderPositions(`${panelPrefix}-positions`, positions);
+
+    /* "Engine Config" replacement for the engine breakdown table —
+       these single-engine panels don't have sub-engines, so show the
+       engine's own config + telemetry as a compact info block. */
+    const cfgEl = document.getElementById(`${panelPrefix}-engines`);
+    const tele = dashEntry.telemetry || {};
+    cfgEl.innerHTML = `
+        <div style="font-size:11px; line-height:1.7; opacity:0.85;">
+            <div>// sizing: ${dashEntry.sizing_mode || '—'} · $${dashEntry.notional_usd ?? '—'} notional · max ${dashEntry.max_concurrent ?? '—'}</div>
+            <div>// branch: ${dashEntry.branch || engineKey} · direction: ${dashEntry.direction || '—'} · universe: ${dashEntry.universe ?? '—'}</div>
+            <div style="opacity:0.6">// fires ${tele.fires_total ?? 0} · scans ${tele.scan_count ?? 0} · errors ${tele.errors ?? 0}</div>
+        </div>`;
+
+    document.getElementById(`${panelPrefix}-footer`).innerHTML =
+        `// commit ${dashEntry.commit || '—'}`;
+}
+
+async function loadSystems() {
+    // Locked 12h window — surfaces post-fix behaviour, excludes pre-fix bug noise.
+    const HRS = 12;
+    const [saData, allSysResp] = await Promise.all([
+        _probeWindow('/precog_status', HRS),
+        fetch('/all_systems').then(r => r.json()).catch(e => ({err: String(e)})),
+    ]);
+    await Promise.all([
+        renderSystemA(saData, HRS),
+    ]);
+
+    /* Render the 5 dash-fed panels */
+    const sysByKey = {};
+    for (const e of (allSysResp.systems || [])) sysByKey[e.engine_key] = e;
+    await Promise.all([
+        renderEngineFromDash('sc', 'smc-v1',    sysByKey['smc-v1'],    HRS),
+        renderEngineFromDash('sd', 'smc-v2',    sysByKey['smc-v2'],    HRS),
+        renderEngineFromDash('se', 'smc-loose', sysByKey['smc-loose'], HRS),
+        renderEngineFromDash('sh', 'pool-arch-rev',  sysByKey['pool-arch-rev'],  HRS),
+        renderEngineFromDash('si', 'pool-arch-cont', sysByKey['pool-arch-cont'], HRS),
+    ]);
+}
+
+// loadSystems: scheduler-managed below
+
+async function loadMacroStrip() {
+    try {
+        const r = await fetch('/health');
+        const d = await r.json();
+        const bm = d.btc_macro || {};
+        const ws = d.webhook_security || {};
+        const ap = d.engine_auto_pause || {};
+        const apEngs = ap.engines || {};
+        const pausedList = Object.entries(apEngs).filter(([k,v]) => v.paused).map(([k]) => k);
+        const btcMid = bm.btc_mid ? `$${bm.btc_mid.toLocaleString()}` : '—';
+        const macroBits = [];
+        if (bm.near_resistance) {
+            const dPct = bm.resistance_distance_pct;
+            const wallUsd = bm.resistance_wall_usd ? `$${(bm.resistance_wall_usd/1e6).toFixed(1)}M` : '?';
+            macroBits.push(`<span style="color:#f88">SELL_WALL ${dPct?.toFixed(2)}% ${wallUsd}</span>`);
+        }
+        if (bm.near_support) {
+            const dPct = bm.support_distance_pct;
+            const wallUsd = bm.support_wall_usd ? `$${(bm.support_wall_usd/1e6).toFixed(1)}M` : '?';
+            macroBits.push(`<span style="color:var(--acid)">BUY_WALL ${dPct?.toFixed(2)}% ${wallUsd}</span>`);
+        }
+        if (bm.recent_break_up) macroBits.push('<span style="color:var(--acid)">↑BREAK</span>');
+        if (bm.recent_break_down) macroBits.push('<span style="color:#f88">↓BREAK</span>');
+        if (macroBits.length === 0) macroBits.push('<span style="opacity:0.6">no_walls</span>');
+        const wsBit = ws.enabled ? '<span style="color:var(--acid)">webhook=ON</span>' : '<span style="opacity:0.6">webhook=OFF</span>';
+        const pausedBit = pausedList.length > 0
+            ? `<span style="color:#f88">paused: ${pausedList.join(',')}</span>`
+            : '<span style="opacity:0.6">no_paused</span>';
+        const commit = d.commit_live || '—';
+        const eq = d.equity ? `$${Number(d.equity).toFixed(2)}` : '—';
+        document.getElementById('macro-strip').innerHTML =
+            `// equity ${eq} · regime <span style="color:var(--cyan)">${d.regime||'?'}</span> · BTC ${btcMid} · ${macroBits.join(' · ')} · ${pausedBit} · ${wsBit} · commit <span style="opacity:0.7">${commit}</span>`;
+    } catch(e) {
+        document.getElementById('macro-strip').innerHTML = '// macro: fetch failed';
+    }
+}
+
+// === COORDINATED POLLING SCHEDULER ===
+// Fixes lag from unstaggered intervals firing in lockstep.
+// - In-flight guard: skip new tick if previous fetch still running
+// - Visibility-aware: pauses fetches when tab hidden
+// - Staggered start offsets: spread load across each cycle
+const _polls = {};
+function poll(name, fn, intervalMs, offsetMs) {
+    _polls[name] = { running: false };
+    const tick = async () => {
+        if (document.hidden) return;
+        if (_polls[name].running) return;
+        _polls[name].running = true;
+        try { await fn(); } catch (e) { console.warn(name + ' err', e); }
+        _polls[name].running = false;
+    };
+    setTimeout(() => { tick(); setInterval(tick, intervalMs); }, offsetMs || 0);
+}
+
+// ═══ PSYCHO PM TERMINAL — RHS gate rail ═══
+// Renders precog's internal gate state (signal_engines + guards + venues + sizing)
+// from /engines as a vertical rolling card grid. Replaces the old central
+// 'Multi-Gate Engine Stack' panel — one canonical surface for gate health.
+//
+// Auto-scroll: when the card list is taller than the rail viewport, the
+// list smoothly scrolls top → bottom → loops, like a vertical LED ticker.
+
+async function _fetchJSON(url, timeoutMs = 8000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const r = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
+    if (!r.ok) return { __err: 'HTTP ' + r.status };
+    return await r.json();
+  } catch (e) {
+    return { __err: e.name === 'AbortError' ? 'timeout' : (e.message || 'fetch_err') };
+  } finally { clearTimeout(t); }
+}
+
+// Pretty-format gate names for display: 'WALL_BNC' → 'WALL·BNC'
+function _fmtGateName(name) {
+  return String(name).replace(/_/g, '·');
+}
+
+// ───────────────────────────────────────────────────────────────────────
+// Flux/Pollinations biomech portraits per gate.
+//
+// Each precog internal gate (signal engine / guard / venue / sizing rule)
+// gets a unique photoreal biomech image rendered by Flux at 130×80 to fit
+// the 2-up card grid. The image is tied to the gate's role, not just its
+// name — a wall-bounce signal looks like a hydraulic ram, a BTC-correlation
+// guard looks like a coupling, a Binance venue looks like an order-book
+// console etc.
+//
+// Stable seed (salt 'v3-blue' to invalidate prior caches and align to the
+// blue theme palette). Browser lazy-loads + decodes async; first paint of
+// the rail is instant, images stream in after.
+// ───────────────────────────────────────────────────────────────────────
+const FLUX_BASE = 'https://image.pollinations.ai/prompt/';
+const FLUX_PARAMS = '?model=flux&width=130&height=80&nologo=true&enhance=false';
+const FLUX_BASE_PROMPT =
+  'photorealistic dark biomechanical industrial machine, intricate precision metal alloys, ' +
+  'electric blue accent glow, dramatic side lighting, dystopian terminal aesthetic, ' +
+  'macro lens, cinematic, 8k';
+
+const _gatePrompt = (group, name) => {
+  const n = String(name).toUpperCase();
+  // SIGNAL ENGINES — each looks like a different sensing/firing apparatus
+  if (group === 'SIGNAL ENGINES') {
+    if (n.includes('CVD'))         return FLUX_BASE_PROMPT + ', cumulative volume divergence detector, layered glass plates with flowing particles, ' + n;
+    if (n.includes('FUNDING_MR'))  return FLUX_BASE_PROMPT + ', funding mean-reversion oscillator, twin compressed coils balancing, ' + n;
+    if (n.includes('LIQ'))         return FLUX_BASE_PROMPT + ', liquidation cascade detector, chained explosive charges in sequence, ' + n;
+    if (n.includes('PIVOT'))       return FLUX_BASE_PROMPT + ', pivot point sensor, geared rotational joint with precision dials, ' + n;
+    if (n.includes('PULLBACK'))    return FLUX_BASE_PROMPT + ', pullback retracement engine, recoiling mechanical spring assembly, ' + n;
+    if (n.includes('WALL_ABSORB')) return FLUX_BASE_PROMPT + ', order-wall absorption chamber, dampened hydraulic shield panel, ' + n;
+    if (n.includes('WALL_BNC'))    return FLUX_BASE_PROMPT + ', kinetic wall-bounce piston, hydraulic ram, motion blur, ' + n;
+    if (n.includes('WALL_EXH'))    return FLUX_BASE_PROMPT + ', wall exhaustion sensor, decaying glow filaments, ' + n;
+    return FLUX_BASE_PROMPT + ', generic signal sensor module, ' + n;
+  }
+  // GUARDS — protective/filtering apparatus
+  if (group === 'GUARDS') {
+    if (n.includes('ATR'))         return FLUX_BASE_PROMPT + ', ATR volatility threshold gauge, calibrated pressure dial, ' + n;
+    if (n.includes('BTC_CORR'))    return FLUX_BASE_PROMPT + ', BTC correlation coupling, twin shafts linked by gearbelt, ' + n;
+    if (n.includes('CHASE'))       return FLUX_BASE_PROMPT + ', anti-chase cooldown latch, locked safety bolt, ' + n;
+    if (n.includes('DD'))          return FLUX_BASE_PROMPT + ', drawdown circuit breaker, heavy-duty trip switch in red enclosure, ' + n;
+    if (n.includes('FUNDING'))     return FLUX_BASE_PROMPT + ', funding cost filter, brass fluid-flow regulator, ' + n;
+    if (n.includes('NEWS'))        return FLUX_BASE_PROMPT + ', news-event blackout filter, shielded radio receiver, ' + n;
+    if (n.includes('POS_CAPS'))    return FLUX_BASE_PROMPT + ', position-cap clamp, mechanical jaw with measurement scale, ' + n;
+    if (n.includes('SPOOF'))       return FLUX_BASE_PROMPT + ', spoof-fade detector, frosted lens with phantom traces, ' + n;
+    if (n.includes('V3_TREND'))    return FLUX_BASE_PROMPT + ', V3 trend gauge, three stacked aligned needles, ' + n;
+    return FLUX_BASE_PROMPT + ', generic guard filter module, ' + n;
+  }
+  // VENUES — exchange terminals / order-book consoles
+  if (group === 'VENUES') {
+    return FLUX_BASE_PROMPT + ', exchange order-book terminal console with brushed metal bezel and engraved ' + n + ' logo plate';
+  }
+  // SIZING
+  if (group === 'SIZING') {
+    if (n.includes('CONF'))        return FLUX_BASE_PROMPT + ', confidence-based position sizer, weighted balance scale with brass disks, ' + n;
+    return FLUX_BASE_PROMPT + ', position-sizing calibration apparatus, ' + n;
+  }
+  return FLUX_BASE_PROMPT + ', precog internal gate module, ' + name;
+};
+
+const _gateSeed = (group, name) => {
+  const SALT = 'v3-blue';
+  const k = group + ':' + name + ':' + SALT;
+  let h = 0;
+  for (let i = 0; i < k.length; i++) h = ((h << 5) - h + k.charCodeAt(i)) | 0;
+  return Math.abs(h) % 1000000;
+};
+
+const _gateFluxUrl = (group, name) => {
+  const p = encodeURIComponent(_gatePrompt(group, name));
+  return FLUX_BASE + p + FLUX_PARAMS + '&seed=' + _gateSeed(group, name);
+};
+
+// Venue logos via Google S2 favicon service — public, universal, free.
+// Returns a 128px PNG of each exchange's published favicon, which is the
+// brand mark each exchange chose to display in browser tabs. Used here
+// purely to identify which venue is which on the dashboard (nominative
+// use); not endorsement.
+const VENUE_DOMAINS = {
+  BINANCE: 'binance.com',
+  BYBIT: 'bybit.com',
+  BITGET: 'bitget.com',
+  COINBASE: 'coinbase.com',
+  KRAKEN: 'kraken.com',
+  OKX: 'okx.com',
+};
+const _venueLogoUrl = (name) => {
+  const domain = VENUE_DOMAINS[String(name).toUpperCase()];
+  if (!domain) return _gateFluxUrl('VENUES', name);  // unknown venue → fallback
+  return `https://www.google.com/s2/favicons?domain=${domain}&sz=128`;
+};
+
+function _renderGateGroup(label, items, accentClass = '') {
+  const cards = Object.entries(items).map(([name, on]) => {
+    const cls = on ? 'pm-gate-card on' : 'pm-gate-card off';
+    const status = on ? 'LIVE' : 'OFF';
+    const imgUrl = label === 'VENUES' ? _venueLogoUrl(name) : _gateFluxUrl(label, name);
+    return `
+      <div class="${cls}" data-group="${label}">
+        <div class="pm-gate-img" aria-hidden="true">
+          <img src="${imgUrl}" alt="" loading="lazy" decoding="async" />
+          <span class="pm-gate-img-overlay"></span>
+        </div>
+        <div class="pm-gate-body">
+          <div class="pm-gate-name">${_fmtGateName(name)}</div>
+          <div class="pm-gate-status">${status}</div>
+        </div>
+        <span class="pm-gate-dot"></span>
+      </div>`;
+  }).join('');
+  return `
+    <div class="pm-gate-section ${accentClass}">
+      <div class="pm-gate-section-label">// ${label}</div>
+      <div class="pm-gate-grid">${cards}</div>
+    </div>`;
+}
+
+async function loadPMRail() {
+  const list = document.getElementById('pm-rail-list');
+  if (!list) return;
+  // Use same-origin /engines (precog itself returns it)
+  const e = await _fetchJSON('/api/engines');
+  if (e.__err) {
+    list.innerHTML = `<div style="padding:24px 14px;font-size:10px;letter-spacing:0.2em;color:var(--blood);text-transform:uppercase;">// /engines unreachable<br>${e.__err}</div>`;
+    return;
+  }
+
+  const sig    = e.signal_engines || {};
+  const guard  = e.guards         || {};
+  const venue  = e.venues         || {};
+  const sizing = e.sizing         || {};
+
+  // Counts: total live vs off across all 4 groups
+  const all = { ...sig, ...guard, ...venue, ...sizing };
+  let live = 0, off = 0;
+  for (const v of Object.values(all)) (v ? live++ : off++);
+  const cLive = document.getElementById('rail-c-live');
+  const cOff  = document.getElementById('rail-c-off');
+  if (cLive) cLive.textContent = live;
+  if (cOff)  cOff.textContent  = off;
+
+  list.innerHTML =
+    _renderGateGroup('SIGNAL ENGINES', sig) +
+    _renderGateGroup('GUARDS',         guard) +
+    _renderGateGroup('VENUES',         venue) +
+    _renderGateGroup('SIZING',         sizing);
+
+  // Update timestamp
+  const ts = new Date().toISOString().slice(11, 19);
+  const elTs = document.getElementById('rail-foot-ts');
+  if (elTs) elTs.textContent = ts + 'Z';
+
+  // Auto-scroll cycle: if list is taller than viewport, animate continuous roll
+  const scroll = document.getElementById('pm-rail-scroll');
+  if (scroll) {
+    requestAnimationFrame(() => {
+      const overflow = list.scrollHeight > scroll.clientHeight + 4;
+      if (overflow) {
+        scroll.classList.add('cycling');
+        // 1px per ~20ms → adjust to content height
+        const distance = list.scrollHeight - scroll.clientHeight;
+        const cycleDur = Math.max(28, Math.min(80, distance * 0.08)) + 's';
+        scroll.style.setProperty('--rail-cycle', cycleDur);
+        scroll.style.setProperty('--rail-distance', distance + 'px');
+      } else {
+        scroll.classList.remove('cycling');
+      }
+    });
+  }
+}
+
+
+// ─── ENGINES GRID — dynamic from PM /engines ────────────────────────────────
+// 22 engines (and growing). PM is source of truth for metadata (stage, audit,
+// thesis, capital). Each engine's /state /pnl /closures filled per-card.
+// Replaces the static 6-panel grid that missed 16 engines.
+
+const _ENG_CACHE = { engines: null, data: {}, lastErr: null };
+
+function _eng_classifyHealth(state, pnl) {
+    if (state && state.mode_effective) return 'up';
+    if (pnl && pnl.n_closed != null) return 'up';
+    return 'down';
+}
+
+function _eng_fmtUSD(v) {
+    if (v == null || isNaN(v)) return '—';
+    const sign = v > 0 ? '+' : (v < 0 ? '' : '');
+    return `${sign}$${Math.abs(v) < 10 ? v.toFixed(3) : v.toFixed(2)}`;
+}
+
+function _eng_fmtRelTime(ts) {
+    if (!ts) return '—';
+    const s = (Date.now() - (typeof ts === 'number' ? ts : new Date(ts).getTime())) / 1000;
+    if (s < 60) return `${Math.floor(s)}s`;
+    if (s < 3600) return `${Math.floor(s/60)}m`;
+    if (s < 86400) return `${Math.floor(s/3600)}h`;
+    return `${Math.floor(s/86400)}d`;
+}
+
+// Engines that expose /pnl /state /closures (template-fork + others). Engines NOT
+// here render with PM-only metadata (precog, smc-v2, smc-loose, V9, V10).
+const _ENG_FULL_API = new Set([
+    'vol-squeeze-fade','vol-squeeze-breakout-v1','pairs-engine-v1','dirmom-v1',
+    'vol-mom-inverted-v1','fib-continuation-v1','cvd-inverted-v1',
+    'atr-spike-fader-v1','alt-rotation-v1','avwap-mesh-v1','wyckoff-v1',
+    'venue-lag-v1','funding-div-v1','liq-heatmap-v1','tod-momentum-v1',
+    'tod-reversion-v1','funding-harvester-v1','cross-venue-funding-v1',
+    'vpin-v1','whale-tracker-v1',
+]);
+
+const _ENG_PM_URL = 'https://portfolio-manager-7df2.onrender.com';
+
+function _eng_baseUrl(haltUrl) {
+    if (!haltUrl) return null;
+    try { const u = new URL(haltUrl); return `${u.protocol}//${u.host}`; }
+    catch { return null; }
+}
+
+async function _eng_fetchEngineData(name, base) {
+    // Fetch /pnl, /state, /closures, /signals concurrently. Return what came back.
+    const fetch_ = (path) => fetch(`${base}${path}`, { cache: 'no-store' })
+        .then(r => r.ok ? r.json() : null).catch(() => null);
+    const [pnl, state, closures, signals] = await Promise.all([
+        fetch_('/pnl'),
+        fetch_('/state'),
+        fetch_('/closures?limit=200'),
+        fetch_('/signals?limit=1'),
+    ]);
+    // Synthetic pnl shim for pairs/dirmom which lack /pnl
+    let pnlData = pnl;
+    if (!pnl && state) {
+        const equity = state.equity_usd ?? state.equity ?? null;
+        const dailyPnl = state.daily_pnl_usd ?? state.realizedCum ?? null;
+        const nClosed = state.closed_trades_count ?? null;
+        if (equity != null || dailyPnl != null || nClosed != null) {
+            pnlData = {
+                total_net_pnl: dailyPnl ?? 0,
+                n_closed: nClosed ?? 0,
+                __synthetic: true,
+                equity,
+            };
+        }
+    }
+    return { pnl: pnlData, state, closures, signals };
+}
+
+function _eng_compute24h(closures) {
+    if (!closures || !Array.isArray(closures.closures)) {
+        return { trades24h: 0, w24h: 0, l24h: 0, pnl24h: 0, tradesLifetime: 0, tradesPerDay: null };
+    }
+    const now = Date.now();
+    const cutoff = now - 24 * 3600 * 1000;
+    let t = 0, w = 0, l = 0, p = 0, earliest = now;
+    for (const c of closures.closures) {
+        const ts = c.ts_close ?? 0;
+        const pnl_ = c.net_pnl ?? 0;
+        if (ts < earliest) earliest = ts;
+        if (ts >= cutoff) {
+            t++;
+            if (pnl_ > 0) w++; else if (pnl_ < 0) l++;
+            p += pnl_;
+        }
+    }
+    const total = closures.closures.length;
+    const days = Math.max((now - earliest) / (24 * 3600 * 1000), 0.5);
+    return {
+        trades24h: t, w24h: w, l24h: l, pnl24h: p,
+        tradesLifetime: total,
+        tradesPerDay: total > 0 ? total / days : null,
+    };
+}
+
+function _eng_renderCard(name, pm, data) {
+    const inFullApi = _ENG_FULL_API.has(name);
+    const base = _eng_baseUrl(pm.halt_url);
+    const apiAvailable = inFullApi && !!base;
+
+    const { pnl, state, closures, signals } = data || {};
+    const stats24h = _eng_compute24h(closures);
+
+    // Mode badge — /state.mode_effective is the truth; fallback to PM live
+    let modeText, modeCls;
+    if (state?.mode_effective === 'live') { modeText = 'LIVE'; modeCls = 'live'; }
+    else if (state?.mode_effective === 'paper' || state?.mode_effective === 'dry_run') { modeText = 'PAPER'; modeCls = 'paper'; }
+    else if (!apiAvailable && pm.live === true) { modeText = 'LIVE'; modeCls = 'live'; }
+    else if (!apiAvailable && pm.live === false) { modeText = 'PAPER'; modeCls = 'paper'; }
+    else { modeText = '—'; modeCls = 'off'; }
+
+    // Status dot
+    let dotCls = 'muted';
+    if (state?.halt?.active) dotCls = 'down';
+    else if (apiAvailable && (pnl || state)) dotCls = 'up';
+    else if (apiAvailable) dotCls = 'down';
+    else if (pm.live === true) dotCls = 'up';
+
+    // Strategy line
+    const thesis = pm.spec?.thesis || pm.notes || pm.class?.replace(/_/g, ' ') || '';
+    const timeframe = pm.spec?.timeframe || '';
+
+    // Audit
+    const audit = pm.audit_metrics || {};
+    const auditStatus = pm.audit_status;
+    const expectedWR = audit.wr != null ? audit.wr * 100 : null;
+    const expectedPF = audit.pf ?? audit.oos_pf ?? null;
+    const expectedTPD = audit.max_trades_per_day;
+    const expectedN = audit.n;
+
+    // Stage label / color
+    const stage = pm.lifecycle_stage || 'unknown';
+    const STAGE_LABEL = {
+        full: 'LIVE', canary: 'CANARY', canary_ready: 'CANARY-READY', small: 'SMALL',
+        validated: 'PAPER-PASS', paper: 'PAPER', research: 'RESEARCH',
+        demoted: 'DEMOTED', deprecated: 'DEPRECATED', unknown: 'UNKNOWN',
+    };
+    let stageCls = 'muted';
+    if (['full','canary','small','canary_ready'].includes(stage)) stageCls = stage === 'full' ? 'stage-live' : 'stage-canary';
+    else if (['paper','validated','research'].includes(stage)) stageCls = 'stage-paper';
+    else if (['demoted','deprecated'].includes(stage)) stageCls = 'stage-dead';
+
+    const isDead = ['demoted','deprecated'].includes(stage);
+    const lastSig = signals?.signals?.[0];
+
+    // Build sections
+    const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const pnlClass = (v) => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+
+    // Lifetime block
+    let lifetimeBlock;
+    if (pnl) {
+        const rows = [
+            `<div class="eng-kv"><span class="k">PnL</span><span class="v ${pnlClass(pnl.total_net_pnl)}">${_eng_fmtUSD(pnl.total_net_pnl)}</span></div>`,
+            pnl.wr_pct != null ? `<div class="eng-kv"><span class="k">Win rate</span><span class="v">${pnl.n_closed > 0 ? pnl.wr_pct.toFixed(0) + '%' : '—'}</span></div>` : '',
+            `<div class="eng-kv"><span class="k">Trades</span><span class="v">${pnl.n_closed ?? 0}</span></div>`,
+            pnl.equity != null ? `<div class="eng-kv"><span class="k">Equity</span><span class="v">$${Number(pnl.equity).toFixed(2)}</span></div>` : '',
+            stats24h.tradesPerDay != null && stats24h.tradesPerDay > 0 ? `<div class="eng-kv"><span class="k">T/day</span><span class="v">${stats24h.tradesPerDay.toFixed(1)}</span></div>` : '',
+        ].filter(Boolean).join('');
+        lifetimeBlock = `<div class="eng-metric-grid">${rows}</div>`;
+    } else if (apiAvailable) {
+        lifetimeBlock = '<div class="eng-empty-msg">no trades yet</div>';
+    } else {
+        // PM-only — show what we know
+        lifetimeBlock = `<div class="eng-metric-grid">
+            <div class="eng-kv"><span class="k">Capital</span><span class="v">${pm.capital_fraction ? (pm.capital_fraction*100).toFixed(0) + '%' : '0%'}</span></div>
+            <div class="eng-kv"><span class="k">Class</span><span class="v" style="font-size:9.5px">${esc((pm.class || '').replace(/_/g,' '))}</span></div>
+            ${pm.affinity ? `<div class="eng-kv" style="grid-column:1/-1"><span class="k">Regime</span><span class="v" style="font-size:9.5px">${esc(pm.affinity.slice(0,3).join(', '))}</span></div>` : ''}
+        </div>`;
+    }
+
+    // Expected block
+    let expectedBlock;
+    if (audit.n != null) {
+        const rows = [
+            expectedWR != null ? `<div class="eng-kv"><span class="k">Win rate</span><span class="v">${expectedWR.toFixed(0)}%</span></div>` : '',
+            expectedPF != null ? `<div class="eng-kv"><span class="k">PF</span><span class="v ${expectedPF >= 1.3 ? 'pos' : expectedPF >= 1.1 ? 'warn' : 'neg'}">${expectedPF.toFixed(2)}</span></div>` : '',
+            expectedTPD != null ? `<div class="eng-kv"><span class="k">Max/day</span><span class="v">${expectedTPD}</span></div>` : '',
+            expectedN != null ? `<div class="eng-kv"><span class="k">Backtest n</span><span class="v">${expectedN}</span></div>` : '',
+        ].filter(Boolean).join('');
+        expectedBlock = `<div class="eng-metric-grid">${rows}</div>`;
+    } else {
+        expectedBlock = '<div class="eng-empty-msg">not audited yet</div>';
+    }
+
+    // 24h block
+    let activityBlock;
+    if (apiAvailable && closures) {
+        const wr24 = (stats24h.w24h + stats24h.l24h > 0) ? (100 * stats24h.w24h / (stats24h.w24h + stats24h.l24h)) : null;
+        const paceClass = expectedTPD != null && stats24h.trades24h >= 1 ? 'pos' :
+                          (stats24h.trades24h === 0 ? '' : 'warn');
+        const paceText = expectedTPD != null ? `${stats24h.trades24h}/${expectedTPD}` : `${stats24h.trades24h}`;
+        const rows = [
+            `<div class="eng-kv"><span class="k">PnL</span><span class="v ${pnlClass(stats24h.pnl24h)}">${_eng_fmtUSD(stats24h.pnl24h)}</span></div>`,
+            `<div class="eng-kv"><span class="k">W/L</span><span class="v">${stats24h.w24h}/${stats24h.l24h}</span></div>`,
+            `<div class="eng-kv"><span class="k">Trades</span><span class="v">${stats24h.trades24h}</span></div>`,
+            `<div class="eng-kv"><span class="k">Pace</span><span class="v ${paceClass}">${paceText}</span></div>`,
+            wr24 != null ? `<div class="eng-kv"><span class="k">WR</span><span class="v">${wr24.toFixed(0)}%</span></div>` : '',
+            lastSig ? `<div class="eng-kv"><span class="k">Last</span><span class="v">${_eng_fmtRelTime(lastSig.fire_ts || lastSig.ts)}</span></div>` : '',
+        ].filter(Boolean).join('');
+        activityBlock = `<div class="eng-metric-grid">${rows}</div>`;
+    } else {
+        activityBlock = '<div class="eng-empty-msg">awaiting signal</div>';
+    }
+
+    // Audit verdict row
+    let auditRow = '';
+    if (auditStatus) {
+        const cls = (auditStatus === 'SURVIVOR' || auditStatus === 'PASS') ? 'pass' :
+                    (auditStatus.startsWith('FAIL') || auditStatus === 'NOISE') ? 'fail' : 'warn';
+        auditRow = `<div class="eng-audit-row">
+            <span class="lbl">audit</span>
+            <span class="eng-audit-badge ${cls}">${esc(auditStatus.replace(/_/g, ' '))}</span>
+        </div>`;
+    }
+
+    // Footer
+    const footChips = [
+        `<span class="eng-tag ${stageCls}">${STAGE_LABEL[stage] || stage.toUpperCase()}</span>`,
+        pm.cloid_prefix ? `<span class="eng-tag">${esc(pm.cloid_prefix)}</span>` : '',
+        pm.deprecated ? `<span class="eng-tag stage-dead">DEPRECATED</span>` : '',
+        pm.needs_rewrite ? `<span class="eng-tag stage-canary">REWRITE</span>` : '',
+        (state?.open_trades?.length > 0) ? `<span class="eng-tag" style="color:var(--acid)">${state.open_trades.length} open</span>` : '',
+    ].filter(Boolean).join('');
+
+    const warning = pm.warning || pm.demotion_reason || pm.deprecation_reason;
+    const warningBlock = warning ? `<div class="eng-warning">⚠ ${esc(warning)}</div>` : '';
+
+    return `<div class="eng-card${isDead ? ' dead' : ''}">
+        <div class="eng-card-head">
+            <span class="eng-dot ${dotCls}"></span>
+            <span class="eng-name" title="${esc(name)}">${esc(name)}</span>
+            <span class="eng-mode ${modeCls}">${modeText}</span>
+        </div>
+        ${(thesis || timeframe) ? `<div class="eng-strategy">${timeframe ? `<span class="tf">[${esc(timeframe)}]</span> ` : ''}${esc(thesis)}</div>` : ''}
+        <div class="eng-metric-block">
+            <div class="eng-metric-title">lifetime · actual</div>
+            ${lifetimeBlock}
+        </div>
+        <div class="eng-metric-block">
+            <div class="eng-metric-title">expected · audit</div>
+            ${expectedBlock}
+        </div>
+        <div class="eng-metric-block">
+            <div class="eng-metric-title">last 24h</div>
+            ${activityBlock}
+        </div>
+        ${auditRow}
+        <div class="eng-card-foot">${footChips}</div>
+        ${warningBlock}
+    </div>`;
+}
+
+function _eng_renderSection(title, desc, cls, engineList, allData) {
+    if (!engineList.length) return '';
+    return `<section class="eng-section">
+        <header class="eng-section-head ${cls}">
+            <div>
+                <span class="title">${title}</span>
+                <span class="count">· ${engineList.length}</span>
+            </div>
+            <span class="desc">${desc}</span>
+        </header>
+        <div class="eng-grid">
+            ${engineList.map(([name, pm]) => _eng_renderCard(name, pm, allData[name])).join('')}
+        </div>
+    </section>`;
+}
+
+async function loadEnginesGrid() {
+    try {
+        // Fetch PM engines list
+        const r = await fetch(`${_ENG_PM_URL}/engines`, { cache: 'no-store' });
+        if (!r.ok) throw new Error(`PM /engines HTTP ${r.status}`);
+        const d = await r.json();
+        const engines = d.engines || {};
+
+        // Fetch each engine's data in parallel (only those with halt_url + in full API set)
+        const tasks = [];
+        for (const [name, pm] of Object.entries(engines)) {
+            const base = _eng_baseUrl(pm.halt_url);
+            if (_ENG_FULL_API.has(name) && base) {
+                tasks.push(_eng_fetchEngineData(name, base).then(data => [name, data]));
+            }
+        }
+        const results = await Promise.all(tasks);
+        const allData = Object.fromEntries(results);
+
+        // Group by stage
+        const live = [], paper = [], dead = [], other = [];
+        for (const entry of Object.entries(engines)) {
+            const stage = entry[1].lifecycle_stage;
+            if (['full','canary','small','canary_ready'].includes(stage)) live.push(entry);
+            else if (['paper','validated','research'].includes(stage)) paper.push(entry);
+            else if (['demoted','deprecated'].includes(stage)) dead.push(entry);
+            else other.push(entry);
+        }
+        // Sort alphabetically within each group
+        const byName = (a, b) => a[0].localeCompare(b[0]);
+        live.sort(byName); paper.sort(byName); dead.sort(byName); other.sort(byName);
+
+        // Summary header
+        document.getElementById('esum-total').textContent = Object.keys(engines).length;
+        document.getElementById('esum-live').textContent = live.length;
+        document.getElementById('esum-paper').textContent = paper.length;
+        document.getElementById('esum-dead').textContent = dead.length;
+
+        // Render sections
+        const sectionsHtml = [
+            _eng_renderSection('live trading', 'real money on the wallet', 'live', live, allData),
+            _eng_renderSection('paper / validating', 'signal generation, no real orders', 'paper', paper, allData),
+            _eng_renderSection('demoted / deprecated', 'failed audit, not trading', 'dead', dead, allData),
+            other.length ? _eng_renderSection('other', 'unclassified', '', other, allData) : '',
+        ].filter(Boolean).join('');
+
+        document.getElementById('engines-sections').innerHTML = sectionsHtml;
+        document.getElementById('engines-empty').style.display = Object.keys(engines).length ? 'none' : 'block';
+        _ENG_CACHE.engines = engines;
+        _ENG_CACHE.data = allData;
+        _ENG_CACHE.lastErr = null;
+    } catch (e) {
+        console.error('loadEnginesGrid err', e);
+        _ENG_CACHE.lastErr = e.message;
+        const empty = document.getElementById('engines-empty');
+        if (empty) {
+            empty.style.display = 'block';
+            empty.textContent = `// engines load failed: ${e.message}`;
+        }
+    }
+}
+
+
+// Initial paint — immediate but no setInterval bursts at t=0
+loadDash(); loadMacroStrip(); loadEngines(); loadPMRail(); loadEnginesGrid();
+
+// Staggered offsets keep concurrent fetches small
+poll('clock',     updateClock,     1000,   0);
+poll('dash',      loadDash,        6000,   100);
+poll('signals',   loadSignals,     8000,   400);
+poll('whales',    loadWhales,      8000,   700);
+poll('orderbook', loadOrderbook,   6000,   1000);   // was 3s — too aggressive
+poll('heatmap',   loadHeatmap,     30000,  1300);
+poll('news',      loadNews,        60000,  1600);
+poll('macro',     loadMacroStrip,  6000,   1900);
+poll('engines',   loadEngines,     8000,   2200);
+poll('systems',   loadSystems,     12000,  2500);
+poll('pmrail',    loadPMRail,      8000,   2800);
+poll('engines_grid', loadEnginesGrid, 15000, 3100);
+
+// ═══ Live Positions + 24h Equity Pulse ═══════════════════════════════════
+// Live positions table mirrors /dash.positions in a compact mono format.
+// Equity pulse renders /audit/deep.per_hour as a 24-bar SVG (blue=fills,
+// green/red overlay=pnl). Both poll on their own cadence via poll().
+async function loadLivePositions() {
+  try {
+    const r = await fetch('/dash', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const rows = (d.positions || []).slice().sort((a, b) =>
+      Math.abs((b.upnl || 0)) - Math.abs((a.upnl || 0)));
+    const body = document.getElementById('lpos-body');
+    const meta = document.getElementById('lpos-meta');
+    if (!rows.length) {
+      body.innerHTML = '<div class="lpos-empty">// no open positions</div>';
+      if (meta) meta.textContent = '0 open';
+      return;
+    }
+    const fmtPx = v => {
+      if (v == null || isNaN(v)) return '—';
+      const n = Number(v);
+      if (n >= 1000) return n.toFixed(1);
+      if (n >= 1) return n.toFixed(3);
+      return n.toFixed(5);
+    };
+    const fmtPnl = v => {
+      const n = Number(v) || 0;
+      const s = n > 0 ? '+' : n < 0 ? '−' : '';
+      return s + '$' + Math.abs(n).toFixed(2);
+    };
+    let totalUpnl = 0;
+    const trs = rows.map(p => {
+      const u = Number(p.upnl) || 0; totalUpnl += u;
+      const cls = u > 0 ? 'pos' : u < 0 ? 'neg' : '';
+      const side = (p.side || '').toUpperCase();
+      const sLab = side === 'L' ? 'LONG' : side === 'S' ? 'SHORT' : '?';
+      return '<tr>'
+        + '<td class="lpos-coin">' + (p.coin || '—') + '</td>'
+        + '<td><span class="lpos-side ' + side + '">' + sLab + '</span></td>'
+        + '<td class="r">' + fmtPx(p.entry) + '</td>'
+        + '<td class="r" style="color:var(--muted,#6b7280);font-size:10px">' + (p.lev ?? '—') + '×</td>'
+        + '<td class="r lpos-pnl ' + cls + '">' + fmtPnl(u) + '</td>'
+        + '</tr>';
+    }).join('');
+    body.innerHTML = '<table class="lpos-tbl">'
+      + '<thead><tr><th>Coin</th><th>Side</th><th class="r">Entry</th>'
+      + '<th class="r">Lev</th><th class="r">uPnL</th></tr></thead>'
+      + '<tbody>' + trs + '</tbody></table>';
+    if (meta) {
+      const sign = totalUpnl > 0 ? '+' : totalUpnl < 0 ? '−' : '';
+      meta.textContent = rows.length + ' open · ' + sign + '$' + Math.abs(totalUpnl).toFixed(2);
+      meta.style.color = totalUpnl > 0 ? 'var(--gain)' : totalUpnl < 0 ? 'var(--loss)' : '';
+    }
+  } catch (e) {
+    const body = document.getElementById('lpos-body');
+    if (body) body.innerHTML = '<div class="lpos-empty">// /dash offline</div>';
+  }
+}
+
+async function loadEquityPulse() {
+  try {
+    const r = await fetch('/audit/deep?hours=24&format=json', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const a = await r.json();
+    const ph = (a && a.per_hour) ? a.per_hour.slice().reverse() : []; // oldest → newest
+    const svg = document.getElementById('pulse-svg');
+    const netEl = document.getElementById('pulse-net');
+    const metaEl = document.getElementById('pulse-meta');
+    if (!ph.length) {
+      svg.innerHTML = '<text x="140" y="50" text-anchor="middle" fill="rgba(217,214,205,0.35)" '
+        + 'font-size="9" font-family="JetBrains Mono">awaiting data</text>';
+      if (netEl) netEl.textContent = 'net —';
+      return;
+    }
+    const W = 280, H = 96, BL = 64; // baseline y for fill bars
+    const fills = ph.map(h => Number(h.fills) || 0);
+    const pnls  = ph.map(h => Number(h.pnl)   || 0);
+    const maxF  = Math.max(1, Math.max.apply(null, fills));
+    const absP  = Math.max.apply(null, pnls.map(Math.abs).concat([1]));
+    const bw    = W / ph.length;
+    let svgInner = '';
+    for (let i = 0; i < ph.length; i++) {
+      const x = i * bw;
+      const fh = (fills[i] / maxF) * BL;
+      const fy = BL - fh;
+      svgInner += '<rect x="' + x.toFixed(1) + '" y="' + fy.toFixed(1)
+        + '" width="' + (bw - 1).toFixed(1) + '" height="' + Math.max(1, fh).toFixed(1)
+        + '" fill="#3b82f6" opacity="0.55"/>';
+      if (pnls[i] !== 0) {
+        const ph2 = (Math.abs(pnls[i]) / absP) * 24;
+        const color = pnls[i] > 0 ? '#10b981' : '#ef4444';
+        svgInner += '<rect x="' + x.toFixed(1) + '" y="' + (BL + 4).toFixed(1)
+          + '" width="' + (bw - 1).toFixed(1) + '" height="' + ph2.toFixed(1)
+          + '" fill="' + color + '"/>';
+      }
+    }
+    svgInner += '<line x1="0" y1="' + BL + '" x2="' + W + '" y2="' + BL
+      + '" stroke="rgba(200,204,212,0.18)" stroke-width="1"/>';
+    svg.innerHTML = svgInner;
+    const totalNet  = pnls.reduce((s, v) => s + v, 0);
+    const totalFills = fills.reduce((s, v) => s + v, 0);
+    if (netEl) {
+      const sign = totalNet > 0 ? '+' : totalNet < 0 ? '−' : '';
+      netEl.textContent = 'net ' + sign + '$' + Math.abs(totalNet).toFixed(2);
+      netEl.style.color = totalNet > 0 ? 'var(--gain)' : totalNet < 0 ? 'var(--loss)' : '';
+    }
+    if (metaEl) metaEl.textContent = totalFills + ' fills · ' + ph.length + 'h';
+  } catch (e) {
+    const svg = document.getElementById('pulse-svg');
+    if (svg) svg.innerHTML = '<text x="140" y="50" text-anchor="middle" fill="rgba(193,39,45,0.6)" '
+      + 'font-size="9" font-family="JetBrains Mono">/audit offline</text>';
+  }
+}
+poll('lpos',   loadLivePositions, 5000,   3100);
+poll('pulse',  loadEquityPulse,   30000,  3400);
+
+// Refresh immediately when tab becomes visible again
+document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) {
+        Object.values(_polls).forEach(p => { p.running = false; });
+        loadDash(); loadSignals(); loadWhales();
+        loadMacroStrip(); loadSystems(); loadEngines();
+        loadPMRail();
+    }
+});
+</script>
+</body>
+</html>

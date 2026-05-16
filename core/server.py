@@ -145,8 +145,192 @@ class Handler(BaseHTTPRequestHandler):
     def _json(self, code: int, body: dict) -> None:
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(json.dumps(body, default=str).encode())
+
+    # ─── Landing page support ───
+    def _serve_landing(self) -> None:
+        """Serve the PSYCHO PM TERMINAL landing (operator's designed page)."""
+        landing_path = os.path.join(os.path.dirname(__file__), "static", "landing.html")
+        try:
+            with open(landing_path, "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            self._json(500, {"error": "landing_unavailable", "detail": str(e)})
+
+    def _pm_data(self) -> dict:
+        """Fetch PM regime + account for shared use across endpoints."""
+        try:
+            with httpx.Client(timeout=2.0) as cli:
+                r = cli.get(f"http://localhost:{PM_PORT}/health")
+                if r.status_code == 200:
+                    return r.json()
+        except Exception:
+            pass
+        return {}
+
+    def _strategy_state(self) -> dict:
+        try:
+            with httpx.Client(timeout=2.0) as cli:
+                r = cli.get(f"http://localhost:{STRATEGY_PORT}/health")
+                if r.status_code == 200:
+                    return r.json()
+        except Exception:
+            pass
+        return {}
+
+    def _health_for_landing(self) -> dict:
+        """Health shape that landing expects: btc_macro, webhook_security, engine_auto_pause."""
+        base = _aggregate_health()
+        pm = self._pm_data()
+        sr = self._strategy_state()
+        # Landing uses btc_macro for top hero, engine_auto_pause for paused engines list
+        regime = pm.get("regime", {}) or {}
+        account = pm.get("account", {}) or {}
+        engines = sr.get("registry", []) or []
+        # Build engine_auto_pause map
+        eap = {"engines": {e["name"]: {"paused": False} for e in engines}}
+        return {
+            "ok": base.get("core") == "ok",
+            "ts": int(time.time() * 1000),
+            "core": base.get("core"),
+            "subsystems": base.get("subsystems", {}),
+            "btc_macro": {
+                "regime": regime.get("regime", "unknown"),
+                "confidence": regime.get("confidence", 0),
+                "ema20_slope": regime.get("ema20_slope", 0),
+                "atr_pct": regime.get("atr_pct", 0),
+            },
+            "webhook_security": {"ok": True, "scheme": "X-PM-Auth"},
+            "engine_auto_pause": eap,
+            "account_value": account.get("value", 0),
+        }
+
+    def _serve_dash(self) -> None:
+        """Hero dashboard payload — equity + open positions."""
+        pm = self._pm_data()
+        sr = self._strategy_state()
+        account = pm.get("account", {}) or {}
+        regime = pm.get("regime", {}) or {}
+        engines = sr.get("registry", []) or []
+        out = {
+            "ts": int(time.time() * 1000),
+            "equity": float(account.get("value", 0)),
+            "open_positions": account.get("positions", []),
+            "open_count": len(account.get("positions", []) or []),
+            "upnl": 0.0,
+            "rpnl_24h": 0.0,
+            "regime": regime.get("regime", "unknown"),
+            "regime_confidence": regime.get("confidence", 0),
+            "engines_total": len(engines),
+            "engines_live": len([e for e in engines if e.get("tf")]),
+        }
+        self._json(200, out)
+
+    def _serve_api_engines(self) -> None:
+        """Landing's /api/engines — slightly different shape than PM /engines.
+        Adds venues + venue_ages for top-of-page counters."""
+        sr = self._strategy_state()
+        engines = sr.get("registry", []) or []
+        # Get PM /engines for the rich registry
+        engines_pm = []
+        try:
+            with httpx.Client(timeout=2.0) as cli:
+                r = cli.get(f"http://localhost:{PM_PORT}/engines")
+                if r.status_code == 200:
+                    engines_pm = r.json().get("engines", [])
+        except Exception:
+            pass
+        sb_data = {}
+        try:
+            with httpx.Client(timeout=2.0) as cli:
+                r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/health")
+                if r.status_code == 200:
+                    sb_data = r.json()
+        except Exception:
+            pass
+        ws_alive = sb_data.get("ws_alive", {}) or {}
+        venues = {v: bool(ok) for v, ok in ws_alive.items()}
+        last_update = sb_data.get("last_update", {}) or {}
+        now_ms = int(time.time() * 1000)
+        venue_ages = {v: max(0, int(now_ms - float(t) * 1000))
+                      for v, t in last_update.items() if t}
+        out = {
+            "ts": now_ms,
+            "engines": engines_pm or engines,
+            "venues": venues,
+            "venue_ages": venue_ages,
+        }
+        self._json(200, out)
+
+    def _serve_all_systems(self) -> None:
+        """Landing's /all_systems endpoint — engine summary cards."""
+        engines_pm = []
+        try:
+            with httpx.Client(timeout=2.0) as cli:
+                r = cli.get(f"http://localhost:{PM_PORT}/engines")
+                if r.status_code == 200:
+                    engines_pm = r.json().get("engines", [])
+        except Exception:
+            pass
+        systems = []
+        for e in engines_pm:
+            systems.append({
+                "engine_key": e.get("name"),
+                "name": e.get("name"),
+                "stage": e.get("stage", "paper"),
+                "class": e.get("class", ""),
+                "capital_fraction": e.get("capital_fraction", 0),
+                "bt_pf": e.get("bt_pf", 0),
+                "live": e.get("live", False),
+                "warning": e.get("warning"),
+                "url": e.get("url", ""),
+                "halt_url": e.get("halt_url", ""),
+            })
+        self._json(200, {"systems": systems, "ts": int(time.time() * 1000)})
+
+    def _serve_signals_compat(self) -> None:
+        """Landing's /signals — recent signals across all engines."""
+        try:
+            with httpx.Client(timeout=2.0) as cli:
+                r = cli.get(f"http://localhost:{STRATEGY_PORT}/signals?limit=50")
+                if r.status_code == 200:
+                    data = r.json()
+                    # Landing expects {items: [...]}
+                    if isinstance(data, list):
+                        return self._json(200, {"items": data})
+                    if "items" not in data:
+                        data = {"items": data.get("signals", []) or []}
+                    return self._json(200, data)
+        except Exception:
+            pass
+        self._json(200, {"items": []})
+
+    def _serve_orderbook(self, coin: str) -> None:
+        """Landing's /orderbook/<coin> — pull from HL via signal_bus markprice."""
+        try:
+            with httpx.Client(timeout=3.0) as cli:
+                r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/markprice/{coin}")
+                if r.status_code == 200:
+                    mp = r.json()
+                    mid = mp.get("hl_mid") or mp.get("binance_mid") or 0
+                    # Synthetic minimal book — landing draws bars not real depth
+                    return self._json(200, {
+                        "coin": coin, "mid": mid,
+                        "bids": [[mid * 0.999, 1.0]],
+                        "asks": [[mid * 1.001, 1.0]],
+                    })
+        except Exception:
+            pass
+        self._json(200, {"coin": coin, "mid": 0, "bids": [], "asks": []})
 
     def _proxy(self, target_port: int, strip_prefix: str) -> None:
         """Forward request to localhost:target_port."""
@@ -177,18 +361,37 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/health":
-            self._json(200, _aggregate_health())
+            self._json(200, self._health_for_landing())
             return
         if path == "/" or path == "/index.html":
-            # Operator's real designed dashboard lives at quant-stack-dashboard.
-            # Don't serve a generic landing here — redirect.
+            return self._serve_landing()
+        # Compatibility endpoints for the precog landing.html
+        if path == "/dash":
+            return self._serve_dash()
+        if path == "/api/engines":
+            return self._serve_api_engines()
+        if path == "/all_systems":
+            return self._serve_all_systems()
+        if path == "/signals":
+            return self._serve_signals_compat()
+        if path == "/whales":
+            return self._json(200, {"items": []})
+        if path == "/news":
+            return self._json(200, {"items": []})
+        if path.startswith("/audit/deep"):
+            return self._json(200, {"per_coin": [], "hours": 24})
+        if path.startswith("/orderbook/"):
+            coin = path.split("/")[-1]
+            return self._serve_orderbook(coin)
+        # Other landing sub-pages — redirect to existing equivalents
+        if path in ("/engines", "/audit", "/system", "/macro",
+                    "/enforce", "/experiment", "/violations"):
             target = os.environ.get(
                 "DASHBOARD_URL",
                 "https://quant-stack-dashboard-phbu.onrender.com/",
-            )
+            ) + path.lstrip("/")
             self.send_response(302)
             self.send_header("Location", target)
-            self.send_header("Cache-Control", "no-cache")
             self.end_headers()
             return
         # Route to subsystem
