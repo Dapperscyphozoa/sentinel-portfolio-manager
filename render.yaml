@@ -75,7 +75,7 @@ services:
       - key: STRATEGY_LH1_ENABLED
         value: "1"
       - key: STRATEGY_FD1_ENABLED
-        value: "1"
+        value: "0"  # DEAD per Session 1.5 honest backtest (PF 0.85)
       - key: STRATEGY_PRECOG_ENABLED
         value: "1"
       - key: STRATEGY_LIQ_CASCADE_ENABLED

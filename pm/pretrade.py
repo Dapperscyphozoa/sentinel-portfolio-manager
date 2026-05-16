@@ -62,12 +62,21 @@ KNOWN_AFFINITIES: dict[str, list[str]] = {
     "cex_dex_arb": ["range", "chop", "trend_up", "trend_down"],
 }
 
+# Strategies that the Session 1.5 honest backtest classified RED (PF < 1.0).
+# Hard-blocked from PM check regardless of env. To re-enable, you must run a
+# new honest backtest, classify GREEN, and remove from this set.
+_RED_GATED: set[str] = {"fd1"}
+
 
 def check(conn, strategy: str, signal: dict, regime: dict,
           account_value_usd: float, open_positions: list[dict]) -> CheckResult:
     coin = signal.get("coin", "").upper()
     if not coin:
         return CheckResult(False, 0.0, "no_coin")
+
+    # 0) Hard block: RED-gated strategies per Session 1.5
+    if strategy in _RED_GATED:
+        return CheckResult(False, 0.0, "audit_red_gated")
 
     # 1) strategy enabled + not halted
     if os.environ.get(f"STRATEGY_{strategy.upper()}_ENABLED", "1") not in ("1", "true", "yes"):

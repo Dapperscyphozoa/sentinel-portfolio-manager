@@ -263,3 +263,29 @@ def test_load_strategy_unknown_raises():
     from scripts.backtest_harness import load_strategy
     with pytest.raises(SystemExit):
         load_strategy("definitely_not_a_strategy")
+
+
+# -------- Session 1.5 gate: fd1 hard-blocked --------
+
+def test_pretrade_blocks_fd1_red_gated(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FD1_ENABLED", "1")  # even if env enabled
+    with tempfile.TemporaryDirectory() as d:
+        conn = persistence.init_db(os.path.join(d, "t.db"))
+        r = pretrade.check(conn, "fd1", _sig(), {"regime": "range", "confidence": 0.6},
+                           500.0, [])
+        assert r.allow is False
+        assert r.reason == "audit_red_gated"
+
+
+def test_pretrade_other_strategies_not_red_gated(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FSP_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_VSQ_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_LH1_ENABLED", "1")
+    monkeypatch.setenv("MIN_TRADE_USD", "10")
+    monkeypatch.setenv("PER_STRATEGY_CAP", "1.0")
+    with tempfile.TemporaryDirectory() as d:
+        conn = persistence.init_db(os.path.join(d, "t.db"))
+        for s in ("fsp", "vsq", "lh1"):
+            r = pretrade.check(conn, s, _sig(), {"regime": "range", "confidence": 0.6},
+                               500.0, [])
+            assert r.reason != "audit_red_gated", f"{s} incorrectly red-gated"

@@ -35,6 +35,8 @@ from strategy_runner.strategies._base import Signal, StrategyBase  # noqa: E402
 TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400}
 
 
+# ----- Binance (primary, geo-restricted in some regions) -----
+
 def binance_klines(symbol: str, tf: str, start_ms: int, end_ms: int) -> list[dict]:
     """Pull historical klines directly from Binance Futures REST. Paginated."""
     url = "https://fapi.binance.com/fapi/v1/klines"
@@ -60,7 +62,7 @@ def binance_klines(symbol: str, tf: str, start_ms: int, end_ms: int) -> list[dic
             cursor = int(rows[-1][0]) + TF_SECONDS[tf] * 1000
             if len(rows) < 1500:
                 break
-            time.sleep(0.1)  # be polite
+            time.sleep(0.1)
     return out
 
 
@@ -86,6 +88,99 @@ def binance_funding(symbol: str, start_ms: int, end_ms: int) -> list[dict]:
     return out
 
 
+# ----- OKX (fallback for restricted regions) -----
+
+_OKX_TF = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H", "1d": "1D"}
+
+
+def okx_klines(symbol: str, tf: str, start_ms: int, end_ms: int) -> list[dict]:
+    """OKX historical klines. /api/v5/market/history-candles for deep history.
+
+    OKX returns data NEWEST first; we reverse to oldest-first. Pagination uses
+    `after` cursor (returns data with ts < after). Page size 100.
+    """
+    inst = symbol.replace("USDT", "-USDT-SWAP")
+    okx_bar = _OKX_TF.get(tf)
+    if not okx_bar:
+        return []
+    url = "https://www.okx.com/api/v5/market/history-candles"
+    out: list[dict] = []
+    after = end_ms
+    with httpx.Client(timeout=30) as c:
+        while after > start_ms:
+            r = c.get(url, params={"instId": inst, "bar": okx_bar,
+                                   "after": str(after), "limit": "100"})
+            r.raise_for_status()
+            d = r.json()
+            rows = d.get("data") or []
+            if not rows:
+                break
+            for row in rows:
+                ts = int(row[0])
+                if ts < start_ms:
+                    continue
+                out.append({
+                    "open_ts": ts,
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4]),
+                    "volume": float(row[5]),
+                })
+            # Cursor backward
+            oldest = int(rows[-1][0])
+            if oldest <= start_ms:
+                break
+            after = oldest
+            time.sleep(0.12)
+    out.sort(key=lambda b: b["open_ts"])
+    return out
+
+
+def okx_funding(symbol: str, start_ms: int, end_ms: int) -> list[dict]:
+    """OKX funding rate history. /api/v5/public/funding-rate-history."""
+    inst = symbol.replace("USDT", "-USDT-SWAP")
+    url = "https://www.okx.com/api/v5/public/funding-rate-history"
+    out: list[dict] = []
+    after = end_ms
+    with httpx.Client(timeout=30) as c:
+        while after > start_ms:
+            r = c.get(url, params={"instId": inst, "after": str(after), "limit": "100"})
+            r.raise_for_status()
+            d = r.json()
+            rows = d.get("data") or []
+            if not rows:
+                break
+            for row in rows:
+                ts = int(row.get("fundingTime", 0))
+                if ts < start_ms:
+                    continue
+                out.append({"ts": ts, "rate": float(row.get("fundingRate", "0"))})
+            oldest = int(rows[-1].get("fundingTime", 0))
+            if oldest <= start_ms or oldest == after:
+                break
+            after = oldest
+            time.sleep(0.12)
+    out.sort(key=lambda r: r["ts"])
+    return out
+
+
+# ----- Dispatch by venue env var -----
+
+def fetch_klines(symbol: str, tf: str, start_ms: int, end_ms: int) -> list[dict]:
+    venue = os.environ.get("BACKTEST_DATA_VENUE", "binance").lower()
+    if venue == "okx":
+        return okx_klines(symbol, tf, start_ms, end_ms)
+    return binance_klines(symbol, tf, start_ms, end_ms)
+
+
+def fetch_funding(symbol: str, start_ms: int, end_ms: int) -> list[dict]:
+    venue = os.environ.get("BACKTEST_DATA_VENUE", "binance").lower()
+    if venue == "okx":
+        return okx_funding(symbol, start_ms, end_ms)
+    return binance_funding(symbol, start_ms, end_ms)
+
+
 @dataclass
 class HistoricalBus:
     """Bus implementation that ONLY serves data ≤ self.cursor_ms.
@@ -102,9 +197,37 @@ class HistoricalBus:
         return visible[-n:]
 
     def funding(self, coin: str, hours: int) -> list[dict]:
+        """Return hourly forward-filled funding rates for [cursor - hours, cursor].
+
+        Settled funding (Binance/OKX: every 4-8h) is interpolated to hourly cadence
+        by carrying forward the most recent rate. This matches the production
+        signal-bus behavior, which receives the live funding rate field on the
+        Binance markPrice@1s stream and so effectively sees an hourly+ cadence.
+        """
         full = self.funding_h.get(coin) or []
-        since = self.cursor_ms - hours * 3600_000
-        return [r for r in full if since <= r["ts"] <= self.cursor_ms]
+        if not full:
+            return []
+        end_ms = self.cursor_ms
+        start_ms = end_ms - hours * 3600_000
+        # Find last rate before start_ms to carry forward
+        last_rate: float | None = None
+        for r in full:
+            if r["ts"] <= start_ms:
+                last_rate = float(r["rate"])
+            else:
+                break
+        out: list[dict] = []
+        idx = 0
+        ts = start_ms
+        while ts <= end_ms:
+            # Advance idx past any settled funding events ≤ ts
+            while idx < len(full) and full[idx]["ts"] <= ts:
+                last_rate = float(full[idx]["rate"])
+                idx += 1
+            if last_rate is not None:
+                out.append({"ts": ts, "rate": last_rate})
+            ts += 3600_000
+        return out
 
     def markprice(self, coin: str) -> dict:
         bars = self.candles(coin, "1h", n=1) or self.candles(coin, "15m", n=1) or self.candles(coin, "5m", n=1)
@@ -265,20 +388,21 @@ def main():
     end_ms = int(time.time() * 1000)
     start_ms = end_ms - args.days * 86400 * 1000
 
-    print(f"backtest {args.strategy} tf={tf} universe={len(universe)} days={args.days}", flush=True)
+    venue = os.environ.get("BACKTEST_DATA_VENUE", "binance")
+    print(f"backtest {args.strategy} tf={tf} universe={len(universe)} days={args.days} venue={venue}", flush=True)
     klines_by_coin: dict[str, list[dict]] = {}
     funding_by_coin: dict[str, list[dict]] = {}
     for coin in universe:
         sym = f"{coin}USDT"
         print(f"  fetching {sym}...", flush=True)
         try:
-            klines_by_coin[coin] = binance_klines(sym, tf, start_ms, end_ms)
+            klines_by_coin[coin] = fetch_klines(sym, tf, start_ms, end_ms)
         except Exception as e:
             print(f"    klines failed: {e}")
             klines_by_coin[coin] = []
         if args.strategy in ("fsp", "fd1"):
             try:
-                funding_by_coin[coin] = binance_funding(sym, start_ms, end_ms)
+                funding_by_coin[coin] = fetch_funding(sym, start_ms, end_ms)
             except Exception as e:
                 print(f"    funding failed: {e}")
 

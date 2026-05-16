@@ -523,6 +523,7 @@ These engines were tested and proven unprofitable. Do not port. Archive in git t
 | whale-tracker-v1, funding-harvester-v1, cross-venue-funding-v1 | Replaced or speculative |
 | cyber-psycho (entire workspace) | DEAD-DEAD per operator memory |
 | precog-local | Older variant of precog |
+| **fd1** (this rebuild) | **Session 1.5 honest backtest: PF 0.85, OOS PF 0.78, n=818 — negative expectancy.** Hypothesis (funding/price divergence fade) does not hold on real out-of-sample data. Code retained for archival; gated off in `STRATEGY_FD1_ENABLED=0` and hard-blocked in `pm/pretrade.py::_RED_GATED`. |
 
 ---
 
