@@ -67,6 +67,45 @@ class Handler(BaseHTTPRequestHandler):
                                      "regime": REGIME_CACHE, "account": ACCOUNT_CACHE})
         if path == "/regime":
             return _json(self, 200, REGIME_CACHE)
+        if path == "/engines":
+            # Dashboard-compatible engine list, derived from pretrade.ENGINE_REGISTRY
+            from pm import pretrade as _pt
+            base_url = os.environ.get("CORE_PUBLIC_URL", "https://core-o21t.onrender.com")
+            out = []
+            cut = _pt.CUT_ENGINES
+            for name, cfg in _pt.ENGINE_REGISTRY.items():
+                live = os.environ.get(f"STRATEGY_{name.upper()}_ENABLED", "1") == "1"
+                stage = "cut" if name in cut else ("paper" if os.environ.get("LIVE_TRADING","0") != "1" else "full")
+                out.append({
+                    "name": name,
+                    "url": f"{base_url}/strategy",
+                    "halt_url": f"{base_url}/strategy/halt/{name}",
+                    "resume_url": f"{base_url}/strategy/resume/{name}",
+                    "cloid_prefix": cfg.get("cloid_prefix", ""),
+                    "class": ",".join(cfg.get("affinity", [])),
+                    "capital_fraction": cfg.get("cap_frac", 0.0),
+                    "bt_pf": cfg.get("bt_pf", 0.0),
+                    "stage": stage,
+                    "live": live,
+                    "has_full_api": True,
+                    "warning": None if cfg.get("bt_pf", 0) >= 1.4 else "untested" if cfg.get("bt_pf", 0) == 0 else "weak_bt",
+                })
+            # Add the sniper (separate service, paper mode)
+            out.append({
+                "name": "sniper",
+                "url": "https://sniper-6w9l.onrender.com",
+                "halt_url": "https://sniper-6w9l.onrender.com/kill",
+                "resume_url": "https://sniper-6w9l.onrender.com/reset",
+                "cloid_prefix": "snipe_",
+                "class": "pre_listing_arb",
+                "capital_fraction": 0.50,
+                "bt_pf": 0.0,
+                "stage": "paper",
+                "live": os.environ.get("SNIPER_LIVE_TRADING", "0") == "1",
+                "has_full_api": True,
+                "warning": "council_validated_path_1.5_to_2.1yr",
+            })
+            return _json(self, 200, {"engines": out, "ts": int(time.time() * 1000)})
         if path == "/attribution":
             if not _auth_ok(self.headers):
                 return _json(self, 401, {"error": "bad_token"})

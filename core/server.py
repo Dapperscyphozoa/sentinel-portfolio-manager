@@ -148,6 +148,132 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(body, default=str).encode())
 
+    def _landing(self) -> None:
+        """Live status landing page."""
+        h = _aggregate_health()
+        sub = h.get("subsystems", {})
+        def st(name):
+            s = sub.get(name, {}).get("status", "?")
+            color = "#22c55e" if s == "ok" else "#ef4444"
+            return f'<span style="color:{color}">●</span> <b>{name}</b>: {s}'
+        sb = sub.get("signal_bus", {}).get("data", {}) or {}
+        sr = sub.get("strategy_runner", {}).get("data", {}) or {}
+        pm = sub.get("pm", {}).get("data", {}) or {}
+        mon = sub.get("monitor", {}).get("data", {}) or {}
+        regime = pm.get("regime", {}) or {}
+        account = pm.get("account", {}) or {}
+        engines = sr.get("registry", []) or []
+        ws_alive = sb.get("ws_alive", {}) or {}
+        html = f"""<!DOCTYPE html>
+<html lang=en><head><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Sentinel Core — Live</title>
+<style>
+body{{font-family:ui-monospace,SF Mono,Menlo,monospace;background:#0a0a0b;color:#e4e4e7;
+     margin:0;padding:24px;line-height:1.5;}}
+h1{{font-size:22px;color:#fafafa;margin:0 0 4px;letter-spacing:.02em;}}
+.sub{{color:#71717a;font-size:13px;margin-bottom:24px;}}
+.grid{{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+       gap:16px;margin-bottom:24px;}}
+.card{{background:#18181b;border:1px solid #27272a;border-radius:8px;padding:16px;}}
+.card h2{{font-size:13px;color:#a1a1aa;text-transform:uppercase;letter-spacing:.06em;
+         margin:0 0 12px;font-weight:600;}}
+.metric{{display:flex;justify-content:space-between;align-items:baseline;
+         padding:6px 0;border-bottom:1px solid #27272a;font-size:13px;}}
+.metric:last-child{{border:0;}}
+.metric .k{{color:#a1a1aa;}}
+.metric .v{{color:#fafafa;font-weight:600;}}
+.eng{{font-size:12px;padding:8px 12px;background:#0f0f10;border:1px solid #27272a;
+      border-radius:6px;margin:4px 0;display:flex;justify-content:space-between;}}
+.green{{color:#22c55e;}}
+.red{{color:#ef4444;}}
+.amber{{color:#f59e0b;}}
+.row{{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px;}}
+.row a{{color:#60a5fa;text-decoration:none;font-size:12px;padding:4px 10px;
+       background:#1e293b;border-radius:4px;}}
+.row a:hover{{background:#334155;color:#93c5fd;}}
+table{{width:100%;border-collapse:collapse;font-size:12px;}}
+th{{text-align:left;color:#a1a1aa;font-weight:600;padding:6px 8px;
+   border-bottom:1px solid #27272a;}}
+td{{padding:6px 8px;border-bottom:1px solid #18181b;}}
+tr:hover{{background:#1a1a1d;}}
+.pulse{{display:inline-block;width:8px;height:8px;border-radius:50%;
+       margin-right:6px;animation:pulse 2s infinite;}}
+@keyframes pulse{{0%,100%{{opacity:1;}}50%{{opacity:.4;}}}}
+.brand{{color:#fafafa;font-weight:700;}}
+.brand span{{color:#22c55e;}}
+</style></head><body>
+
+<h1 class=brand>SENTINEL<span>.</span>CORE</h1>
+<div class=sub>collapsed TA stack + sniper bot — paper mode — autorefresh 5s</div>
+
+<div class=grid>
+
+  <div class=card>
+    <h2>Core Status</h2>
+    <div class=metric><span class=k>core</span><span class="v {'green' if h.get('core')=='ok' else 'red'}">{h.get('core','?').upper()}</span></div>
+    <div class=metric><span class=k>signal_bus</span><span class=v>{sub.get('signal_bus',{}).get('status','?')}</span></div>
+    <div class=metric><span class=k>strategy_runner</span><span class=v>{sub.get('strategy_runner',{}).get('status','?')}</span></div>
+    <div class=metric><span class=k>pm</span><span class=v>{sub.get('pm',{}).get('status','?')}</span></div>
+    <div class=metric><span class=k>monitor</span><span class=v>{sub.get('monitor',{}).get('status','?')}</span></div>
+  </div>
+
+  <div class=card>
+    <h2>Account</h2>
+    <div class=metric><span class=k>wallet value</span><span class=v>${float(account.get('value',0)):.2f}</span></div>
+    <div class=metric><span class=k>positions</span><span class=v>{len(account.get('positions',[]))}</span></div>
+    <div class=metric><span class=k>regime</span><span class=v>{regime.get('regime','?')}</span></div>
+    <div class=metric><span class=k>regime conf</span><span class=v>{float(regime.get('confidence',0))*100:.0f}%</span></div>
+  </div>
+
+  <div class=card>
+    <h2>Feeds</h2>
+    <div class=metric><span class=k>binance ws</span><span class="v {'green' if ws_alive.get('binance') else 'red'}">{'ALIVE' if ws_alive.get('binance') else 'DOWN'}</span></div>
+    <div class=metric><span class=k>hl ws</span><span class="v {'green' if ws_alive.get('hl') else 'red'}">{'ALIVE' if ws_alive.get('hl') else 'DOWN'}</span></div>
+    <div class=metric><span class=k>okx ws</span><span class=v>{'alive' if ws_alive.get('okx') else 'down'}</span></div>
+    <div class=metric><span class=k>bybit ws</span><span class=v>{'alive' if ws_alive.get('bybit') else 'down'}</span></div>
+    <div class=metric><span class=k>kline cache</span><span class=v>{sb.get('kline_bars_total','?')} bars / {sb.get('kline_keys','?')} keys</span></div>
+  </div>
+
+  <div class=card>
+    <h2>Monitor</h2>
+    <div class=metric><span class=k>spent today</span><span class=v>${float(mon.get('spent_today_usd',0)):.4f}</span></div>
+    <div class=metric><span class=k>budget</span><span class=v>${float(mon.get('daily_budget_usd',0)):.2f}/day</span></div>
+    <div class=metric><span class=k>routines</span><span class=v>{len(mon.get('last_runs',{}))}</span></div>
+  </div>
+
+</div>
+
+<div class=card>
+  <h2>Engines Registered ({len(engines)})</h2>
+  <table><thead><tr><th>name</th><th>tf</th><th>affinity</th><th>universe</th></tr></thead><tbody>
+  {''.join(f'<tr><td><b>{e.get("name","?")}</b></td><td>{e.get("tf","?")}</td><td>{",".join(e.get("affinity",[]))}</td><td>{e.get("universe_size","?")}</td></tr>' for e in engines[:30])}
+  </tbody></table>
+</div>
+
+<div class=row>
+  <a href="/health">/health</a>
+  <a href="/pm/regime">/pm/regime</a>
+  <a href="/pm/engines">/pm/engines</a>
+  <a href="/strategy/state">/strategy/state</a>
+  <a href="/signal_bus/health">/signal_bus/health</a>
+  <a href="/monitor/health">/monitor/health</a>
+  <a href="https://sniper-6w9l.onrender.com/health">sniper /health</a>
+  <a href="https://quant-stack-dashboard-phbu.onrender.com/">full dashboard ↗</a>
+</div>
+
+<div class=sub style=margin-top:24px>
+  ts: {int(time.time())} · last update {int(h.get('ts',0)/1000)} · auto-refresh in <b>5s</b>
+</div>
+
+<script>setTimeout(()=>location.reload(),5000)</script>
+</body></html>"""
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(html.encode())
+
     def _proxy(self, target_port: int, strip_prefix: str) -> None:
         """Forward request to localhost:target_port."""
         path = self.path
@@ -179,12 +305,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             self._json(200, _aggregate_health())
             return
-        if path == "/":
-            self._json(200, {"service": "core", "version": "1.0",
-                              "endpoints": ["/health",
-                                            "/signal_bus/*", "/strategy/*",
-                                            "/pm/*", "/monitor/*"]})
-            return
+        if path == "/" or path == "/index.html":
+            return self._landing()
         # Route to subsystem
         for prefix, (port, strip) in _PROXY_MAP.items():
             if path == prefix or path.startswith(prefix + "/"):
