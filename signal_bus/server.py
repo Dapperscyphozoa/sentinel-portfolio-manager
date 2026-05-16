@@ -177,9 +177,29 @@ def main() -> None:
 
     syms = (config.get("BINANCE_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT") or "").strip()
     symbols = [s.strip().upper() for s in syms.split(",") if s.strip()]
-    log.info("starting binance ws for %d symbols", len(symbols))
 
-    threading.Thread(target=binance_ws.run_in_thread, args=(symbols, CACHE), daemon=True, name="binance_ws").start()
+    # DATA_VENUE selects the primary kline+liq source. Binance Futures geoblocks
+    # US/EU datacenters silently (TCP connects but no events). OKX accepts all
+    # geographies and provides equivalent USDT-perp coverage. Default 'okx'.
+    data_venue = config.get("DATA_VENUE", "okx").lower()
+    if data_venue == "binance":
+        log.info("starting binance ws for %d symbols", len(symbols))
+        threading.Thread(target=binance_ws.run_in_thread, args=(symbols, CACHE),
+                         daemon=True, name="binance_ws").start()
+    else:
+        # OKX subscribers expect bare coin tickers; strip USDT suffix
+        coins = []
+        for s in symbols:
+            for sfx in ("USDT", "USDC", "BUSD"):
+                if s.endswith(sfx):
+                    coins.append(s[: -len(sfx)])
+                    break
+            else:
+                coins.append(s)
+        log.info("starting OKX data ws for %d coins (venue=%s, geo-portable)", len(coins), data_venue)
+        from signal_bus import okx_data_ws  # noqa: E402
+        threading.Thread(target=okx_data_ws.run_in_thread, args=(coins, CACHE),
+                         daemon=True, name="okx_data_ws").start()
     threading.Thread(target=_flush_loop, args=(CACHE,), daemon=True, name="flush").start()
 
     # HL WS thread is wired up in Session 3 via hl_ws.run_in_thread
