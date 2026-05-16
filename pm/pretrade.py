@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -93,19 +94,27 @@ OOS_ENGINE_REGISTRY = ENGINE_REGISTRY
 assert abs(sum(e["cap_frac"] for e in ENGINE_REGISTRY.values()) - 1.0) < 0.02, \
     f"cap_fracs sum to {sum(e['cap_frac'] for e in ENGINE_REGISTRY.values())}"
 
-# Singleton cooldown tracker
+# Singleton cooldown tracker (lock-guarded init — sentinel audit 2026-05-17)
 _cooldown: Optional[object] = None
+_cooldown_lock = threading.Lock()
 
 
 def _get_cooldown():
     global _cooldown
-    if _cooldown is None and CooldownTracker is not None:
-        try:
-            db_path = os.environ.get("COOLDOWN_DB", "/var/data/cooldowns.sqlite")
-            _cooldown = CooldownTracker(db_path)
-        except Exception as e:
-            log.warning("CooldownTracker init failed: %s", e)
-            _cooldown = None
+    # Fast path: already initialized
+    if _cooldown is not None:
+        return _cooldown
+    if CooldownTracker is None:
+        return None
+    with _cooldown_lock:
+        # Re-check under lock
+        if _cooldown is None:
+            try:
+                db_path = os.environ.get("COOLDOWN_DB", "/var/data/cooldowns.sqlite")
+                _cooldown = CooldownTracker(db_path)
+            except Exception as e:
+                log.warning("CooldownTracker init failed: %s", e)
+                _cooldown = None
     return _cooldown
 
 
