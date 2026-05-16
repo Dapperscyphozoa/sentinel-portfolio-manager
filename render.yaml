@@ -146,3 +146,75 @@ services:
         value: "5"
       - key: STATE_DIR
         value: /var/data
+
+  # ──────────────────────────────────────────────────────────────────────
+  # SNIPER bot — pre-listing arbitrage + oracle-lag detection.
+  # Deployed at precog-i8c3.onrender.com (URL slug from prior service —
+  # the service name is "sniper", not "precog". Precog the strategy is DEAD.)
+  #
+  # Council-validated path: 1.5-2.1 years from $491 → $50M (3/3 voters).
+  # Edge: new HL listings have lagging oracle vs CEX consensus.
+  # ──────────────────────────────────────────────────────────────────────
+  - type: web
+    name: sniper
+    runtime: python
+    region: oregon
+    plan: starter
+    branch: main
+    rootDir: sniper
+    buildCommand: pip install -r ../requirements.txt
+    startCommand: python3 server.py
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: sniper-state
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      # HL agent (paper mode initially)
+      - key: HL_AGENT_WALLET
+        value: "0xD27751815dBD5373629D0064bE85aedA349E0eD5"
+      - key: HL_PRIVATE_KEY
+        sync: false
+      # Paper mode for initial run — flip to "1" only after operator approval
+      - key: SNIPER_LIVE_TRADING
+        value: "0"
+      # Listing detector
+      - key: SNIPER_POLL_INTERVAL_S
+        value: "10"
+      - key: SNIPER_LISTING_DB
+        value: /var/data/sniper_listings.sqlite
+      - key: SNIPER_SETTLE_DELAY_S
+        value: "5"
+      # Oracle-lag detection
+      - key: SNIPER_DIVERGENCE_THRESHOLD
+        value: "0.05"
+      # Risk controls (council spec)
+      - key: SNIPER_RISK_DB
+        value: /var/data/sniper_risk.sqlite
+      - key: SNIPER_MAX_PER_DAY
+        value: "1"
+      - key: SNIPER_CB_CONSEC_LOSSES
+        value: "3"
+      - key: SNIPER_SIZE_PCT
+        value: "0.50"
+      - key: SNIPER_LEVERAGE
+        value: "5.0"
+      - key: SNIPER_MIN_TRADE_USD
+        value: "10.0"
+      - key: SNIPER_MIN_ACCOUNT_USD
+        value: "50.0"
+      # First 10 trades require operator approval
+      - key: SNIPER_REQUIRE_APPROVAL
+        value: "1"
+      - key: SNIPER_APPROVAL_TRADES
+        value: "10"
+      # Kill switches
+      - key: SNIPER_FORCE_KILL
+        value: "0"
+      - key: SNIPER_AUTH_TOKEN
+        sync: false
+      - key: STATE_DIR
+        value: /var/data
+      - key: HTTP_PORT
+        value: "10000"
