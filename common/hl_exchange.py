@@ -189,6 +189,32 @@ class HLExchange:
 
     def market_close(self, coin: str, size_coin: Optional[float] = None, cloid: Optional[str] = None) -> OrderResult:
         self._ensure()
+        # Truncate close size to per-asset szDecimals (same float_to_wire fix as
+        # market_open). Without this, closes on alt positions with non-trivial
+        # decimals (e.g. ARB 203.06, ETH 0.01124) fail with 'float_to_wire causes
+        # rounding'. close_retries climbs to MAX, strategy gets halted, position
+        # stuck open on HL with no exit path. We bypass the $10 min-notional
+        # check here because closing under-min is still better than not closing
+        # (otherwise position lives forever).
+        if size_coin is not None and size_coin > 0:
+            try:
+                # Reuse the sz_decimals cache populated by _round_size
+                if not hasattr(self, "_sz_decimals"):
+                    self._sz_decimals = {}
+                    try:
+                        meta = self._info.meta()
+                        for asset in (meta or {}).get("universe", []) or []:
+                            name = asset.get("name") or ""
+                            sz = int(asset.get("szDecimals", 4))
+                            if name:
+                                self._sz_decimals[name] = sz
+                    except Exception:
+                        pass
+                decs = self._sz_decimals.get(coin, 4)
+                factor = 10 ** decs
+                size_coin = math.floor(size_coin * factor) / factor
+            except Exception:
+                log.exception("market_close size truncation failed for %s; passing raw", coin)
         try:
             from hyperliquid.utils.types import Cloid
             cloid_obj = Cloid.from_str(cloid) if cloid else None

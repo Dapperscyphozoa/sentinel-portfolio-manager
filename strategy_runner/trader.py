@@ -157,8 +157,19 @@ class Trader:
             is_long = bool(r["is_long"])
             hit_tp = (is_long and px >= r["tp_px"]) or (not is_long and px <= r["tp_px"])
             hit_sl = (is_long and px <= r["sl_px"]) or (not is_long and px >= r["sl_px"])
-            # tf is 1h proxy: max_hold_bars * 3600s. Strategies may override via extras, ignored for v1.
-            timed_out = (now - r["open_ts"]) > r["max_hold_bars"] * 3600
+            # Timeout = max_hold_bars × seconds-per-bar (TF-aware).
+            # Bug fix 2026-05-17: prior code used max_hold_bars * 3600 unconditionally,
+            # which is correct only for 1h strategies. Daily engines holding "5 bars"
+            # should mean 5 DAYS not 5 HOURS. Read tf from extras_json and convert.
+            tf_secs = 3600  # default 1h
+            try:
+                ex = json.loads(r["extras_json"] or "{}")
+                tf = (ex.get("extras", {}) or {}).get("tf") or ex.get("tf") or "1h"
+                tf_secs = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600,
+                           "4h": 14400, "1d": 86400}.get(tf, 3600)
+            except Exception:
+                pass
+            timed_out = (now - r["open_ts"]) > r["max_hold_bars"] * tf_secs
 
             # Strategy-driven exit (e.g. Donchian 10-bar opposite break)
             strat_close = False
