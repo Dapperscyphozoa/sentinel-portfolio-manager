@@ -1682,11 +1682,15 @@ async function loadSignals() {
         const total = live.length + pending.length;
 
         const liveRows = live.map(s => {
-            const cls = s.kind === 'OPEN' ? 'pnl-pos' : (s.kind === 'CLOSED' ? 'pnl-neg' : '');
-            return `<div class="pos-row" style="grid-template-columns:70px 1fr auto;font-size:11px">
-                <div class="pos-coin">${s.coin}</div>
-                <div style="opacity:0.8"><span class="stage-tag stage-live" style="margin-right:6px">LIVE</span>${s.kind} ${s.side || ''}</div>
-                <div class="${cls}" style="font-size:9px;opacity:0.7">${s.ts || ''}</div>
+            // Server now sends kind='LIVE', ts_str (HH:MM:SS), engine, side (LONG/SHORT)
+            const sideLabel = s.side || (s.is_long ? 'LONG' : 'SHORT');
+            const sideCls = (sideLabel === 'LONG') ? 'pnl-pos' : 'pnl-neg';
+            const eng = s.engine || s.strategy || '';
+            const reason = s.fire_reason || '';
+            return `<div class="pos-row" style="grid-template-columns:64px 1fr auto;font-size:11px">
+                <div class="pos-coin">${s.coin}<br><span style="opacity:0.4;font-size:9px;letter-spacing:0.05em">${eng}</span></div>
+                <div style="opacity:0.85"><span class="stage-tag stage-live" style="margin-right:6px">LIVE</span><span class="${sideCls}">${sideLabel}</span> <span style="opacity:0.55;font-size:10px">${reason}</span></div>
+                <div style="font-size:9px;opacity:0.6">${s.ts_str || ''}</div>
             </div>`;
         }).join('');
 

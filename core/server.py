@@ -499,33 +499,42 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _serve_signals_compat(self) -> None:
-        """Landing's /signals — recent signals across all engines."""
-        items = []
+        """Landing's /signals — recent signals across all engines.
+        Enriches the raw signals table rows with 'kind' (always 'LIVE'),
+        a human-readable 'ts_str', and a normalized 'side' label so the
+        landing renderer doesn't show 'undefined B' or epoch numbers.
+        """
+        raw_items = []
         try:
             with httpx.Client(timeout=2.0) as cli:
-                # Try strategy_runner /signals (we proxy this)
                 r = cli.get(f"http://localhost:{STRATEGY_PORT}/signals?limit=50")
                 if r.status_code == 200:
                     data = r.json()
                     if isinstance(data, list):
-                        items = data
+                        raw_items = data
                     elif isinstance(data, dict):
-                        items = data.get("items") or data.get("signals") or []
+                        raw_items = data.get("items") or data.get("signals") or []
         except Exception:
             pass
-        # Try strategy_runner /state which has signal cache
-        if not items:
+        # Enrich for landing.html renderer
+        from datetime import datetime, timezone
+        items = []
+        for s in raw_items:
+            ts_raw = s.get("ts") or 0
             try:
-                with httpx.Client(timeout=2.0) as cli:
-                    r = cli.get(f"http://localhost:{STRATEGY_PORT}/state")
-                    if r.status_code == 200:
-                        data = r.json()
-                        if isinstance(data, list):
-                            items = data
-                        elif isinstance(data, dict):
-                            items = data.get("recent_signals") or data.get("items") or []
+                # ts in signals table is seconds (float). Convert to short HH:MM:SS UTC.
+                ts_str = datetime.fromtimestamp(float(ts_raw), tz=timezone.utc).strftime("%H:%M:%S")
             except Exception:
-                pass
+                ts_str = ""
+            side_raw = s.get("side", "")
+            side_label = "LONG" if side_raw == "B" or s.get("is_long") else "SHORT"
+            items.append({
+                **s,
+                "kind": "LIVE",            # landing reads s.kind for the OPEN/CLOSED tag — give it a real value
+                "ts_str": ts_str,
+                "side": side_label,        # overrides 'B'/'A' with human label
+                "engine": s.get("strategy", "?"),
+            })
         self._json(200, {"items": items, "ts": int(time.time() * 1000)})
 
     def _serve_whales(self) -> None:
