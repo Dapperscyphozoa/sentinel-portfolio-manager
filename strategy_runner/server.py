@@ -52,7 +52,7 @@ class Handler(BaseHTTPRequestHandler):
             return _json(self, 200, {"ok": True, "ts": time.time(), "registry": runner.registry_info(),
                                      "halted": list(halt.active_halts())})
         if path == "/state":
-            rows = CONN.execute("SELECT cloid,strategy,coin,is_long,open_ts,open_px,size_usd,sl_px,tp_px,status FROM trades ORDER BY open_ts DESC LIMIT 200").fetchall()
+            rows = CONN.execute("SELECT cloid,strategy,coin,is_long,open_ts,open_px,size_usd,sl_px,tp_px,status,extras_json FROM trades ORDER BY open_ts DESC LIMIT 200").fetchall()
             return _json(self, 200, [dict(r) for r in rows])
         if path == "/signals":
             n = int(q.get("limit", "100"))
