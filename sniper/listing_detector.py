@@ -75,10 +75,11 @@ class ListingDetector:
 
     def fetch_universe(self) -> list[str]:
         """Returns the current list of HL perp symbols."""
-        with httpx.Client(timeout=self.http_timeout_s) as cli:
-            r = cli.post(HL_INFO, json={"type": "meta"})
-            r.raise_for_status()
-            data = r.json()
+        from sniper.oracle_lag import _client
+        cli = _client(self.http_timeout_s)
+        r = cli.post(HL_INFO, json={"type": "meta"})
+        r.raise_for_status()
+        data = r.json()
         # `meta` returns { universe: [ {name: "BTC", ...}, ... ] }
         return [u["name"] for u in data.get("universe", [])]
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -24,6 +25,31 @@ log = logging.getLogger("oracle_lag")
 HL_INFO = "https://api.hyperliquid.xyz/info"
 BINANCE_TICKER = "https://fapi.binance.com/fapi/v1/ticker/price"
 BYBIT_TICKER = "https://api.bybit.com/v5/market/tickers"
+
+
+# Reusable httpx clients, one per host. Fixed connection-pool size keeps the
+# glibc allocator from churning new arenas every poll. Without this, each
+# `with httpx.Client(...)` cycle leaves ~5-10 KB of allocator residue, and
+# at ~20 cycles/min the RSS climbs +4 MB/min indefinitely. Pooled clients
+# stabilise RSS within ~10 min of startup. Lock-guarded init for thread safety.
+_clients: dict[str, httpx.Client] = {}
+_clients_lock = threading.Lock()
+
+
+def _client(timeout_s: float = 5.0) -> httpx.Client:
+    """Get-or-create a shared httpx.Client keyed by timeout bucket. We use
+    one client per common timeout (most calls use 5.0); pool stays tiny.
+    """
+    key = f"t{int(timeout_s)}"
+    if key in _clients:
+        return _clients[key]
+    with _clients_lock:
+        if key not in _clients:
+            _clients[key] = httpx.Client(
+                timeout=timeout_s,
+                limits=httpx.Limits(max_keepalive_connections=8, max_connections=16),
+            )
+    return _clients[key]
 
 
 @dataclass
@@ -43,10 +69,10 @@ class SnipeDecision:
 
 def fetch_hl_mark(coin: str, timeout_s: float = 5.0) -> Optional[float]:
     try:
-        with httpx.Client(timeout=timeout_s) as cli:
-            r = cli.post(HL_INFO, json={"type": "allMids"})
-            r.raise_for_status()
-            mids = r.json()
+        cli = _client(timeout_s)
+        r = cli.post(HL_INFO, json={"type": "allMids"})
+        r.raise_for_status()
+        mids = r.json()
         if coin in mids:
             return float(mids[coin])
     except Exception as e:
@@ -58,10 +84,10 @@ def fetch_binance_price(coin: str, timeout_s: float = 5.0) -> Optional[float]:
     """Try Binance USDT perp. Returns None if symbol not listed."""
     symbol = f"{coin}USDT"
     try:
-        with httpx.Client(timeout=timeout_s) as cli:
-            r = cli.get(BINANCE_TICKER, params={"symbol": symbol})
-            if r.status_code == 200:
-                return float(r.json()["price"])
+        cli = _client(timeout_s)
+        r = cli.get(BINANCE_TICKER, params={"symbol": symbol})
+        if r.status_code == 200:
+            return float(r.json()["price"])
     except Exception as e:
         log.debug("fetch_binance_price(%s) failed: %s", coin, e)
     return None
@@ -71,14 +97,14 @@ def fetch_bybit_price(coin: str, timeout_s: float = 5.0) -> Optional[float]:
     """Try Bybit linear perp (USDT-margined)."""
     symbol = f"{coin}USDT"
     try:
-        with httpx.Client(timeout=timeout_s) as cli:
-            r = cli.get(BYBIT_TICKER, params={"category": "linear", "symbol": symbol})
-            if r.status_code == 200:
-                data = r.json()
-                if data.get("retCode") == 0:
-                    tickers = data.get("result", {}).get("list", [])
-                    if tickers:
-                        return float(tickers[0]["lastPrice"])
+        cli = _client(timeout_s)
+        r = cli.get(BYBIT_TICKER, params={"category": "linear", "symbol": symbol})
+        if r.status_code == 200:
+            data = r.json()
+            if data.get("retCode") == 0:
+                tickers = data.get("result", {}).get("list", [])
+                if tickers:
+                    return float(tickers[0]["lastPrice"])
     except Exception as e:
         log.debug("fetch_bybit_price(%s) failed: %s", coin, e)
     return None

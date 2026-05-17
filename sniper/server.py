@@ -63,18 +63,18 @@ def _i(name: str, default: int) -> int:
 def get_account_value() -> float:
     """Fetch live HL account value. Falls back to env or default."""
     try:
-        import httpx
         wallet = os.environ.get("HL_AGENT_WALLET")
         if not wallet:
             return _f("SNIPER_DEFAULT_ACCOUNT_USD", 491.0)
-        with httpx.Client(timeout=5.0) as cli:
-            r = cli.post("https://api.hyperliquid.xyz/info",
-                         json={"type": "clearinghouseState", "user": wallet})
-            if r.status_code == 200:
-                data = r.json()
-                value = float(data.get("marginSummary", {}).get("accountValue", 0))
-                if value > 0:
-                    return value
+        from sniper.oracle_lag import _client
+        cli = _client(5.0)
+        r = cli.post("https://api.hyperliquid.xyz/info",
+                     json={"type": "clearinghouseState", "user": wallet})
+        if r.status_code == 200:
+            data = r.json()
+            value = float(data.get("marginSummary", {}).get("accountValue", 0))
+            if value > 0:
+                return value
     except Exception as e:
         log.warning("get_account_value failed: %s", e)
     return _f("SNIPER_DEFAULT_ACCOUNT_USD", 491.0)
