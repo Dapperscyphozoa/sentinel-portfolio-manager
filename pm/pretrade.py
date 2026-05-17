@@ -52,14 +52,16 @@ class CheckResult:
     bt_pf: float = 0.0
 
 
-# Combined engine registry — 13 active = 11 OOS + 2 legacy provisional
-# 7 legacy cut after audit: vsq, range_fade, range_bo, lh1, fd1, cex_dex_arb, precog
+# Combined engine registry — 14 active = 11 OOS + 2 ict + sniper + 2 keepers
+# 7 legacy archived (moved to strategy_runner/strategies/_archived/):
+#   fsp, vsq, range_fade, range_bo, lh1, fd1, precog
+# cex_dex_arb retained on paper.
 # All routed through same PM gate (coin lock + regime + cooldown + sizing).
 # cap_frac is advisory only; sizing is flat 5% margin per trade.
 ENGINE_REGISTRY: dict[str, dict] = {
-    # ─── LEGACY 2 PROVISIONAL (need signal-bus HL/Binance feeds to truly validate) ───
-    "fsp":          {"affinity": ["trend_up", "trend_down", "range", "chop"], "bt_pf": 2.65, "cap_frac": 0.08},  # untested in offline BT
+    # ─── SENTINEL-BORN / RETAINED (paper or live) ───
     "liq_cascade":  {"affinity": ["trend_up", "trend_down"],                  "bt_pf": 1.30, "cap_frac": 0.04},  # needs Binance liq feed
+    "cex_dex_arb":  {"affinity": ["range", "chop"],                           "bt_pf": 0.00, "cap_frac": 0.08},  # paper only — needs OKX/Bybit WS up
     # ─── OOS 11 (validated 365d HL, 116 coins, train/test split) ───
     "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf": 10.05, "cap_frac": 0.12},
     "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  2.12, "cap_frac": 0.06},
@@ -84,10 +86,11 @@ ENGINE_REGISTRY: dict[str, dict] = {
                              "bt_pf": 0.00, "cap_frac": 0.00},   # bt_pf=0: untested, paper only
 }
 
-# CUT engines — hard-blocked from check() regardless of env (audit verdict)
-# To re-enable, remove from this set + re-validate via signal-bus integration
-CUT_ENGINES: set = {"vsq", "range_fade", "range_bo", "lh1", "fd1",
-                    "cex_dex_arb", "precog"}
+# CUT_ENGINES — hard-blocked from check() regardless of env. The 7 legacy
+# strategies are now archived (files moved out of strategies/), so they
+# cannot be loaded and don't need to appear here. Empty set retained as a
+# mechanism for future emergency blocks.
+CUT_ENGINES: set = set()
 
 # Backward-compat alias
 OOS_ENGINE_REGISTRY = ENGINE_REGISTRY

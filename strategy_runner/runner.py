@@ -59,12 +59,14 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load cascade sniper")
 
-    # 2) Legacy 9 strategies — combined with OOS per operator spec
+    # 2) Remaining keepers — liq_cascade (sentinel-born), cex_dex_arb (paper),
+    #    donchian (post-sentinel build). The 7 legacy ports (fsp, vsq,
+    #    range_fade, range_breakout, lh1, fd1, precog) live in _archived/
+    #    and are intentionally NOT imported here.
     import os
     if os.environ.get("STRATEGY_LEGACY_LOAD", "1") == "1":   # default ON for combined deployment
         legacy_loaded = []
-        for modname in ("fsp", "range_fade", "range_breakout", "vsq", "fd1",
-                        "lh1", "precog", "liq_cascade", "cex_dex_arb", "donchian"):
+        for modname in ("liq_cascade", "cex_dex_arb", "donchian"):
             try:
                 mod = __import__(f"strategy_runner.strategies.{modname}", fromlist=["*"])
                 for attr in dir(mod):
