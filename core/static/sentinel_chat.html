@@ -716,9 +716,12 @@ function appendLoading(routeHint) {
     const lbl = el.querySelector('.ld-label');
     if (lbl) {
       if (routeHint === 'deep') {
-        if (sec > 60) lbl.textContent = 'synthesizing 5 longest responses';
-        else if (sec > 30) lbl.textContent = 'voters returning (slower models still working)';
-        else if (sec > 10) lbl.textContent = 'fastest voters arrived, waiting for depth';
+        if (sec > 130) lbl.textContent = '◆ refinement integrating critiques';
+        else if (sec > 105) lbl.textContent = '◆ hostile critics reviewing synthesis';
+        else if (sec > 95) lbl.textContent = '◇ first synthesis · launching critique round';
+        else if (sec > 30) lbl.textContent = '⏵ voters returning · waiting for slow voters';
+        else if (sec > 10) lbl.textContent = '⏵ specialists working in parallel · 10 voters';
+        else if (sec > 3) lbl.textContent = '⏵ classifying domain · routing per voter skill';
       } else {
         if (sec > 45) lbl.textContent = 'still working… (slow query)';
         else if (sec > 25) lbl.textContent = 'synthesizing dissent…';
@@ -752,10 +755,13 @@ function appendAsstMsg(d, loader, cached) {
   const ic = d.intent_classification || {};
   const conf = Math.round((ic.confidence || 0) * 100);
   const answer = d.answer || d.response || d.result?.design?.approach || '(no answer)';
+  const firstSynth = d.first_synthesis;
   const gaps = d.knowledge_gaps || [];
   const voters = d.voters_inspection || d.voters || [];
   const ctx = d.similar_prior_asks || [];
   const entryId = d.entry_id || '';
+  const meta = d.meta || {};
+  const domainInfo = meta.domain || {};
 
   let ctxHtml = '';
   if (ctx.length) {
@@ -767,24 +773,62 @@ function appendAsstMsg(d, loader, cached) {
     gapsHtml = `<div class="meta"><span class="badge gap">gaps ${gaps.length}</span><span style="opacity:0.7">${gaps.slice(0,3).map(g => esc(typeof g==='string'?g:(g.gap||g.text||''))).join(' · ')}</span></div>`;
   }
 
+  // Split voters into round-1 and critics
+  const round1 = voters.filter(v => v.role !== 'critic');
+  const critics = voters.filter(v => v.role === 'critic');
+
   let votersHtml = '';
-  if (voters.length) {
-    const lines = voters.map(v => {
+  if (round1.length) {
+    const lines = round1.map(v => {
       const cls = v.used_antipode ? 'voter antipode' : 'voter';
-      const flag = v.used_antipode ? '◆' : '·';
+      const flag = v.role === 'specialist' ? '◆' : (v.role === 'generalist' ? '○' : '·');
+      const roleColor = v.role === 'specialist' ? 'var(--acid-bright)' :
+                        v.role === 'generalist' ? 'var(--heat)' : 'var(--chrome)';
       return `<div class="${cls}">
-        <span class="vm">${flag} ${esc(v.model)}</span><span class="vc">${Math.round((v.confidence||0)*100)}%</span>
+        <span class="vm" style="color:${roleColor}">${flag} ${esc(v.model)}</span><span class="vc">${Math.round((v.confidence||0)*100)}%</span>
         <div class="va">${esc((v.answer||'').slice(0,500))}</div>
-        ${v.reasoning ? `<div class="vr">${esc(v.reasoning.slice(0,300))}</div>` : ''}
+        ${v.reasoning ? `<div class="vr">${esc(v.reasoning.slice(0,200))}</div>` : ''}
       </div>`;
     }).join('');
     votersHtml = `
       <div class="voters">
         <button class="voters-tog" onclick="this.parentElement.classList.toggle('open')">
-          ⌗ inspect ${voters.length} voter${voters.length>1?'s':''}
+          ⌗ inspect ${round1.length} voter${round1.length>1?'s':''} · ◆ specialist · ○ generalist
         </button>
         <div class="voters-list">${lines}</div>
       </div>`;
+  }
+
+  let criticsHtml = '';
+  if (critics.length) {
+    const lines = critics.map(c => {
+      return `<div class="voter antipode" style="border-left-color:var(--blood)">
+        <span class="vm" style="color:var(--blood)">⚔ ${esc(c.model)}</span><span class="vc">${Math.round((c.confidence||0)*100)}%</span>
+        <div class="va">${esc((c.answer||'').slice(0,800))}</div>
+        ${c.reasoning ? `<div class="vr">${esc(c.reasoning.slice(0,200))}</div>` : ''}
+      </div>`;
+    }).join('');
+    criticsHtml = `
+      <div class="voters">
+        <button class="voters-tog" onclick="this.parentElement.classList.toggle('open')">
+          ⚔ inspect ${critics.length} hostile critic${critics.length>1?'s':''}
+        </button>
+        <div class="voters-list">${lines}</div>
+      </div>`;
+  }
+
+  let firstSynthHtml = '';
+  if (firstSynth && firstSynth !== answer) {
+    const fid = 'fs-' + (entryId || Math.random().toString(36).slice(2,8));
+    firstSynthHtml = `
+      <details style="margin-top:8px;border-top:1px solid var(--line);padding-top:8px;">
+        <summary style="cursor:pointer;color:var(--chrome);opacity:0.55;font-size:10px;letter-spacing:0.15em;text-transform:uppercase;">
+          ◇ show first-pass synthesis (before critique)
+        </summary>
+        <div style="margin-top:8px;padding:10px;background:var(--carbon);border-radius:6px;font-size:12px;line-height:1.55;">
+          ${md(firstSynth)}
+        </div>
+      </details>`;
   }
 
   const rateHtml = entryId ? `<div class="rate">
@@ -793,6 +837,9 @@ function appendAsstMsg(d, loader, cached) {
   </div>` : '';
 
   const cachedBadge = cached ? '<span class="badge" style="background:rgba(184,255,47,0.15);color:var(--heat);border:1px solid rgba(184,255,47,0.3)">cached · 0s</span>' : '';
+  const domainBadge = domainInfo.domain ? `<span class="badge" style="background:rgba(0,229,255,0.12);color:var(--cyan);border:1px solid rgba(0,229,255,0.3)">domain · ${esc(domainInfo.domain)}</span>` : '';
+  const refinedBadge = (route === 'deep' && firstSynth && firstSynth !== answer) ? '<span class="badge" style="background:rgba(193,39,45,0.15);color:var(--blood);border:1px solid rgba(193,39,45,0.35)">refined ✦</span>' : '';
+  const timingMeta = meta.timing ? `<span style="opacity:0.5">v ${meta.timing.voters_s}s · s1 ${meta.timing.synth1_s}s · ⚔ ${meta.timing.critique_s}s · r ${meta.timing.refine_s}s = ${meta.timing.total_s}s</span>` : '';
 
   const el = document.createElement('div');
   el.className = 'msg asst';
@@ -801,14 +848,18 @@ function appendAsstMsg(d, loader, cached) {
     <div class="role">sentinel</div>
     ${ctxHtml}
     <div class="body">${md(answer)}</div>
+    ${firstSynthHtml}
     ${gapsHtml}
     <div class="meta">
       ${cachedBadge}
+      ${refinedBadge}
       <span class="badge ${route}">${route}</span>
-      ${ic.reason ? `<span style="opacity:0.6">${esc(ic.reason)}</span>` : ''}
+      ${domainBadge}
       ${conf ? `<span style="opacity:0.6">conf ${conf}%</span>` : ''}
+      ${timingMeta}
     </div>
     ${votersHtml}
+    ${criticsHtml}
     ${rateHtml}
   `;
   msgs.appendChild(el);

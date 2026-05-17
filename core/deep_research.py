@@ -87,7 +87,8 @@ Your synthesis MUST:
 DO NOT just summarize. DO NOT remove specifics. ADD value through synthesis."""
 
 
-async def _call_provider(client: httpx.AsyncClient, prov_tuple, system: str, user: str) -> dict:
+async def _call_provider(client: httpx.AsyncClient, prov_tuple, system: str, user: str,
+                          temperature: float = 0.65) -> dict:
     name, model, base_url, env_key, max_tokens = prov_tuple
     api_key = os.environ.get(env_key, "")
     if not api_key:
@@ -98,7 +99,7 @@ async def _call_provider(client: httpx.AsyncClient, prov_tuple, system: str, use
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
         "max_tokens": max_tokens,
-        "temperature": 0.65,
+        "temperature": temperature,
     }
     start = time.time()
     try:
@@ -122,79 +123,233 @@ async def _call_provider(client: httpx.AsyncClient, prov_tuple, system: str, use
                 "error": str(e)[:200], "elapsed_s": round(time.time() - start, 1)}
 
 
-async def run_deep_research(query: str, providers_subset: Optional[list] = None) -> dict:
-    """Fire all providers in parallel. Return per-voter responses + synthesis.
+# ─────────────────── Adversarial critique prompt ───────────────────
+CRITIQUE_SYSTEM = """You are a HOSTILE peer reviewer at a top-tier quant fund.
+The text below is a synthesis from 10 LLMs answering the user's question.
+Your job is to find what's WRONG with it. Be brutal. Be specific.
 
-    Args:
-        query: user's research question
-        providers_subset: list of provider names to use (None = all available)
+Identify exactly 3-5 of:
+- OMISSIONS: critical material that should be there but isn't
+- OVERCONFIDENCE: claims stated as fact that are actually contested
+- ERRORS: outright wrong statements (be specific, cite what's wrong)
+- BLINDSPOTS: framings the synthesis takes for granted that a strong reviewer would challenge
+- BURIED INSIGHTS: things that are mentioned but should be central
 
-    Returns:
-        {
-          "voters": [{provider, model, ok, content, elapsed_s, words}, ...],
-          "synthesis": str,  # final combined answer
-          "synth_elapsed_s": float,
-          "total_elapsed_s": float,
-          "providers_called": int,
-          "providers_succeeded": int,
-        }
+Output format:
+## Critique
+1. [TYPE] specific issue with exact quote or reference to which section
+2. [TYPE] ...
+3. [TYPE] ...
+
+## What's missing entirely
+Brief enumeration of topics the synthesis SHOULD have covered but didn't.
+
+## One concrete improvement
+The single most impactful change you'd demand before approving this for publication.
+
+Do NOT be polite. Do NOT hedge. Do NOT compliment. Your value is in dissent."""
+
+
+async def run_deep_research(query: str, providers_subset: Optional[list] = None,
+                            entry_id: Optional[str] = None,
+                            enable_critique: bool = True) -> dict:
+    """Two-stage deep research:
+
+    STAGE 1 — Skill-conditioned routing:
+      Classify query domain (3s, fastest model)
+      Fire ALL 10 voters in parallel with PER-VOTER prompt additions:
+        Strong-in-domain voters → emphasize their specialty
+        Weak-in-domain voters   → asked to provide breadth/generalist coverage
+      Diversity preserved: every voter still fires.
+      Synthesize first-pass.
+
+    STAGE 2 — Adversarial critique (closed-loop refinement):
+      Send first-pass synthesis to 3 critique voters in parallel.
+      Each critic produces hostile peer-review.
+      Final refinement integrates synthesis + critiques.
+
+    Returns dict with: domain, voters, critiques, first_synthesis, refined_synthesis, timing.
     """
+    import hashlib
+    from core.voter_skills import (classify_domain, get_voter_prompt_addition,
+                                    VOTER_PROFILES)
+    from core import skill_ledger
+
     start = time.time()
-    use = [p for p in PROVIDERS
-           if (providers_subset is None or p[0] in providers_subset)
-           and os.environ.get(p[3], "")]
-    log.info("deep_research: firing %d providers in parallel", len(use))
+    entry_id = entry_id or f"deep_{int(time.time())}"
+    query_hash = hashlib.sha256(query.encode()).hexdigest()[:16]
+
+    available = [p for p in PROVIDERS
+                 if (providers_subset is None or p[0] in providers_subset)
+                 and os.environ.get(p[3], "")]
+    log.info("[deep:%s] firing %d voters", entry_id, len(available))
 
     async with httpx.AsyncClient() as client:
-        # Fire all voters in parallel
-        results = await asyncio.gather(
-            *[_call_provider(client, p, DEEP_RESEARCH_SYSTEM, query) for p in use]
-        )
-        voters_phase = time.time() - start
+        # ─── STAGE 0: Domain classification (~3s) ───
+        dom_start = time.time()
+        domain_info = await classify_domain(query, client)
+        dom_elapsed = time.time() - dom_start
+        domain = domain_info["domain"]
+        log.info("[deep:%s] domain=%s conf=%.2f in %.1fs",
+                 entry_id, domain, domain_info["confidence"], dom_elapsed)
+
+        # ─── STAGE 1: Fire all voters with skill-conditioned prompts (parallel) ───
+        async def call_with_skill(prov):
+            voter_name = prov[0]
+            skill_addition = get_voter_prompt_addition(voter_name, domain)
+            full_system = DEEP_RESEARCH_SYSTEM + "\n\n" + skill_addition
+            result = await _call_provider(client, prov, full_system, query)
+            # Record to ledger
+            skill_ledger.record_voter_call(
+                entry_id=entry_id, query_hash=query_hash, domain=domain,
+                voter_name=voter_name, model_id=prov[1],
+                elapsed_s=result.get("elapsed_s", 0),
+                word_count=result.get("words", 0),
+                ok=result.get("ok", False),
+                error_text=result.get("error"),
+                is_critique=False,
+            )
+            # Annotate with skill metadata
+            result["assigned_domain"] = domain
+            result["domain_skill_score"] = VOTER_PROFILES.get(voter_name, {}).get(domain, 0.5)
+            result["role"] = "specialist" if result["domain_skill_score"] >= 0.82 else "generalist"
+            return result
+
+        voter_phase_start = time.time()
+        results = await asyncio.gather(*[call_with_skill(p) for p in available])
+        voters_elapsed = time.time() - voter_phase_start
         ok_voters = [r for r in results if r.get("ok") and r.get("content")]
-        log.info("voters done in %.1fs: %d/%d ok", voters_phase, len(ok_voters), len(use))
+        log.info("[deep:%s] voters done in %.1fs: %d/%d ok",
+                 entry_id, voters_elapsed, len(ok_voters), len(available))
 
         if not ok_voters:
             return {
-                "voters": results,
-                "synthesis": "ERROR: no voters returned a response.",
+                "entry_id": entry_id, "domain": domain_info,
+                "voters": results, "critiques": [],
+                "first_synthesis": "", "refined_synthesis": "ERROR: no voters returned.",
                 "total_elapsed_s": round(time.time() - start, 1),
-                "providers_called": len(use),
-                "providers_succeeded": 0,
+                "providers_called": len(available), "providers_succeeded": 0,
             }
 
-        # Synthesizer: pass top 5 longest voter responses to the strongest model
+        # ─── STAGE 1b: First synthesis ───
         ok_sorted = sorted(ok_voters, key=lambda r: -r.get("words", 0))[:5]
-        synth_input = f"USER QUESTION:\n{query}\n\n"
+        synth_input = f"USER QUESTION:\n{query}\n\nDOMAIN: {domain}\n\n"
         for i, v in enumerate(ok_sorted, 1):
-            synth_input += f"\n═══ VOTER {i} ({v['model']}, {v.get('words',0)} words) ═══\n{v['content']}\n"
-        synth_input += "\n═══ END OF VOTERS ═══\n\nNow synthesize the BEST and MOST COMPREHENSIVE single response covering everything important from the voters above. Be longer and deeper than any individual voter."
+            synth_input += f"\n═══ VOTER {i} ({v['model']}, role={v.get('role','?')}, {v.get('words',0)}w) ═══\n{v['content']}\n"
+        synth_input += "\n═══ END OF VOTERS ═══\n\nSynthesize the BEST and MOST COMPREHENSIVE single response covering all important content. Be longer and deeper than any individual voter. Use the role tags — specialists got domain-specific prompts, generalists got breadth — so integrate accordingly."
 
-        # Use cerebras qwen-3-235b as synthesizer (8k output, fast, strong reasoning)
         synth_prov = ("cerebras-qwen3-235b", "qwen-3-235b-a22b-instruct-2507",
                       "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", 8000)
         synth_start = time.time()
-        synth_result = await _call_provider(client, synth_prov, SYNTHESIZER_SYSTEM, synth_input)
+        synth_result = await _call_provider(client, synth_prov, SYNTHESIZER_SYSTEM,
+                                            synth_input, temperature=0.55)
         synth_elapsed = time.time() - synth_start
-        log.info("synthesis done in %.1fs", synth_elapsed)
+        first_synthesis = synth_result.get("content", "") if synth_result.get("ok") else ""
+        if not first_synthesis:
+            first_synthesis = ok_sorted[0]["content"]
+        log.info("[deep:%s] synth1 done in %.1fs (%d words)",
+                 entry_id, synth_elapsed, len(first_synthesis.split()))
 
-        synthesis = synth_result.get("content", "")
-        if not synthesis or not synth_result.get("ok"):
-            # Fallback: use longest voter answer
-            synthesis = ok_sorted[0]["content"]
-            log.warning("synthesizer failed, falling back to longest voter")
+        # ─── STAGE 2: Adversarial critique (3 critics in parallel) ───
+        critiques = []
+        critique_elapsed = 0.0
+        refined_synthesis = first_synthesis
+        refine_elapsed = 0.0
+
+        if enable_critique and first_synthesis:
+            # Pick 3 strongest critics (different strengths than first synth)
+            # gpt-4.1 for code/risk; mistral-large for risk/european perspective;
+            # nemotron-49b for careful instruction following.
+            critic_names = ["github-gpt-4.1", "mistral-large", "nvidia-nemotron-49b"]
+            critic_provs = [p for p in available if p[0] in critic_names]
+
+            critique_input = (
+                f"ORIGINAL QUESTION:\n{query}\n\n"
+                f"DOMAIN: {domain}\n\n"
+                f"SYNTHESIS TO CRITIQUE:\n{first_synthesis}\n\n"
+                f"Now critique this synthesis ruthlessly per your instructions."
+            )
+
+            async def call_critic(prov):
+                result = await _call_provider(client, prov, CRITIQUE_SYSTEM,
+                                              critique_input, temperature=0.4)
+                skill_ledger.record_voter_call(
+                    entry_id=entry_id, query_hash=query_hash, domain=domain,
+                    voter_name=prov[0], model_id=prov[1],
+                    elapsed_s=result.get("elapsed_s", 0),
+                    word_count=result.get("words", 0),
+                    ok=result.get("ok", False),
+                    error_text=result.get("error"),
+                    is_critique=True,
+                )
+                result["assigned_domain"] = domain
+                result["role"] = "critic"
+                return result
+
+            crit_start = time.time()
+            critiques = await asyncio.gather(*[call_critic(p) for p in critic_provs])
+            critique_elapsed = time.time() - crit_start
+            ok_critiques = [c for c in critiques if c.get("ok") and c.get("content")]
+            log.info("[deep:%s] critiques done in %.1fs: %d/%d ok",
+                     entry_id, critique_elapsed, len(ok_critiques), len(critic_provs))
+
+            # ─── STAGE 2b: Refinement synthesis ───
+            if ok_critiques:
+                refine_input = (
+                    f"ORIGINAL QUESTION:\n{query}\n\nDOMAIN: {domain}\n\n"
+                    f"FIRST-PASS SYNTHESIS:\n{first_synthesis}\n\n"
+                    f"═══ HOSTILE CRITIQUES ═══\n"
+                )
+                for i, c in enumerate(ok_critiques, 1):
+                    refine_input += f"\nCRITIC {i} ({c['model']}):\n{c['content']}\n"
+                refine_input += (
+                    "\n═══ END OF CRITIQUES ═══\n\n"
+                    "Produce the FINAL refined synthesis. Address every legitimate "
+                    "critique. Add the missing content. Fix the overconfident claims. "
+                    "Steelman dissenting framings where they have merit. "
+                    "Keep what was strong. Be MORE comprehensive than the first pass, "
+                    "not less. Aim for 2500+ words for research questions. "
+                    "Note explicitly where you accepted/rejected each critique."
+                )
+
+                REFINE_SYSTEM = SYNTHESIZER_SYSTEM + (
+                    "\n\nYou are doing a SECOND-PASS REFINEMENT after hostile peer review. "
+                    "Your job is integration, not summarization. The result must be a single "
+                    "coherent document that is BETTER than the first pass on every axis."
+                )
+
+                refine_start = time.time()
+                refine_result = await _call_provider(
+                    client, synth_prov, REFINE_SYSTEM, refine_input, temperature=0.5,
+                )
+                refine_elapsed = time.time() - refine_start
+                if refine_result.get("ok") and refine_result.get("content"):
+                    refined_synthesis = refine_result["content"]
+                log.info("[deep:%s] refine done in %.1fs (%d words)",
+                         entry_id, refine_elapsed, len(refined_synthesis.split()))
 
     total = time.time() - start
     return {
+        "entry_id": entry_id,
+        "domain": domain_info,
         "voters": results,
-        "synthesis": synthesis,
+        "critiques": critiques,
+        "first_synthesis": first_synthesis,
+        "refined_synthesis": refined_synthesis,
         "synth_model": synth_prov[1],
-        "synth_elapsed_s": round(synth_elapsed, 1),
-        "voters_elapsed_s": round(voters_phase, 1),
-        "total_elapsed_s": round(total, 1),
-        "providers_called": len(use),
+        "timing": {
+            "domain_classify_s": round(dom_elapsed, 1),
+            "voters_s": round(voters_elapsed, 1),
+            "synth1_s": round(synth_elapsed, 1),
+            "critique_s": round(critique_elapsed, 1),
+            "refine_s": round(refine_elapsed, 1),
+            "total_s": round(total, 1),
+        },
+        "providers_called": len(available),
         "providers_succeeded": len(ok_voters),
-        "synth_words": len(synthesis.split()),
+        "first_words": len(first_synthesis.split()),
+        "refined_words": len(refined_synthesis.split()),
+        "critiques_succeeded": sum(1 for c in critiques if c.get("ok")),
     }
 
 

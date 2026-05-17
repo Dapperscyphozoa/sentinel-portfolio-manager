@@ -759,7 +759,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _handle_deep_research(self) -> None:
-        """In-process deep research: parallel-fire 9 top models, synthesize, no truncation."""
+        """In-process deep research: parallel-fire 10 top models, synthesize, no truncation."""
         body_len = int(self.headers.get("Content-Length", "0") or 0)
         body = self.rfile.read(body_len) if body_len else b"{}"
         try:
@@ -769,41 +769,64 @@ class Handler(BaseHTTPRequestHandler):
         query = (payload.get("text") or payload.get("query") or "").strip()
         if not query:
             return self._json(400, {"error": "missing 'text' field"})
+        enable_critique = payload.get("critique", True)
         try:
             import asyncio
             from core.deep_research import run_deep_research
             log.info("DEEP RESEARCH: %s", query[:120])
-            result = asyncio.run(run_deep_research(query))
+            r = asyncio.run(run_deep_research(query, enable_critique=enable_critique))
+            timing = r["timing"]
+            # Build voters list (round 1 voters first, critics after)
+            all_voters = []
+            for v in r["voters"]:
+                all_voters.append({
+                    "model": v["model"],
+                    "provider": v.get("provider", ""),
+                    "confidence": 1.0 if v.get("ok") else 0.0,
+                    "answer": v.get("content", "")[:1500] if v.get("ok") else f"FAILED: {v.get('error','?')}",
+                    "reasoning": f"{v.get('elapsed_s','?')}s · {v.get('words',0)}w · role={v.get('role','?')} · domain={v.get('assigned_domain','?')} · skill={v.get('domain_skill_score',0):.2f}",
+                    "used_antipode": v.get("role") == "generalist",
+                    "role": v.get("role"),
+                })
+            for c in r.get("critiques", []):
+                all_voters.append({
+                    "model": c["model"],
+                    "provider": c.get("provider", ""),
+                    "confidence": 1.0 if c.get("ok") else 0.0,
+                    "answer": c.get("content", "")[:1500] if c.get("ok") else f"FAILED: {c.get('error','?')}",
+                    "reasoning": f"CRITIC · {c.get('elapsed_s','?')}s · {c.get('words',0)}w",
+                    "used_antipode": True,  # critics are adversarial by construction
+                    "role": "critic",
+                })
             return self._json(200, {
-                "entry_id": f"deep_{int(time.time())}",
+                "entry_id": r["entry_id"],
                 "route": "deep",
-                "answer": result["synthesis"],
-                "synth_model": result.get("synth_model"),
-                "voters_inspection": [
-                    {"model": v["model"], "provider": v.get("provider",""),
-                     "confidence": 1.0 if v.get("ok") else 0.0,
-                     "answer": v.get("content","")[:1500] if v.get("ok") else f"FAILED: {v.get('error','?')}",
-                     "reasoning": f"{v.get('elapsed_s','?')}s · {v.get('words',0)} words",
-                     "used_antipode": False}
-                    for v in result["voters"]
-                ],
+                "answer": r["refined_synthesis"],
+                "first_synthesis": r["first_synthesis"],
+                "synth_model": r.get("synth_model"),
+                "voters_inspection": all_voters,
                 "intent_classification": {
                     "intent": "DEEP",
-                    "confidence": 1.0,
-                    "reason": f"parallel-fired {result['providers_called']} models, "
-                              f"{result['providers_succeeded']} succeeded in "
-                              f"{result['voters_elapsed_s']}s, synthesized in "
-                              f"{result['synth_elapsed_s']}s, total {result['total_elapsed_s']}s"
+                    "confidence": r["domain"].get("confidence", 0.5),
+                    "reason": (
+                        f"domain={r['domain']['domain']} · "
+                        f"{r['providers_succeeded']}/{r['providers_called']} voters in {timing['voters_s']}s · "
+                        f"synth1 {timing['synth1_s']}s · "
+                        f"critique {timing['critique_s']}s · "
+                        f"refine {timing['refine_s']}s · "
+                        f"total {timing['total_s']}s"
+                    ),
                 },
                 "knowledge_gaps": [],
                 "similar_prior_asks": [],
                 "meta": {
-                    "providers_called": result["providers_called"],
-                    "providers_succeeded": result["providers_succeeded"],
-                    "voters_elapsed_s": result["voters_elapsed_s"],
-                    "synth_elapsed_s": result["synth_elapsed_s"],
-                    "total_elapsed_s": result["total_elapsed_s"],
-                    "synth_words": result.get("synth_words"),
+                    "domain": r["domain"],
+                    "providers_called": r["providers_called"],
+                    "providers_succeeded": r["providers_succeeded"],
+                    "critiques_succeeded": r.get("critiques_succeeded", 0),
+                    "first_words": r.get("first_words", 0),
+                    "refined_words": r.get("refined_words", 0),
+                    "timing": timing,
                 },
             })
         except Exception as e:
