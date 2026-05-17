@@ -52,6 +52,13 @@ CREATE TABLE IF NOT EXISTS trades (
 );
 CREATE INDEX IF NOT EXISTS idx_trades_strategy_status ON trades(strategy, status);
 CREATE INDEX IF NOT EXISTS idx_trades_cloid ON trades(cloid);
+-- 1_GLOBAL coin lock: at most one open OR pending position per coin across
+-- all engines. Atomic at DB level — concurrent inserts race-safe. 'pending'
+-- rows are inserted BEFORE the HL order goes out; on success they transition
+-- to 'open', on HL rejection to 'open_failed' (no longer in this index).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_trades_open_coin_lock
+  ON trades(coin) WHERE status IN ('open', 'pending');
+CREATE INDEX IF NOT EXISTS idx_trades_coin_status_ts ON trades(coin, status, open_ts);
 
 CREATE TABLE IF NOT EXISTS closures (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -117,8 +124,29 @@ def connect(db_path: str) -> sqlite3.Connection:
 
 def init_db(db_path: str) -> sqlite3.Connection:
     conn = connect(db_path)
+    # Pre-schema migration: if older DB had duplicate (coin) where status IN
+    # ('open','pending'), the unique index creation in SCHEMA would fail.
+    # Demote excess rows to 'reconciled_off_book' so the lock can install.
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(trades)").fetchall()}
+        if cols:  # trades table exists from prior boot
+            dupes = conn.execute(
+                "SELECT coin, COUNT(*) AS n FROM trades "
+                "WHERE status IN ('open','pending') GROUP BY coin HAVING n > 1"
+            ).fetchall()
+            for r in dupes:
+                # Keep the most recent open row; demote older ones.
+                conn.execute(
+                    "UPDATE trades SET status='reconciled_off_book' "
+                    "WHERE coin=? AND status IN ('open','pending') "
+                    "AND id NOT IN (SELECT id FROM trades WHERE coin=? "
+                    "  AND status IN ('open','pending') ORDER BY open_ts DESC LIMIT 1)",
+                    (r["coin"], r["coin"]),
+                )
+    except sqlite3.OperationalError:
+        pass  # fresh DB — no trades table yet
     conn.executescript(SCHEMA)
-    # Idempotent migrations for existing databases
+    # Idempotent column migrations
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(trades)").fetchall()}
     if "close_retries" not in cols:
         conn.execute("ALTER TABLE trades ADD COLUMN close_retries INTEGER NOT NULL DEFAULT 0")

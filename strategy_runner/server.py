@@ -286,7 +286,7 @@ def _scan_loop() -> None:
         try:
             def on_sig(strat, sig, decision):
                 TRADER.open(strat, sig, decision.size_usd)
-            n = runner.scan_once(BUS, PM, on_sig)
+            n = runner.scan_once(BUS, PM, on_sig, trader=TRADER)
             if n:
                 log.info("scan: %d signals processed", n)
         except Exception:
@@ -299,6 +299,13 @@ def _position_loop() -> None:
     from .runner import REGISTRY
     while True:
         try:
+            # Defense in depth: clear any stale 'pending' rows (>5min old)
+            # from interrupted opens, which would otherwise hold the coin lock
+            # indefinitely.
+            try:
+                TRADER.sweep_stale_pending()
+            except Exception:
+                log.exception("sweep_stale_pending failed")
             closed = TRADER.position_loop_once(registry=REGISTRY)
             if closed:
                 log.info("position loop: closed %d", closed)

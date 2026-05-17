@@ -83,21 +83,23 @@ def _load_registered() -> None:
     log.info("REGISTRY total: %d strategies (first-fire order)", len(REGISTRY))
 
 
-def scan_once(bus: BusClient, pm: PMClient, on_signal) -> int:
+def scan_once(bus: BusClient, pm: PMClient, on_signal, trader=None) -> int:
     """One pass through every enabled strategy × its universe.
 
     Calls on_signal(strategy_cls, signal, pm_decision) for each (allowed) signal.
     Returns count of allowed signals.
 
-    Telemetry (audit-driven, 2026-05-17): per-engine counts emitted to log so
-    the operator can see what % of evaluate() calls are returning None vs
-    firing vs being PM-denied. This confirms or contradicts the "4h/1d bars
-    missing" diagnosis without writing the fix first.
+    If `trader` is provided, a synchronous local coin-lock pre-check runs
+    BEFORE pm.check. This is the 1_GLOBAL coin lock's fast path — query the
+    local SQLite trades table for any open/pending position (or recent
+    open_failed within cooldown) on the candidate coin and skip silently if
+    found. Eliminates the rapid re-fire / HL-hammer failure mode that the
+    sentinel council flagged (2026-05-17 audit).
     """
     if not REGISTRY:
         _load_registered()
     n = 0
-    # Per-engine counters: name → {eval, none, sig, denied, err}
+    # Per-engine counters: name → {eval, none, sig, locked, denied, err}
     stats: dict[str, dict] = {}
     enabled_count = 0
     disabled_count = 0
@@ -110,7 +112,8 @@ def scan_once(bus: BusClient, pm: PMClient, on_signal) -> int:
             halted_count += 1
             continue
         enabled_count += 1
-        s = stats.setdefault(strat.NAME, {"eval": 0, "none": 0, "sig": 0, "denied": 0, "err": 0})
+        s = stats.setdefault(strat.NAME, {"eval": 0, "none": 0, "sig": 0,
+                                            "locked": 0, "denied": 0, "err": 0})
         for coin in strat.UNIVERSE:
             s["eval"] += 1
             try:
@@ -123,6 +126,18 @@ def scan_once(bus: BusClient, pm: PMClient, on_signal) -> int:
                 s["none"] += 1
                 continue
             s["sig"] += 1
+            # ─── 1_GLOBAL coin-lock pre-check (synchronous, in-process) ───
+            # Skip the (HTTP) pm.check round-trip entirely if coin is already
+            # locked locally. Cheap indexed SQLite lookup.
+            if trader is not None:
+                try:
+                    locked, reason = trader.is_coin_locked(coin)
+                except Exception:
+                    locked, reason = False, ""
+                    log.exception("is_coin_locked check failed %s/%s", strat.NAME, coin)
+                if locked:
+                    s["locked"] += 1
+                    continue
             try:
                 decision = pm.check(strat.NAME, sig.to_dict())
             except Exception:
@@ -148,8 +163,8 @@ def scan_once(bus: BusClient, pm: PMClient, on_signal) -> int:
     # Per-engine breakdown — one line each, easy to grep
     for name, s in stats.items():
         log.info(
-            "scan_engine %s eval=%d none=%d sig=%d denied=%d err=%d",
-            name, s["eval"], s["none"], s["sig"], s["denied"], s["err"],
+            "scan_engine %s eval=%d none=%d sig=%d locked=%d denied=%d err=%d",
+            name, s["eval"], s["none"], s["sig"], s["locked"], s["denied"], s["err"],
         )
     return n
 

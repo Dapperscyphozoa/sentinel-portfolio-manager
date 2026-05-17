@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import sqlite3
 import time
 from dataclasses import dataclass
 from typing import Optional
@@ -45,19 +46,49 @@ class Trader:
             return per.strip().lower() in ("1", "true", "yes", "on")
         return self.live_default
 
+    def is_coin_locked(self, coin: str, failed_cooldown_s: int = 60) -> tuple[bool, str]:
+        """Synchronous, in-process check: is this coin already held by ANY engine,
+        OR did a recent HL order-place fail for this coin?
+
+        Returns (locked, reason). Used by runner pre-check before pm.check
+        and as defense-in-depth inside open().
+        """
+        coin = (coin or "").upper()
+        if not coin:
+            return True, "no_coin"
+        row = self.conn.execute(
+            "SELECT status FROM trades WHERE coin=? "
+            "AND status IN ('open','pending') LIMIT 1",
+            (coin,),
+        ).fetchone()
+        if row is not None:
+            return True, f"coin_locked:{row['status']}"
+        # Recent open_failed cooldown — prevents hammering HL with retries on
+        # a coin that just rejected (the "APT 71 times in 24h" failure mode).
+        cutoff = time.time() - failed_cooldown_s
+        row = self.conn.execute(
+            "SELECT 1 FROM trades WHERE coin=? AND status='open_failed' "
+            "AND open_ts > ? LIMIT 1",
+            (coin, cutoff),
+        ).fetchone()
+        if row is not None:
+            return True, "coin_recently_failed"
+        return False, ""
+
     def open(self, strategy: StrategyBase, sig: Signal, size_usd: float) -> OpenResult:
         cloid = make_cloid(strategy.CLOID_PREFIX, sig.coin)
         size_coin = size_usd / sig.ref_price if sig.ref_price > 0 else 0.0
         live = self._is_live(strategy.NAME)
         open_ts = time.time()
+        coin_upper = (sig.coin or "").upper()
 
-        # PM-side cloid registration
+        # PM-side cloid registration (kept for attribution; non-fatal)
         try:
             self.pm.register_cloid(strategy.NAME, cloid, sig.coin, sig.side)
         except Exception:
-            log.exception("pm.register_cloid")  # non-fatal
+            log.exception("pm.register_cloid")
 
-        # signal row
+        # signal row (always recorded for telemetry, regardless of lock outcome)
         self.conn.execute(
             "INSERT INTO signals(ts,strategy,coin,side,is_long,ref_price,sl_px,tp_px,max_hold_bars,fire_reason,extras_json) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
@@ -66,68 +97,118 @@ class Trader:
              json.dumps(sig.extras, default=str)),
         )
 
+        # ─── 1_GLOBAL coin lock: reserve slot atomically BEFORE placing HL order ───
+        # Insert 'pending' row first. Partial unique index on trades(coin)
+        # WHERE status IN ('open','pending') makes this race-safe: if another
+        # engine already locked this coin (open OR pending), IntegrityError
+        # fires and we abort without touching HL.
+        try:
+            self.conn.execute(
+                "INSERT INTO trades(cloid,strategy,coin,side,is_long,open_ts,open_px,size_usd,size_coin,"
+                "sl_px,tp_px,max_hold_bars,status,extras_json) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,'pending',?)",
+                (cloid, strategy.NAME, coin_upper, sig.side, int(sig.is_long), open_ts,
+                 sig.ref_price, size_usd, size_coin, sig.sl_px, sig.tp_px,
+                 sig.max_hold_bars,
+                 json.dumps({"live": live, "fire_reason": sig.fire_reason,
+                             "extras": sig.extras, "stage": "pending"}, default=str)),
+            )
+        except sqlite3.IntegrityError as e:
+            # Coin already locked by another engine's open/pending row, OR
+            # duplicate cloid (extremely unlikely given salted prefix).
+            log.info("trader.open coin_locked %s/%s — skipping (race lost or active position)",
+                     strategy.NAME, sig.coin)
+            return OpenResult(ok=False, cloid=cloid, error=f"coin_locked:{e}")
+
+        # ─── HL order placement ───
+        # Wrapped in try/finally so the 'pending' row ALWAYS transitions to a
+        # terminal status, even if an unexpected exception propagates from
+        # hl.market_open. Without this, an exception here would strand the
+        # row at status='pending' and the coin lock would never release.
         err: Optional[str] = None
-        # Bracket cloids: stored even if brackets fail to place, so position_loop
-        # knows whether to expect server-side or local-poll exits.
         tp_cloid: Optional[str] = None
         sl_cloid: Optional[str] = None
         bracket_status: Optional[dict] = None
-        if live:
-            if self.hl is None:
-                err = "live but no HL exchange wired"
-            else:
-                res = self.hl.market_open(
-                    coin=sig.coin, is_buy=sig.is_long, size_coin=size_coin, cloid=cloid,
-                    ref_price=sig.ref_price,
-                )
-                if not res.ok:
-                    err = res.error
+        try:
+            if live:
+                if self.hl is None:
+                    err = "live but no HL exchange wired"
                 else:
-                    # Entry filled. Place TP + SL brackets (council 5/6: keep
-                    # position_loop_once as fallback regardless of bracket outcome).
-                    tp_cloid = make_cloid(strategy.CLOID_PREFIX + "tp_", sig.coin)
-                    sl_cloid = make_cloid(strategy.CLOID_PREFIX + "sl_", sig.coin)
-                    try:
-                        bracket = self.hl.place_brackets(
-                            coin=sig.coin, is_long=bool(sig.is_long),
-                            size_coin=res.size_coin or size_coin,
-                            tp_px=sig.tp_px, sl_px=sig.sl_px,
-                            ref_price=sig.ref_price,
-                            tp_cloid=tp_cloid, sl_cloid=sl_cloid,
-                        )
-                        bracket_status = {
-                            "tp_ok": bool(bracket["tp"] and bracket["tp"].ok),
-                            "tp_err": (bracket["tp"].error if bracket["tp"] else None),
-                            "sl_ok": bool(bracket["sl"] and bracket["sl"].ok),
-                            "sl_err": (bracket["sl"].error if bracket["sl"] else None),
-                        }
-                        if not bracket_status["tp_ok"] or not bracket_status["sl_ok"]:
-                            log.warning("bracket place FAILED %s/%s: %s",
-                                        strategy.NAME, sig.coin, bracket_status)
-                        else:
-                            log.info("brackets placed %s/%s tp=%s sl=%s",
-                                     strategy.NAME, sig.coin, tp_cloid[:14], sl_cloid[:14])
-                    except Exception as e:
-                        log.exception("place_brackets crashed %s/%s", strategy.NAME, sig.coin)
-                        bracket_status = {"error": str(e)}
-
-        status = "open" if (live and err is None) or not live else "open_failed"
-        if err:
-            log.warning("trader.open FAILED %s/%s: %s (cloid=%s size_usd=%.2f live=%s)",
-                        strategy.NAME, sig.coin, err, cloid, size_usd, live)
-
-        self.conn.execute(
-            "INSERT OR IGNORE INTO trades(cloid,strategy,coin,side,is_long,open_ts,open_px,size_usd,size_coin,"
-            "sl_px,tp_px,max_hold_bars,status,extras_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (cloid, strategy.NAME, sig.coin, sig.side, int(sig.is_long), open_ts,
-             sig.ref_price, size_usd, size_coin, sig.sl_px, sig.tp_px,
-             sig.max_hold_bars, status,
-             json.dumps({"live": live, "fire_reason": sig.fire_reason,
-                         "extras": sig.extras, "open_error": err,
-                         "tp_cloid": tp_cloid, "sl_cloid": sl_cloid,
-                         "brackets": bracket_status}, default=str)),
-        )
+                    res = self.hl.market_open(
+                        coin=sig.coin, is_buy=sig.is_long, size_coin=size_coin, cloid=cloid,
+                        ref_price=sig.ref_price,
+                    )
+                    if not res.ok:
+                        err = res.error
+                    else:
+                        # Entry filled — place TP + SL brackets.
+                        tp_cloid = make_cloid(strategy.CLOID_PREFIX + "tp_", sig.coin)
+                        sl_cloid = make_cloid(strategy.CLOID_PREFIX + "sl_", sig.coin)
+                        try:
+                            bracket = self.hl.place_brackets(
+                                coin=sig.coin, is_long=bool(sig.is_long),
+                                size_coin=res.size_coin or size_coin,
+                                tp_px=sig.tp_px, sl_px=sig.sl_px,
+                                ref_price=sig.ref_price,
+                                tp_cloid=tp_cloid, sl_cloid=sl_cloid,
+                            )
+                            bracket_status = {
+                                "tp_ok": bool(bracket["tp"] and bracket["tp"].ok),
+                                "tp_err": (bracket["tp"].error if bracket["tp"] else None),
+                                "sl_ok": bool(bracket["sl"] and bracket["sl"].ok),
+                                "sl_err": (bracket["sl"].error if bracket["sl"] else None),
+                            }
+                            if not bracket_status["tp_ok"] or not bracket_status["sl_ok"]:
+                                log.warning("bracket place FAILED %s/%s: %s",
+                                            strategy.NAME, sig.coin, bracket_status)
+                            else:
+                                log.info("brackets placed %s/%s tp=%s sl=%s",
+                                         strategy.NAME, sig.coin, tp_cloid[:14], sl_cloid[:14])
+                        except Exception as e:
+                            log.exception("place_brackets crashed %s/%s", strategy.NAME, sig.coin)
+                            bracket_status = {"error": str(e)}
+        except Exception as e:
+            log.exception("hl.market_open raised %s/%s", strategy.NAME, sig.coin)
+            err = f"hl_raised:{e}"
+        finally:
+            # Always promote pending → open or open_failed, even on exception
+            new_status = "open" if (live and err is None) or not live else "open_failed"
+            if err:
+                log.warning("trader.open FAILED %s/%s: %s (cloid=%s size_usd=%.2f live=%s)",
+                            strategy.NAME, sig.coin, err, cloid, size_usd, live)
+            try:
+                self.conn.execute(
+                    "UPDATE trades SET status=?, extras_json=? WHERE cloid=?",
+                    (new_status,
+                     json.dumps({"live": live, "fire_reason": sig.fire_reason,
+                                 "extras": sig.extras, "open_error": err,
+                                 "tp_cloid": tp_cloid, "sl_cloid": sl_cloid,
+                                 "brackets": bracket_status}, default=str),
+                     cloid),
+                )
+            except Exception:
+                log.exception("CRITICAL: failed to UPDATE pending row %s — coin may stay locked until sweep",
+                              cloid)
         return OpenResult(ok=(err is None), cloid=cloid, error=err)
+
+    def sweep_stale_pending(self, max_age_s: int = 300) -> int:
+        """Demote any 'pending' rows older than max_age_s seconds to
+        'open_failed'. A pending row only exists transiently inside open();
+        anything older than a few minutes is from a process crash mid-call or
+        a stuck exception path. Frees the coin lock so trading can resume.
+        """
+        cutoff = time.time() - max_age_s
+        cur = self.conn.execute(
+            "UPDATE trades SET status='open_failed', "
+            "extras_json=json_set(COALESCE(extras_json,'{}'), '$.open_error', 'stale_pending_swept') "
+            "WHERE status='pending' AND open_ts < ?",
+            (cutoff,),
+        )
+        n = cur.rowcount if cur.rowcount is not None else 0
+        if n > 0:
+            log.warning("sweep_stale_pending: demoted %d stale 'pending' rows (>%ds old)",
+                        n, max_age_s)
+        return n
 
     def position_loop_once(self, registry=None) -> int:
         """Scan every open trade and close those that hit SL/TP/timeout, OR
