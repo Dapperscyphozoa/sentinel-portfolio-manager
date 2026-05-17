@@ -78,6 +78,9 @@ class Trader:
                     err = res.error
 
         status = "open" if (live and err is None) or not live else "open_failed"
+        if err:
+            log.warning("trader.open FAILED %s/%s: %s (cloid=%s size_usd=%.2f live=%s)",
+                        strategy.NAME, sig.coin, err, cloid, size_usd, live)
 
         self.conn.execute(
             "INSERT OR IGNORE INTO trades(cloid,strategy,coin,side,is_long,open_ts,open_px,size_usd,size_coin,"
@@ -85,7 +88,8 @@ class Trader:
             (cloid, strategy.NAME, sig.coin, sig.side, int(sig.is_long), open_ts,
              sig.ref_price, size_usd, size_coin, sig.sl_px, sig.tp_px,
              sig.max_hold_bars, status,
-             json.dumps({"live": live, "fire_reason": sig.fire_reason, "extras": sig.extras}, default=str)),
+             json.dumps({"live": live, "fire_reason": sig.fire_reason,
+                         "extras": sig.extras, "open_error": err}, default=str)),
         )
         return OpenResult(ok=(err is None), cloid=cloid, error=err)
 
