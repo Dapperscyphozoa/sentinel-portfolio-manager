@@ -67,6 +67,11 @@ class Trader:
         )
 
         err: Optional[str] = None
+        # Bracket cloids: stored even if brackets fail to place, so position_loop
+        # knows whether to expect server-side or local-poll exits.
+        tp_cloid: Optional[str] = None
+        sl_cloid: Optional[str] = None
+        bracket_status: Optional[dict] = None
         if live:
             if self.hl is None:
                 err = "live but no HL exchange wired"
@@ -77,6 +82,34 @@ class Trader:
                 )
                 if not res.ok:
                     err = res.error
+                else:
+                    # Entry filled. Place TP + SL brackets (council 5/6: keep
+                    # position_loop_once as fallback regardless of bracket outcome).
+                    tp_cloid = make_cloid(strategy.CLOID_PREFIX + "tp_", sig.coin)
+                    sl_cloid = make_cloid(strategy.CLOID_PREFIX + "sl_", sig.coin)
+                    try:
+                        bracket = self.hl.place_brackets(
+                            coin=sig.coin, is_long=bool(sig.is_long),
+                            size_coin=res.size_coin or size_coin,
+                            tp_px=sig.tp_px, sl_px=sig.sl_px,
+                            ref_price=sig.ref_price,
+                            tp_cloid=tp_cloid, sl_cloid=sl_cloid,
+                        )
+                        bracket_status = {
+                            "tp_ok": bool(bracket["tp"] and bracket["tp"].ok),
+                            "tp_err": (bracket["tp"].error if bracket["tp"] else None),
+                            "sl_ok": bool(bracket["sl"] and bracket["sl"].ok),
+                            "sl_err": (bracket["sl"].error if bracket["sl"] else None),
+                        }
+                        if not bracket_status["tp_ok"] or not bracket_status["sl_ok"]:
+                            log.warning("bracket place FAILED %s/%s: %s",
+                                        strategy.NAME, sig.coin, bracket_status)
+                        else:
+                            log.info("brackets placed %s/%s tp=%s sl=%s",
+                                     strategy.NAME, sig.coin, tp_cloid[:14], sl_cloid[:14])
+                    except Exception as e:
+                        log.exception("place_brackets crashed %s/%s", strategy.NAME, sig.coin)
+                        bracket_status = {"error": str(e)}
 
         status = "open" if (live and err is None) or not live else "open_failed"
         if err:
@@ -90,7 +123,9 @@ class Trader:
              sig.ref_price, size_usd, size_coin, sig.sl_px, sig.tp_px,
              sig.max_hold_bars, status,
              json.dumps({"live": live, "fire_reason": sig.fire_reason,
-                         "extras": sig.extras, "open_error": err}, default=str)),
+                         "extras": sig.extras, "open_error": err,
+                         "tp_cloid": tp_cloid, "sl_cloid": sl_cloid,
+                         "brackets": bracket_status}, default=str)),
         )
         return OpenResult(ok=(err is None), cloid=cloid, error=err)
 
@@ -103,7 +138,7 @@ class Trader:
         strategy-driven close checks). If None, only SL/TP/timeout is used.
         """
         rows = self.conn.execute(
-            "SELECT cloid,strategy,coin,is_long,open_ts,open_px,size_coin,sl_px,tp_px,max_hold_bars "
+            "SELECT cloid,strategy,coin,is_long,open_ts,open_px,size_coin,sl_px,tp_px,max_hold_bars,extras_json "
             "FROM trades WHERE status='open'"
         ).fetchall()
         closed = 0
@@ -155,6 +190,19 @@ class Trader:
         open_px = float(trade_row["open_px"])
         live = self.hl is not None and self._is_live(strategy)
 
+        # Read bracket cloids stashed at entry time so we can cancel any
+        # surviving trigger order after we close the position ourselves.
+        # This is the council-mandated cleanup path for the orphan-trigger
+        # race condition.
+        tp_cloid_orphan: Optional[str] = None
+        sl_cloid_orphan: Optional[str] = None
+        try:
+            extras = json.loads(trade_row["extras_json"] or "{}")
+            tp_cloid_orphan = extras.get("tp_cloid")
+            sl_cloid_orphan = extras.get("sl_cloid")
+        except Exception:
+            pass
+
         # LIVE close: must succeed on HL before we mark closed in our DB. If
         # we mark closed prematurely, the position is orphaned: still open on
         # HL with no SL/TP protection, but our position_loop won't see it.
@@ -195,6 +243,21 @@ class Trader:
                     except Exception:
                         log.exception("halt insert failed")
                 return  # do NOT mark closed
+
+            # Live close succeeded — cancel any surviving bracket triggers
+            # so they don't fire spuriously on a future re-entry on same coin.
+            # If either is already filled (which is fine — that's what closed
+            # the position), the cancel will no-op or return an error we ignore.
+            if reason != "tp" and tp_cloid_orphan:
+                try:
+                    self.hl.cancel_order(coin=coin, cloid=tp_cloid_orphan)
+                except Exception:
+                    log.exception("cancel TP orphan failed")
+            if reason != "sl" and sl_cloid_orphan:
+                try:
+                    self.hl.cancel_order(coin=coin, cloid=sl_cloid_orphan)
+                except Exception:
+                    log.exception("cancel SL orphan failed")
 
         # PAPER (or live success): mark closed and write closure row
         pnl = (close_px - open_px) * size_coin * (1 if is_long else -1)

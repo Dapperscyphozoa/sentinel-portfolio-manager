@@ -209,3 +209,90 @@ class HLExchange:
                 ok=False, cloid=cloid or "", coin=coin, side="close",
                 size_coin=size_coin or 0.0, px=None, raw={}, error=str(e),
             )
+
+    def place_brackets(
+        self,
+        coin: str,
+        is_long: bool,
+        size_coin: float,
+        tp_px: float,
+        sl_px: float,
+        ref_price: float,
+        tp_cloid: str,
+        sl_cloid: str,
+    ) -> dict:
+        """Place HL-native TP + SL trigger orders, reduce-only, against an
+        already-open position. Both isMarket=True for safety per council
+        2026-05-17 — maker-priced SL can be jumped over in cascades.
+
+        Returns {"tp": OrderResult, "sl": OrderResult}. Either may fail
+        independently; trader.open should fall back to poll-based exit if
+        EITHER fails (council: keep safety net regardless).
+
+        size_coin and prices are pre-rounded by caller (trader.open already
+        applies _round_size to size, but trigger prices must also respect
+        the asset's pxDecimals — HL rejects trigger prices that don't).
+        """
+        self._ensure()
+        from hyperliquid.utils.types import Cloid
+        # Truncate trigger prices to per-asset pxDecimals (5 - szDecimals for perps)
+        sz_decs = self._sz_decimals.get(coin, 4) if hasattr(self, "_sz_decimals") else 4
+        px_decs = max(0, 6 - sz_decs - 1)  # HL formula: pxDecimals = 6 - szDecimals - 1 for perps (5 max)
+        tp_px_r = round(tp_px, px_decs)
+        sl_px_r = round(sl_px, px_decs)
+        # Exit side is OPPOSITE of entry — long position closes via SELL
+        exit_is_buy = not is_long
+        out: dict = {"tp": None, "sl": None}
+        # Helper
+        def _trigger(name: str, trigger_px: float, cloid_hex: str, tpsl: str) -> OrderResult:
+            try:
+                cloid_obj = Cloid.from_str(cloid_hex)
+                # limit_px must be passed but for isMarket=True triggers it's
+                # ignored at fill time. Use trigger_px as a sane default.
+                order_type = {"trigger": {"triggerPx": trigger_px, "isMarket": True, "tpsl": tpsl}}
+                res = self._exchange.order(
+                    name=coin,
+                    is_buy=exit_is_buy,
+                    sz=size_coin,
+                    limit_px=trigger_px,
+                    order_type=order_type,
+                    reduce_only=True,
+                    cloid=cloid_obj,
+                )
+                ok = bool(res and res.get("status") == "ok")
+                return OrderResult(
+                    ok=ok, cloid=cloid_hex, coin=coin,
+                    side="B" if exit_is_buy else "A",
+                    size_coin=size_coin, px=trigger_px, raw=res or {},
+                    error=None if ok else str(res),
+                )
+            except Exception as e:
+                return OrderResult(
+                    ok=False, cloid=cloid_hex, coin=coin,
+                    side="B" if exit_is_buy else "A",
+                    size_coin=size_coin, px=trigger_px, raw={}, error=str(e),
+                )
+        out["tp"] = _trigger("tp", tp_px_r, tp_cloid, "tp")
+        out["sl"] = _trigger("sl", sl_px_r, sl_cloid, "sl")
+        return out
+
+    def cancel_order(self, coin: str, cloid: str) -> OrderResult:
+        """Cancel by cloid. Used to clean up an orphan trigger when its
+        partner fires (e.g. TP filled → SL should be cancelled).
+        """
+        self._ensure()
+        try:
+            from hyperliquid.utils.types import Cloid
+            cloid_obj = Cloid.from_str(cloid)
+            res = self._exchange.cancel_by_cloid(name=coin, cloid=cloid_obj)
+            ok = bool(res and res.get("status") == "ok")
+            return OrderResult(
+                ok=ok, cloid=cloid, coin=coin, side="cancel",
+                size_coin=0.0, px=None, raw=res or {},
+                error=None if ok else str(res),
+            )
+        except Exception as e:
+            return OrderResult(
+                ok=False, cloid=cloid, coin=coin, side="cancel",
+                size_coin=0.0, px=None, raw={}, error=str(e),
+            )
