@@ -203,6 +203,58 @@ class Handler(BaseHTTPRequestHandler):
             halt.set_halt(CONN, target, False, actor=body.get("actor", "api"))
             return _json(self, 200, {"ok": True, "halted": list(halt.active_halts())})
 
+        if path == "/reconcile":
+            # SQLite-only update — does NOT touch HL. Used when SQLite trade rows
+            # have drifted from HL's net-position truth (e.g. multiple engines
+            # firing on same coin → HL nets them, SQLite still shows N separate
+            # rows). Safe because it never sends orders, only mutates DB state.
+            if not halt.halt_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            action = body.get("action", "")
+            cloids = body.get("cloids") or []
+            reason = body.get("reason", "reconcile")
+            actor = body.get("actor", "operator")
+            ts_now = time.time()
+            if not cloids:
+                return _json(self, 400, {"error": "no_cloids"})
+            results = []
+            for cloid in cloids:
+                row = CONN.execute(
+                    "SELECT cloid, strategy, coin, status, size_coin, extras_json FROM trades WHERE cloid=?",
+                    (cloid,)
+                ).fetchone()
+                if not row:
+                    results.append({"cloid": cloid, "ok": False, "error": "not_found"})
+                    continue
+                try:
+                    extras = json.loads(row["extras_json"] or "{}")
+                except Exception:
+                    extras = {}
+                extras["reconciled"] = {"action": action, "reason": reason, "actor": actor, "ts": ts_now,
+                                        "prior_status": row["status"], "prior_size_coin": row["size_coin"]}
+                if action == "off_book":
+                    # Mark as closed via reconciliation, no HL call.
+                    CONN.execute(
+                        "UPDATE trades SET status='reconciled_off_book', extras_json=? WHERE cloid=?",
+                        (json.dumps(extras, default=str), cloid)
+                    )
+                    results.append({"cloid": cloid, "ok": True, "new_status": "reconciled_off_book",
+                                    "coin": row["coin"], "strategy": row["strategy"]})
+                elif action == "adjust_size":
+                    new_size = body.get("size_coin")
+                    if new_size is None:
+                        results.append({"cloid": cloid, "ok": False, "error": "no_size_coin"})
+                        continue
+                    CONN.execute(
+                        "UPDATE trades SET size_coin=?, extras_json=? WHERE cloid=?",
+                        (float(new_size), json.dumps(extras, default=str), cloid)
+                    )
+                    results.append({"cloid": cloid, "ok": True, "new_size_coin": float(new_size),
+                                    "coin": row["coin"], "strategy": row["strategy"]})
+                else:
+                    results.append({"cloid": cloid, "ok": False, "error": f"unknown_action:{action}"})
+            return _json(self, 200, {"ok": True, "action": action, "results": results})
+
         if path == "/precog/webhook":
             # HMAC verification of X-Precog-Sig (hex sha256 of body with PRECOG_WEBHOOK_SECRET)
             import hmac, hashlib
