@@ -206,8 +206,9 @@ body {
   text-transform: uppercase;
   font-weight: 600;
 }
-.badge.ask { background: rgba(59,130,246,0.15); color: var(--acid-bright); border: 1px solid var(--acid-border); }
+.badge.ask { background: rgba(59,130,246,0.15); color: var(--acid-bright); border: 1px solid var(--asst-border); }
 .badge.build { background: rgba(217,119,6,0.15); color: var(--oxide); border: 1px solid rgba(217,119,6,0.35); }
+.badge.deep { background: rgba(184,255,47,0.12); color: var(--heat); border: 1px solid rgba(184,255,47,0.35); }
 .badge.gap { background: rgba(255,0,85,0.12); color: var(--pulse); border: 1px solid rgba(255,0,85,0.35); }
 
 /* ─── VOTERS PANEL ─── */
@@ -549,7 +550,7 @@ body {
         <button class="example" data-q="What did we decide about Kronos gating yesterday?">What did we decide about Kronos gating yesterday?</button>
         <button class="example" data-q="Best path from $491 to $50M with current edges">Best path from $491 to $50M with current edges</button>
         <button class="example" data-q="Why is ICT confluence preferred over precog?">Why is ICT confluence preferred over precog?</button>
-        <button class="example" data-q="Audit my sniper risk model">Audit my sniper risk model</button>
+        <button class="example" data-q="deep research effort max — teach me institutional crypto market making depth, rivals Bloomberg">⚡ deep · institutional MM curriculum</button>
       </div>
     </div>
     <div id="msgs"></div>
@@ -697,24 +698,32 @@ function appendLoading(routeHint) {
   el.className = 'loading';
   el.id = 'loading-' + (++convId);
   const startTs = performance.now();
+  let initLabel;
+  if (routeHint === 'build')      initLabel = 'building (40-60s)';
+  else if (routeHint === 'deep')  initLabel = 'deep research: firing 9 models in parallel';
+  else                            initLabel = 'council deliberating';
   el.innerHTML = `
     <span class="dots"><span></span><span></span><span></span></span>
-    <span class="ld-label">${routeHint === 'build' ? 'building (40-60s)' : 'council deliberating'}…</span>
+    <span class="ld-label">${initLabel}…</span>
     <span class="ld-elapsed" style="margin-left:auto;color:var(--chrome);opacity:0.55;font-variant-numeric:tabular-nums;">0.0s</span>`;
   msgs.appendChild(el);
   scrollDown();
-  // Live timer
   const elapsedEl = el.querySelector('.ld-elapsed');
   el._timer = setInterval(() => {
     const s = ((performance.now() - startTs) / 1000).toFixed(1);
     elapsedEl.textContent = s + 's';
-    // Update label based on elapsed
     const sec = parseFloat(s);
     const lbl = el.querySelector('.ld-label');
     if (lbl) {
-      if (sec > 45) lbl.textContent = 'still working… (slow query)';
-      else if (sec > 25) lbl.textContent = 'synthesizing dissent…';
-      else if (sec > 10) lbl.textContent = 'voters returning…';
+      if (routeHint === 'deep') {
+        if (sec > 60) lbl.textContent = 'synthesizing 5 longest responses';
+        else if (sec > 30) lbl.textContent = 'voters returning (slower models still working)';
+        else if (sec > 10) lbl.textContent = 'fastest voters arrived, waiting for depth';
+      } else {
+        if (sec > 45) lbl.textContent = 'still working… (slow query)';
+        else if (sec > 25) lbl.textContent = 'synthesizing dissent…';
+        else if (sec > 10) lbl.textContent = 'voters returning…';
+      }
     }
   }, 100);
   return el;
@@ -864,12 +873,24 @@ async function submitAsk() {
   inp.style.height = 'auto';
 
   // ─── ROUTE SELECTION ───
-  // Default to /ask (15s) unless user explicitly wants build OR enabled auto-commit/deploy
-  // /chat triggers full build pipeline (40-60s); /ask is council-only.
+  // 1. Explicit /chat (build) if user enables auto_commit/deploy/smoke or forces build
+  // 2. Else /sentinel/deep if query asks for depth (research, comprehensive, teach, etc.)
+  // 3. Else /sentinel/ask (fast, 8-15s)
   const wantsBuild = opts.force === 'build' || opts.auto_commit || opts.auto_deploy || opts.auto_smoke;
-  const endpoint = wantsBuild ? '/sentinel/chat' : '/sentinel/ask';
-  const routeHint = wantsBuild ? 'build' : 'ask';
-  const body = wantsBuild ? {text, ...opts} : {text};
+  const deepTriggers = ['deep research', 'deep dive', 'deep analysis', 'comprehensive',
+    'in depth', 'in-depth', 'effort max', 'max effort', 'teach', 'curriculum',
+    'lecture', 'syllabus', 'course', 'rival bloomberg', 'rivals bloomberg',
+    'institutional', 'thorough', 'detailed analysis', 'full breakdown', 'deep breakdown'];
+  const lc = text.toLowerCase();
+  const isDeep = !wantsBuild && deepTriggers.some(t => lc.includes(t));
+  let endpoint, routeHint, body;
+  if (wantsBuild) {
+    endpoint = '/sentinel/chat'; routeHint = 'build'; body = {text, ...opts};
+  } else if (isDeep) {
+    endpoint = '/sentinel/deep'; routeHint = 'deep'; body = {text};
+  } else {
+    endpoint = '/sentinel/ask'; routeHint = 'ask'; body = {text};
+  }
 
   const loader = appendLoading(routeHint);
 

@@ -739,6 +739,9 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         # /sentinel/* POST → proxy to sentinel service (chat, rate, etc.)
         if path.startswith("/sentinel/"):
+            # Intercept /sentinel/deep — run in-process with all council keys
+            if path == "/sentinel/deep":
+                return self._handle_deep_research()
             return self._proxy_sentinel(path)
         for prefix, (port, strip) in _PROXY_MAP.items():
             if path == prefix or path.startswith(prefix + "/"):
@@ -754,6 +757,58 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-PM-Auth, X-Halt-Token, X-Sniper-Auth")
         self.send_header("Access-Control-Max-Age", "3600")
         self.end_headers()
+
+    def _handle_deep_research(self) -> None:
+        """In-process deep research: parallel-fire 9 top models, synthesize, no truncation."""
+        body_len = int(self.headers.get("Content-Length", "0") or 0)
+        body = self.rfile.read(body_len) if body_len else b"{}"
+        try:
+            payload = json.loads(body)
+        except Exception:
+            payload = {}
+        query = (payload.get("text") or payload.get("query") or "").strip()
+        if not query:
+            return self._json(400, {"error": "missing 'text' field"})
+        try:
+            import asyncio
+            from core.deep_research import run_deep_research
+            log.info("DEEP RESEARCH: %s", query[:120])
+            result = asyncio.run(run_deep_research(query))
+            return self._json(200, {
+                "entry_id": f"deep_{int(time.time())}",
+                "route": "deep",
+                "answer": result["synthesis"],
+                "synth_model": result.get("synth_model"),
+                "voters_inspection": [
+                    {"model": v["model"], "provider": v.get("provider",""),
+                     "confidence": 1.0 if v.get("ok") else 0.0,
+                     "answer": v.get("content","")[:1500] if v.get("ok") else f"FAILED: {v.get('error','?')}",
+                     "reasoning": f"{v.get('elapsed_s','?')}s · {v.get('words',0)} words",
+                     "used_antipode": False}
+                    for v in result["voters"]
+                ],
+                "intent_classification": {
+                    "intent": "DEEP",
+                    "confidence": 1.0,
+                    "reason": f"parallel-fired {result['providers_called']} models, "
+                              f"{result['providers_succeeded']} succeeded in "
+                              f"{result['voters_elapsed_s']}s, synthesized in "
+                              f"{result['synth_elapsed_s']}s, total {result['total_elapsed_s']}s"
+                },
+                "knowledge_gaps": [],
+                "similar_prior_asks": [],
+                "meta": {
+                    "providers_called": result["providers_called"],
+                    "providers_succeeded": result["providers_succeeded"],
+                    "voters_elapsed_s": result["voters_elapsed_s"],
+                    "synth_elapsed_s": result["synth_elapsed_s"],
+                    "total_elapsed_s": result["total_elapsed_s"],
+                    "synth_words": result.get("synth_words"),
+                },
+            })
+        except Exception as e:
+            log.exception("deep_research failed: %s", e)
+            return self._json(500, {"error": "deep_research_failed", "detail": str(e)})
 
     def _proxy_sentinel(self, path: str) -> None:
         """Forward POST/GET to the sentinel Render service (separate origin)."""
