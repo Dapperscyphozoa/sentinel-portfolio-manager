@@ -562,32 +562,57 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {"items": [], "ts": int(time.time() * 1000)})
 
     def _serve_audit_deep(self) -> None:
-        """Landing's /audit/deep — per-coin attribution heatmap.
-        Sourced from PM /attribution endpoint (groups closed trades by strategy → coin)."""
-        per_coin = []
+        """Landing's /audit/deep — per-coin attribution + per-hour fills/PnL series.
+        Pulls from strategy_runner /closures (24h window) and aggregates two ways:
+          - per_hour: 24 hourly buckets [{ts, fills, pnl}] for equity pulse SVG
+          - per_coin: rollup by coin for the attribution heatmap
+        """
+        per_coin: list = []
+        per_hour: list = []
         try:
+            now = time.time()
+            since = now - 24 * 3600
             with httpx.Client(timeout=2.0) as cli:
-                since = int((time.time() - 24 * 3600) * 1000)
-                token = os.environ.get("PM_AUTH_TOKEN", "")
-                headers = {"X-PM-Auth": token} if token else {}
-                r = cli.get(f"http://localhost:{PM_PORT}/attribution?since={since}",
-                            headers=headers)
+                r = cli.get(f"http://localhost:{STRATEGY_PORT}/closures?since={since}&limit=2000")
+                closures = []
                 if r.status_code == 200:
-                    data = r.json() or {}
-                    # PM /attribution returns list of {strategy, pnl, ...} — pivot to per_coin
-                    # For now, surface what we have at the strategy level
-                    if isinstance(data, list):
-                        for row in data:
-                            per_coin.append({
-                                "coin": row.get("coin", "—"),
-                                "strategy": row.get("strategy"),
-                                "pnl_usd": row.get("pnl", 0),
-                                "trades": row.get("trades", 0),
-                                "wr": row.get("wr", 0),
-                            })
+                    data = r.json()
+                    closures = data if isinstance(data, list) else (data.get("items") or [])
+            # 24 hourly buckets, oldest first → JS reverses to newest-first
+            buckets: dict = {}
+            for i in range(24):
+                bucket_ts = int((now - (24 - i) * 3600) * 1000)
+                buckets[i] = {"ts": bucket_ts, "fills": 0, "pnl": 0.0}
+            # Coin rollup
+            coin_agg: dict = {}
+            for c in closures:
+                ts = float(c.get("close_ts", 0) or 0)
+                hour_idx = int((ts - (now - 24 * 3600)) / 3600)
+                if 0 <= hour_idx < 24:
+                    buckets[hour_idx]["fills"] += 1
+                    buckets[hour_idx]["pnl"] += float(c.get("pnl_usd", 0) or 0) - float(c.get("fees_usd", 0) or 0)
+                coin = c.get("coin", "—")
+                agg = coin_agg.setdefault(coin, {"coin": coin, "n": 0, "wins": 0, "pnl_usd": 0.0})
+                agg["n"] += 1
+                net = float(c.get("pnl_usd", 0) or 0) - float(c.get("fees_usd", 0) or 0)
+                agg["pnl_usd"] += net
+                if net > 0:
+                    agg["wins"] += 1
+            for i in sorted(buckets.keys()):
+                per_hour.append(buckets[i])
+            for coin, agg in coin_agg.items():
+                agg["wr"] = round(agg["wins"] / agg["n"], 3) if agg["n"] else 0.0
+                agg["pnl_usd"] = round(agg["pnl_usd"], 4)
+                per_coin.append(agg)
+            per_coin.sort(key=lambda x: x["pnl_usd"], reverse=True)
         except Exception:
             pass
-        self._json(200, {"per_coin": per_coin, "hours": 24, "ts": int(time.time() * 1000)})
+        self._json(200, {
+            "per_coin": per_coin,
+            "per_hour": per_hour,
+            "hours": 24,
+            "ts": int(time.time() * 1000),
+        })
 
     def _serve_chat(self) -> None:
         """Serve the new PSYCHO-themed sentinel chat UI."""

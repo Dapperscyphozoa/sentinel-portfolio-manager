@@ -599,6 +599,7 @@ body { padding-right: 232px; }
 <a href="/audit" data-page="audit">Audit</a>
 <a href="/system" data-page="system">System</a>
 <a href="/macro" data-page="macro">Macro</a>
+<a href="/chat" data-page="chat">Chat</a>
 <div class="nav-sep"></div>
 <span class="nav-tag">V1.0 · phase 1</span>
 </nav>
@@ -608,6 +609,7 @@ else if(p.indexOf("/engines")===0){c="engines";v="engines";}
 else if(p.indexOf("/audit")===0||p.indexOf("/violations")===0||p.indexOf("/shadow")===0){c="audit";v="audit";}
 else if(p.indexOf("/system")===0||p.indexOf("/enforce")===0||p.indexOf("/experiment")===0){c="system";v="system";}
 else if(p.indexOf("/macro")===0){c="macro";v="macro";}
+else if(p.indexOf("/chat")===0){c="chat";v="chat";}
 document.body.setAttribute("data-view",v);
 document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.getAttribute("data-page")===c)a.classList.add("current")})})();</script>
 
@@ -1747,7 +1749,10 @@ async function loadNews() {
             </div>`;
         }).join('') || '<div class="news-item" style="opacity:0.5">// awaiting feed</div>';
     } catch (e) {
-        document.getElementById('news').innerHTML = '<div class="news-item" style="opacity:0.5">// news endpoint offline</div>';
+        const el = document.getElementById('news');
+        if (el && (el.innerHTML.includes('loading') || el.innerHTML.includes('offline') || el.innerHTML.includes('awaiting'))) {
+            el.innerHTML = '<div class="news-item" style="opacity:0.5">// awaiting feed</div>';
+        }
     }
 }
 
@@ -2942,26 +2947,34 @@ async function loadLivePositions() {
     }
   } catch (e) {
     const body = document.getElementById('lpos-body');
-    if (body) body.innerHTML = '<div class="lpos-empty">// /dash offline</div>';
+    // Only overwrite body if it's empty/loading — otherwise keep last good render
+    // through transient fetch errors (mobile network blips, brief Render rolling restarts).
+    if (body && (body.innerHTML.includes('loading') || body.innerHTML.includes('offline'))) {
+      body.innerHTML = '<div class="lpos-empty">// /dash unreachable</div>';
+    }
+    // else: silently keep last render — next poll will refresh
   }
 }
 
 async function loadEquityPulse() {
+  const svg = document.getElementById('pulse-svg');
+  const netEl = document.getElementById('pulse-net');
+  const metaEl = document.getElementById('pulse-meta');
   try {
     const r = await fetch('/audit/deep?hours=24&format=json', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const a = await r.json();
-    const ph = (a && a.per_hour) ? a.per_hour.slice().reverse() : []; // oldest → newest
-    const svg = document.getElementById('pulse-svg');
-    const netEl = document.getElementById('pulse-net');
-    const metaEl = document.getElementById('pulse-meta');
-    if (!ph.length) {
+    const ph = (a && a.per_hour) ? a.per_hour.slice() : []; // already oldest → newest
+    // If endpoint returns ok but no buckets OR all-zero — show awaiting message, NOT offline
+    const totalFills = ph.reduce((s, h) => s + (Number(h.fills) || 0), 0);
+    if (!ph.length || totalFills === 0) {
       svg.innerHTML = '<text x="140" y="50" text-anchor="middle" fill="rgba(217,214,205,0.35)" '
-        + 'font-size="9" font-family="JetBrains Mono">awaiting data</text>';
+        + 'font-size="9" font-family="JetBrains Mono">awaiting first closures…</text>';
       if (netEl) netEl.textContent = 'net —';
+      if (metaEl) metaEl.textContent = (ph.length || 24) + 'h · 0 fills';
       return;
     }
-    const W = 280, H = 96, BL = 64; // baseline y for fill bars
+    const W = 280, H = 96, BL = 64;
     const fills = ph.map(h => Number(h.fills) || 0);
     const pnls  = ph.map(h => Number(h.pnl)   || 0);
     const maxF  = Math.max(1, Math.max.apply(null, fills));
@@ -2986,8 +2999,7 @@ async function loadEquityPulse() {
     svgInner += '<line x1="0" y1="' + BL + '" x2="' + W + '" y2="' + BL
       + '" stroke="rgba(200,204,212,0.18)" stroke-width="1"/>';
     svg.innerHTML = svgInner;
-    const totalNet  = pnls.reduce((s, v) => s + v, 0);
-    const totalFills = fills.reduce((s, v) => s + v, 0);
+    const totalNet = pnls.reduce((s, v) => s + v, 0);
     if (netEl) {
       const sign = totalNet > 0 ? '+' : totalNet < 0 ? '−' : '';
       netEl.textContent = 'net ' + sign + '$' + Math.abs(totalNet).toFixed(2);
@@ -2995,7 +3007,6 @@ async function loadEquityPulse() {
     }
     if (metaEl) metaEl.textContent = totalFills + ' fills · ' + ph.length + 'h';
   } catch (e) {
-    const svg = document.getElementById('pulse-svg');
     if (svg) svg.innerHTML = '<text x="140" y="50" text-anchor="middle" fill="rgba(193,39,45,0.6)" '
       + 'font-size="9" font-family="JetBrains Mono">/audit offline</text>';
   }

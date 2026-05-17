@@ -4,7 +4,6 @@ Endpoints:
   GET  /health           — service status
   GET  /listings         — recent listing events
   GET  /trades           — sniper trade history
-  GET  /memdump          — tracemalloc top allocations (leak hunting)
   POST /approve          — operator approval for next trade (X-Sniper-Auth)
   POST /kill             — manual kill switch
   POST /reset            — manual kill reset
@@ -22,7 +21,6 @@ import os
 import sys
 import threading
 import time
-import tracemalloc
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # Ensure the project root is on sys.path so 'sniper.X' imports work when
@@ -30,10 +28,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 _PROJ_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _PROJ_ROOT not in sys.path:
     sys.path.insert(0, _PROJ_ROOT)
-
-# Start tracemalloc immediately so it captures all allocations.
-# Cheap (~10-20% overhead) and lets us inspect via /memdump later.
-tracemalloc.start(20)
 
 from sniper.listing_detector import ListingDetector
 from sniper.oracle_lag import evaluate_snipe, fetch_hl_mark
@@ -241,26 +235,6 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/positions":
             with _position_lock:
                 self._json(200, {"open": list(_open_positions.values())})
-        elif path == "/memdump":
-            # tracemalloc snapshot for leak diagnosis
-            import resource
-            rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-            snapshot = tracemalloc.take_snapshot()
-            top = snapshot.statistics("lineno")[:25]
-            out = {
-                "rss_mb": round(rss_kb / 1024, 1),
-                "tracemalloc_total_mb": round(sum(s.size for s in snapshot.statistics("lineno")) / 1024 / 1024, 2),
-                "top_25_by_size": [
-                    {
-                        "file": s.traceback[0].filename.replace(_PROJ_ROOT + "/", ""),
-                        "line": s.traceback[0].lineno,
-                        "size_kb": round(s.size / 1024, 1),
-                        "count": s.count,
-                    }
-                    for s in top
-                ],
-            }
-            self._json(200, out)
         elif path == "/state":
             risk = get_risk()
             killed, kreason = risk.is_killed()
