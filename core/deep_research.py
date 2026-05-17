@@ -32,20 +32,22 @@ log = logging.getLogger("deep_research")
 # ─────────────────── Provider catalog ───────────────────
 PROVIDERS = [
     # (provider_name, model_id, base_url, env_key, max_tokens)
-    ("cerebras-qwen3-235b", "qwen-3-235b-a22b-instruct",
+    ("cerebras-qwen3-235b", "qwen-3-235b-a22b-instruct-2507",
      "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", 8000),
-    ("cerebras-qwen3-coder", "qwen-3-coder-480b",
+    ("cerebras-gpt-oss-120b", "gpt-oss-120b",
+     "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", 8000),
+    ("cerebras-glm-4.7", "zai-glm-4.7",
      "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", 8000),
     ("groq-llama-3.3-70b", "llama-3.3-70b-versatile",
      "https://api.groq.com/openai/v1", "GROQ_API_KEY", 8000),
-    ("github-gpt-5", "openai/gpt-5",
+    ("github-gpt-4.1", "openai/gpt-4.1",
      "https://models.github.ai/inference", "GITHUB_MODELS_TOKEN", 8000),
     ("github-llama-405b", "meta/Meta-Llama-3.1-405B-Instruct",
      "https://models.github.ai/inference", "GITHUB_MODELS_TOKEN", 4000),
     ("github-deepseek-v3", "deepseek/DeepSeek-V3-0324",
      "https://models.github.ai/inference", "GITHUB_MODELS_TOKEN", 4000),
     ("mistral-large", "mistral-large-latest",
-     "https://api.mistral.ai/v1", "MISTRAL_API_KEY", 8000),
+     "https://api.mistral.ai/v1", "MISTRAL_API_KEY", 4000),
     ("nvidia-nemotron-49b", "nvidia/llama-3.3-nemotron-super-49b-v1",
      "https://integrate.api.nvidia.com/v1", "NVIDIA_API_KEY", 4000),
     ("sambanova-llama-3.3-70b", "Meta-Llama-3.3-70B-Instruct",
@@ -101,7 +103,7 @@ async def _call_provider(client: httpx.AsyncClient, prov_tuple, system: str, use
     start = time.time()
     try:
         r = await client.post(f"{base_url}/chat/completions",
-                              headers=headers, json=body, timeout=90.0)
+                              headers=headers, json=body, timeout=150.0)
         elapsed = time.time() - start
         if r.status_code != 200:
             return {"provider": name, "model": model, "ok": False,
@@ -169,7 +171,7 @@ async def run_deep_research(query: str, providers_subset: Optional[list] = None)
         synth_input += "\n═══ END OF VOTERS ═══\n\nNow synthesize the BEST and MOST COMPREHENSIVE single response covering everything important from the voters above. Be longer and deeper than any individual voter."
 
         # Use cerebras qwen-3-235b as synthesizer (8k output, fast, strong reasoning)
-        synth_prov = ("cerebras-qwen3-235b", "qwen-3-235b-a22b-instruct",
+        synth_prov = ("cerebras-qwen3-235b", "qwen-3-235b-a22b-instruct-2507",
                       "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", 8000)
         synth_start = time.time()
         synth_result = await _call_provider(client, synth_prov, SYNTHESIZER_SYSTEM, synth_input)
