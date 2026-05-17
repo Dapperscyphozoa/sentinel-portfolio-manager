@@ -379,6 +379,8 @@ body {
 .send:hover, .send:active { background: var(--acid-bright); }
 .send:disabled { opacity: 0.3; cursor: not-allowed; background: var(--steel); color: var(--chrome); }
 .send svg { width: 18px; height: 18px; }
+.send.cancel { background: var(--blood); }
+.send.cancel:hover, .send.cancel:active { background: #e53e44; }
 
 /* options strip */
 .opts {
@@ -600,13 +602,32 @@ const $ = id => document.getElementById(id);
 const scroll = $('scroll'), msgs = $('msgs'), empty = $('empty');
 const inp = $('inp'), send = $('send');
 
+// ─── PRE-WARM sentinel on page load (kills cold-start latency) ───
+// Render starter plan dorms after ~15min idle → +15s cold boot on first call.
+// Firing /status NOW means by the time user submits, sentinel is warm.
+const _prewarmStart = performance.now();
+fetch('/sentinel.json?prewarm=1&t=' + Date.now())
+  .then(r => r.json())
+  .then(d => {
+    const dt = Math.round(performance.now() - _prewarmStart);
+    console.log('[prewarm] sentinel warm in ' + dt + 'ms', d.graph?.nodes + ' nodes');
+  })
+  .catch(() => {});
+
+// ─── Answer cache (in-memory; cleared on reload) ───
+const _cache = new Map();
+const cacheKey = (text, opts) => text.trim().toLowerCase() + '|' + JSON.stringify(opts);
+
+// ─── Active request abort controller ───
+let _activeReq = null;
+
 // auto-expand textarea
 inp.addEventListener('input', () => {
   inp.style.height = 'auto';
   inp.style.height = Math.min(180, inp.scrollHeight) + 'px';
 });
 
-// Enter to send on desktop, Shift+Enter newline. On mobile, button-only (enterkeyhint=send works).
+// Enter to send on desktop, Shift+Enter newline. On mobile, button-only.
 inp.addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey && window.matchMedia('(min-width: 561px)').matches) {
     e.preventDefault();
@@ -634,7 +655,10 @@ document.querySelectorAll('.example').forEach(b => {
   });
 });
 
-send.addEventListener('click', submitAsk);
+send.addEventListener('click', () => {
+  if (_activeReq) { _activeReq.abort(); return; }
+  submitAsk();
+});
 
 // ─── escape + markdown-lite ───
 function esc(s) {
@@ -644,15 +668,10 @@ function esc(s) {
 function md(s) {
   if (!s) return '';
   let h = esc(s);
-  // fenced code blocks (triple backtick)
   h = h.replace(/```([\s\S]*?)```/g, (_, c) => '<pre><code>' + c.trim() + '</code></pre>');
-  // inline code
   h = h.replace(/`([^`\n]+)`/g, '<code>$1</code>');
-  // bold
   h = h.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  // links
   h = h.replace(/(https?:\/\/[^\s)]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
-  // paragraphs (double newlines)
   return '<p>' + h.split(/\n{2,}/).map(p => p.replace(/\n/g,'<br>')).join('</p><p>') + '</p>';
 }
 
@@ -673,19 +692,40 @@ function appendUserMsg(text) {
   scrollDown();
 }
 
-function appendLoading() {
+function appendLoading(routeHint) {
   const el = document.createElement('div');
   el.className = 'loading';
   el.id = 'loading-' + (++convId);
-  el.innerHTML = `<span class="dots"><span></span><span></span><span></span></span>
-    <span>council deliberating…</span>`;
+  const startTs = performance.now();
+  el.innerHTML = `
+    <span class="dots"><span></span><span></span><span></span></span>
+    <span class="ld-label">${routeHint === 'build' ? 'building (40-60s)' : 'council deliberating'}…</span>
+    <span class="ld-elapsed" style="margin-left:auto;color:var(--chrome);opacity:0.55;font-variant-numeric:tabular-nums;">0.0s</span>`;
   msgs.appendChild(el);
   scrollDown();
+  // Live timer
+  const elapsedEl = el.querySelector('.ld-elapsed');
+  el._timer = setInterval(() => {
+    const s = ((performance.now() - startTs) / 1000).toFixed(1);
+    elapsedEl.textContent = s + 's';
+    // Update label based on elapsed
+    const sec = parseFloat(s);
+    const lbl = el.querySelector('.ld-label');
+    if (lbl) {
+      if (sec > 45) lbl.textContent = 'still working… (slow query)';
+      else if (sec > 25) lbl.textContent = 'synthesizing dissent…';
+      else if (sec > 10) lbl.textContent = 'voters returning…';
+    }
+  }, 100);
   return el;
+}
+function stopLoader(loader) {
+  if (loader && loader._timer) clearInterval(loader._timer);
+  if (loader) loader.remove();
 }
 
 function appendError(text, loader) {
-  if (loader) loader.remove();
+  stopLoader(loader);
   const el = document.createElement('div');
   el.className = 'err';
   el.textContent = text;
@@ -694,24 +734,23 @@ function appendError(text, loader) {
 }
 
 function scrollDown() {
-  // Use rAF to ensure layout is done
   requestAnimationFrame(() => { scroll.scrollTop = scroll.scrollHeight; });
 }
 
-function appendAsstMsg(d, loader) {
-  if (loader) loader.remove();
+function appendAsstMsg(d, loader, cached) {
+  stopLoader(loader);
   const route = d.route || 'ask';
   const ic = d.intent_classification || {};
   const conf = Math.round((ic.confidence || 0) * 100);
-  const answer = d.answer || d.response || '(no answer)';
+  const answer = d.answer || d.response || d.result?.design?.approach || '(no answer)';
   const gaps = d.knowledge_gaps || [];
-  const voters = d.voters_inspection || [];
+  const voters = d.voters_inspection || d.voters || [];
   const ctx = d.similar_prior_asks || [];
   const entryId = d.entry_id || '';
 
   let ctxHtml = '';
   if (ctx.length) {
-    ctxHtml = `<div class="context">⌗ ${ctx.length} similar prior ask${ctx.length>1?'s':''} consulted: ${ctx.map(c => esc((c.text||'').slice(0,80))).join(' · ')}</div>`;
+    ctxHtml = `<div class="context">⌗ ${ctx.length} similar prior ask${ctx.length>1?'s':''}: ${ctx.map(c => esc((c.text||'').slice(0,80))).join(' · ')}</div>`;
   }
 
   let gapsHtml = '';
@@ -744,6 +783,8 @@ function appendAsstMsg(d, loader) {
     ${[1,2,3,4,5].map(s => `<button class="rate-btn" onclick="rate('${entryId}',${s},this)">${s}</button>`).join('')}
   </div>` : '';
 
+  const cachedBadge = cached ? '<span class="badge" style="background:rgba(184,255,47,0.15);color:var(--heat);border:1px solid rgba(184,255,47,0.3)">cached · 0s</span>' : '';
+
   const el = document.createElement('div');
   el.className = 'msg asst';
   el.innerHTML = `
@@ -753,6 +794,7 @@ function appendAsstMsg(d, loader) {
     <div class="body">${md(answer)}</div>
     ${gapsHtml}
     <div class="meta">
+      ${cachedBadge}
       <span class="badge ${route}">${route}</span>
       ${ic.reason ? `<span style="opacity:0.6">${esc(ic.reason)}</span>` : ''}
       ${conf ? `<span style="opacity:0.6">conf ${conf}%</span>` : ''}
@@ -780,44 +822,86 @@ window.rate = async (id, score, btn) => {
   loadStats();
 };
 
+function setSendCancel(cancel) {
+  if (cancel) {
+    send.classList.add('cancel');
+    send.setAttribute('aria-label', 'cancel');
+    send.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>`;
+  } else {
+    send.classList.remove('cancel');
+    send.setAttribute('aria-label', 'send');
+    send.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>`;
+  }
+}
+
 async function submitAsk() {
   if (busy) return;
   const text = inp.value.trim();
   if (!text) return;
-  busy = true;
-  send.disabled = true;
-  inp.disabled = true;
 
-  appendUserMsg(text);
-  const loader = appendLoading();
-  inp.value = '';
-  inp.style.height = 'auto';
-
-  const body = {
-    text,
+  const opts = {
     force: $('opt-force').value || null,
     auto_commit: $('opt-commit').checked,
     auto_deploy: $('opt-deploy').checked,
     auto_smoke: $('opt-smoke').checked,
   };
+
+  appendUserMsg(text);
+
+  // ─── CACHE CHECK ───
+  const ck = cacheKey(text, opts);
+  if (_cache.has(ck) && !opts.force) {
+    const cached = _cache.get(ck);
+    appendAsstMsg(cached, null, true);
+    inp.value = '';
+    inp.style.height = 'auto';
+    inp.focus();
+    return;
+  }
+
+  busy = true;
+  inp.value = '';
+  inp.style.height = 'auto';
+
+  // ─── ROUTE SELECTION ───
+  // Default to /ask (15s) unless user explicitly wants build OR enabled auto-commit/deploy
+  // /chat triggers full build pipeline (40-60s); /ask is council-only.
+  const wantsBuild = opts.force === 'build' || opts.auto_commit || opts.auto_deploy || opts.auto_smoke;
+  const endpoint = wantsBuild ? '/sentinel/chat' : '/sentinel/ask';
+  const routeHint = wantsBuild ? 'build' : 'ask';
+  const body = wantsBuild ? {text, ...opts} : {text};
+
+  const loader = appendLoading(routeHint);
+
+  // Show cancel button
+  _activeReq = new AbortController();
+  setSendCancel(true);
+
   try {
-    const r = await fetch('/sentinel/chat', {
+    const r = await fetch(endpoint, {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(body)
+      body: JSON.stringify(body),
+      signal: _activeReq.signal,
     });
-    if (!r.ok) {
-      throw new Error('HTTP ' + r.status);
-    }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     if (d.error) throw new Error(d.error);
+    // Normalize: /ask returns top-level fields; /chat returns nested under .result
+    if (!d.route) d.route = routeHint;
     appendAsstMsg(d, loader);
+    // Cache successful responses (skip build routes — they have side-effects)
+    if (!wantsBuild) _cache.set(ck, d);
   } catch (e) {
-    appendError('error: ' + (e.message || e), loader);
+    if (e.name === 'AbortError') {
+      appendError('cancelled.', loader);
+    } else {
+      appendError('error: ' + (e.message || e), loader);
+    }
   } finally {
     busy = false;
-    send.disabled = false;
-    inp.disabled = false;
+    _activeReq = null;
+    setSendCancel(false);
     inp.focus();
   }
 }
@@ -843,7 +927,6 @@ async function loadStats() {
 loadStats();
 setInterval(loadStats, 30000);
 
-// Prevent iOS zoom on input focus
 document.addEventListener('touchstart', () => {}, {passive: true});
 </script>
 </body>
