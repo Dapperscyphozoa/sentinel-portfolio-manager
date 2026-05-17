@@ -8,10 +8,15 @@ cloid format (HL accepts 128-bit hex):
 from __future__ import annotations
 
 import hashlib
+import logging
+import math
 import os
 import time
 from dataclasses import dataclass
 from typing import Optional
+
+
+log = logging.getLogger("hl_exchange")
 
 
 def make_cloid(prefix: str, coin: str, nonce: Optional[int] = None, ts_ms: Optional[int] = None) -> str:
@@ -92,6 +97,47 @@ class HLExchange:
         else:
             self._exchange = Exchange(wallet, self.base_url)
 
+    def _round_size(self, coin: str, size_coin: float, ref_price: float) -> Optional[float]:
+        """Truncate (not round) size to coin's szDecimals from HL meta.
+        Required before market_open or HL SDK raises 'float_to_wire causes
+        rounding'. Truncate-down preserves the risk-sizing budget (round()
+        would push size_coin above what margin math allocated, breaching
+        per-trade caps).
+
+        Returns None on:
+        - meta lookup failure (don't guess on precision — skip)
+        - coin not present in HL universe
+        - resulting notional < $10 (HL's documented min order size)
+
+        szDecimals cached on first call. Council audit 2026-05-17: 6/6
+        unanimous on truncation + min-notional guard.
+        """
+        self._ensure()
+        if not hasattr(self, "_sz_decimals"):
+            self._sz_decimals: dict[str, int] = {}
+            try:
+                meta = self._info.meta()
+                for asset in (meta or {}).get("universe", []) or []:
+                    name = asset.get("name") or ""
+                    sz = int(asset.get("szDecimals", 4))
+                    if name:
+                        self._sz_decimals[name] = sz
+            except Exception:
+                log.exception("hl meta lookup failed; cannot size orders safely")
+                self._sz_decimals = {}
+        if coin not in self._sz_decimals:
+            log.warning("no szDecimals for %s; skip order", coin)
+            return None
+        decs = self._sz_decimals[coin]
+        factor = 10 ** decs
+        truncated = math.floor(size_coin * factor) / factor
+        notional = truncated * ref_price
+        if notional < 10.0:
+            log.info("skip %s: notional $%.2f below HL $10 min (size=%g, szDec=%d)",
+                     coin, notional, truncated, decs)
+            return None
+        return truncated
+
     def market_open(
         self,
         coin: str,
@@ -99,8 +145,20 @@ class HLExchange:
         size_coin: float,
         cloid: str,
         slippage: float = 0.005,
+        ref_price: float = 0.0,
     ) -> OrderResult:
         self._ensure()
+        # Truncate size to per-asset szDecimals; enforce $10 min notional.
+        if ref_price > 0:
+            rounded = self._round_size(coin, size_coin, ref_price)
+            if rounded is None:
+                return OrderResult(
+                    ok=False, cloid=cloid, coin=coin,
+                    side="B" if is_buy else "A",
+                    size_coin=size_coin, px=None, raw={},
+                    error="precision_or_min_notional",
+                )
+            size_coin = rounded
         try:
             res = self._exchange.market_open(
                 name=coin,

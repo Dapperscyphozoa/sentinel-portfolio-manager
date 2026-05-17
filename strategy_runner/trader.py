@@ -73,6 +73,7 @@ class Trader:
             else:
                 res = self.hl.market_open(
                     coin=sig.coin, is_buy=sig.is_long, size_coin=size_coin, cloid=cloid,
+                    ref_price=sig.ref_price,
                 )
                 if not res.ok:
                     err = res.error
