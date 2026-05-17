@@ -1261,6 +1261,71 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
     .eng-grid { grid-template-columns: 1fr; }
     .eng-summary { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ===================================================================
+   MOBILE FIX — phone / narrow viewport overrides.
+   Root issue: body has `padding-right: 232px` globally to make room for
+   a fixed-position 220px engine rail. On phones this leaves <150px of
+   usable content. Fix: hide the rail, drop the body padding, collapse
+   multi-column grids to 1-2 columns, shrink dense rows.
+   =================================================================== */
+@media (max-width: 720px) {
+    /* kill the desktop rail entirely on small screens */
+    body { padding-right: 0 !important; padding-left: 0 !important; }
+    .precog-nav { padding-right: 16px !important; padding-left: 12px !important; }
+    .pm-engine-rail { display: none !important; }
+    .pm-layout { padding: 8px 10px !important; }
+    .container { padding: 12px 10px !important; max-width: 100% !important; }
+
+    /* collapse all multi-column grids */
+    .hero { grid-template-columns: 1fr !important; min-height: auto !important; max-height: none !important; gap: 16px !important; }
+    .hero-stats { gap: 16px !important; flex-wrap: wrap !important; padding-top: 12px !important; }
+    .hero-stats > * { flex: 1 1 45% !important; min-width: 0 !important; }
+    .grid { grid-template-columns: 1fr !important; gap: 16px !important; }
+    .metrics-bar { grid-template-columns: repeat(2, 1fr) !important; gap: 10px !important; padding: 12px 14px !important; }
+    .engine-grid { grid-template-columns: 1fr !important; }
+    .mer-grid { grid-template-columns: 1fr !important; gap: 16px !important; }
+    .eng-summary { grid-template-columns: repeat(2, 1fr) !important; }
+    .eng-metric-grid, .eng-metric-grid.cols4 { grid-template-columns: 1fr 1fr !important; gap: 4px 10px !important; }
+
+    /* position / signal / whale rows: 3 cols max */
+    .pos-row { grid-template-columns: 56px 1fr auto !important; gap: 8px !important; font-size: 11px !important; padding: 8px 0 !important; }
+
+    /* sticky bottom ticker eats screen real estate on mobile — minimize */
+    .ticker { font-size: 10px !important; padding: 6px 10px !important; letter-spacing: 0.1em !important; }
+
+    /* header / status cluster: stack and let everything wrap */
+    .header { margin-bottom: 20px !important; }
+    .status-cluster { flex-wrap: wrap !important; gap: 10px !important; }
+
+    /* shrink chunky typography */
+    .logo-text { font-size: 18px !important; letter-spacing: 0.15em !important; }
+    .logo-mark { width: 32px !important; height: 32px !important; }
+    .panel-title { font-size: 13px !important; }
+    .panel-head { margin-bottom: 12px !important; padding-bottom: 8px !important; }
+
+    /* panels themselves: reduce inner padding so content actually fits */
+    .panel { padding: 14px 12px !important; }
+
+    /* scroll regions on small screens: cap shorter to keep page navigable */
+    #signals, #whales { max-height: 240px !important; }
+
+    /* heatmap cells: drop minmax so they actually fit phone width */
+    #heatmap { grid-template-columns: repeat(auto-fill, minmax(54px, 1fr)) !important; }
+
+    /* footer to vertical */
+    .footer { flex-direction: column !important; gap: 8px !important; margin-top: 32px !important; margin-bottom: 40px !important; }
+}
+
+/* Extra-narrow phones (<= 380px e.g. iPhone SE / mini) */
+@media (max-width: 380px) {
+    .metrics-bar { grid-template-columns: 1fr 1fr !important; }
+    .eng-summary { grid-template-columns: 1fr !important; }
+    .hero-stats > * { flex: 1 1 100% !important; }
+    .logo-text { font-size: 15px !important; }
+    .container { padding: 10px 8px !important; }
+    .pm-layout { padding: 6px 6px !important; }
+}
 </style>
 
 <!-- SECONDARY GRID -->
