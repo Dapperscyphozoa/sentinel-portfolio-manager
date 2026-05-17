@@ -300,20 +300,62 @@ class Handler(BaseHTTPRequestHandler):
         hl_acct = self._hl_account_full()
         hl_positions = self._hl_positions()
         equity = float(hl_acct.get("value") or account_pm.get("value", 0) or 0)
-        # Positions list — shape landing expects: {upnl, lev, tp, sl, engine, stage, coin, side, size, entry_px}
+        # Pull strategy_runner trades to enrich HL positions with tp/sl/engine.
+        # Coin → most-recent open trade row from our SQLite.
+        runner_by_coin: dict = {}
+        try:
+            with httpx.Client(timeout=2.0) as cli:
+                r = cli.get(f"http://localhost:{STRATEGY_PORT}/state")
+                if r.status_code == 200:
+                    for tr in r.json():
+                        if tr.get("status") == "open":
+                            runner_by_coin[tr["coin"]] = tr
+        except Exception:
+            pass
+        # Positions list — shape landing expects: {upnl, lev, tp, sl, engine, stage, coin, side, size, entry, entry_px, mark_px}
         positions_out = []
         for p in hl_positions or account_pm.get("positions") or []:
+            coin = p.get("coin", "?")
+            entry_px = float(p.get("entry_px", p.get("entryPx", 0)) or 0)
+            # Mark price from bus (HL position struct doesn't always carry mark)
+            mark_px = float(p.get("mark_px", p.get("markPx", 0)) or 0)
+            if not mark_px:
+                try:
+                    with httpx.Client(timeout=1.5) as cli:
+                        rr = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/markprice/{coin}")
+                        if rr.status_code == 200:
+                            mp = rr.json() or {}
+                            mark_px = float(mp.get("hl_mid") or mp.get("binance_mid") or 0)
+                except Exception:
+                    pass
+            # Leverage — HL returns dict {type, value}; landing expects scalar number
+            lev_obj = p.get("leverage", p.get("lev"))
+            if isinstance(lev_obj, dict):
+                lev_val = lev_obj.get("value", "-")
+            else:
+                lev_val = lev_obj if lev_obj is not None else "-"
+            # Join with runner state for tp/sl/engine
+            tr = runner_by_coin.get(coin) or {}
+            tp_v = tr.get("tp_px") if tr else p.get("tp", "-")
+            sl_v = tr.get("sl_px") if tr else p.get("sl", "-")
+            engine_v = tr.get("strategy") if tr else p.get("engine", p.get("strategy", "-"))
+            # Compute mark-based unrealizedPnl if HL didn't give us one and we have both prices
+            sz_signed = float(p.get("size", p.get("szi", 0)) or 0)
+            upnl_v = float(p.get("upnl", p.get("unrealizedPnl", 0)) or 0)
+            if upnl_v == 0 and mark_px and entry_px and sz_signed:
+                upnl_v = (mark_px - entry_px) * sz_signed
             positions_out.append({
-                "coin": p.get("coin", "?"),
-                "side": "LONG" if float(p.get("size", p.get("szi", 0))) > 0 else "SHORT",
-                "size": abs(float(p.get("size", p.get("szi", 0)))),
-                "entry_px": float(p.get("entry_px", p.get("entryPx", 0))),
-                "mark_px": float(p.get("mark_px", p.get("markPx", 0))),
-                "upnl": float(p.get("upnl", p.get("unrealizedPnl", 0))),
-                "lev": p.get("leverage", p.get("lev", "-")),
-                "tp": p.get("tp", "-"),
-                "sl": p.get("sl", "-"),
-                "engine": p.get("engine", p.get("strategy", "-")),
+                "coin": coin,
+                "side": "LONG" if sz_signed > 0 else "SHORT",
+                "size": abs(sz_signed),
+                "entry": entry_px,        # landing reads p.entry
+                "entry_px": entry_px,     # keep alias for any other consumer
+                "mark_px": mark_px,
+                "upnl": upnl_v,
+                "lev": lev_val,
+                "tp": tp_v if tp_v not in (None, 0) else "-",
+                "sl": sl_v if sl_v not in (None, 0) else "-",
+                "engine": engine_v or "-",
                 "stage": "live",
             })
         # Counts
