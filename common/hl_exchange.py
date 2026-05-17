@@ -160,12 +160,14 @@ class HLExchange:
                 )
             size_coin = rounded
         try:
+            from hyperliquid.utils.types import Cloid
+            cloid_obj = Cloid.from_str(cloid)
             res = self._exchange.market_open(
                 name=coin,
                 is_buy=is_buy,
                 sz=size_coin,
                 slippage=slippage,
-                cloid=cloid,
+                cloid=cloid_obj,
             )
             ok = bool(res and res.get("status") == "ok")
             return OrderResult(
@@ -188,7 +190,9 @@ class HLExchange:
     def market_close(self, coin: str, size_coin: Optional[float] = None, cloid: Optional[str] = None) -> OrderResult:
         self._ensure()
         try:
-            res = self._exchange.market_close(coin=coin, sz=size_coin, cloid=cloid)
+            from hyperliquid.utils.types import Cloid
+            cloid_obj = Cloid.from_str(cloid) if cloid else None
+            res = self._exchange.market_close(coin=coin, sz=size_coin, cloid=cloid_obj)
             ok = bool(res and res.get("status") == "ok")
             return OrderResult(
                 ok=ok,
