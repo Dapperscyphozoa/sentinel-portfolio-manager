@@ -77,27 +77,28 @@ ENGINE_REGISTRY: dict[str, dict] = {
                              "bt_pf": 3.77, "cap_frac": 0.00},   # PF 3.77 n=46 WR57%; live_safety controls sizing
     "ict_confluence_4h":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
                              "bt_pf": 3.18, "cap_frac": 0.00},   # PF 3.18 n=266 WR57%; live_safety
-    "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  3.06, "cap_frac": 0.45},  # WR 81% — strongest non-ICT
+    "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  3.06, "cap_frac": 0.41},  # WR 81% — strongest non-ICT
 
     # ─── WATCH: green by PF but suspect IS/OOS or undersize n (2 engines) ───
     "e16_bb_fade_hv_1d":   {"affinity": ["high_vol"],               "bt_pf":  2.70, "cap_frac": 0.18},  # IS 0.24 / OOS 2.97 — possibly regime-fitted
     "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.72, "cap_frac": 0.17},  # n=20 undersize
 
-    # ─── YELLOW: marginal — paper mode only (LIVE=0 env, 2 engines) ───
-    "e17_bb_fade_bt_1d":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.35, "cap_frac": 0.03},
-    "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.18, "cap_frac": 0.03},
+    # ─── YELLOW: marginal — paper mode only (LIVE=0 env, 5 engines) ───
+    "e17_bb_fade_bt_1d":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.35, "cap_frac": 0.02},
+    "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.18, "cap_frac": 0.02},
+    # Binance re-audit 2026-05-17: these 3 were OKX-false-positives. Paper-mode pending live evidence.
+    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  1.61, "cap_frac": 0.02},  # OKX 0.58 → Binance 1.61 (OOS 0.96)
+    "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.22, "cap_frac": 0.02},  # OKX 0.86 → Binance 1.22
+    "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.20, "cap_frac": 0.02},  # OKX 0.84 → Binance 1.20
 
     # ─── UNTESTED: low weight, monitor live (2 engines) ───
     "liq_cascade":  {"affinity": ["trend_up", "trend_down"],         "bt_pf": 1.30, "cap_frac": 0.07},  # event-driven, no honest BT yet
     "e16_bb_fade_hv_4h":   {"affinity": ["high_vol"],               "bt_pf":  1.50, "cap_frac": 0.07},  # only n=1 in 90d BT, retain at low weight
 
     # ─── RED: honest PF < 1.0 — halted via STRATEGY_<NAME>_ENABLED=0 env ───
-    "e08_dip3d7_td_4h":    {"affinity": ["trend_down"],             "bt_pf":  0.89, "cap_frac": 0.00},  # halted: was firing 9 sigs/scan
-    "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  0.86, "cap_frac": 0.00},  # halted: claim was 3x inflated
-    "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  0.84, "cap_frac": 0.00},  # halted: claim 6x inflated
-    "e17_bb_fade_bt_4h":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.84, "cap_frac": 0.00},  # halted
-    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  0.58, "cap_frac": 0.00},  # halted: PF 0.58 = bleed
-    "donchian":            {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.20, "cap_frac": 0.00},  # halted: WR 6.8% catastrophic
+    "e08_dip3d7_td_4h":    {"affinity": ["trend_down"],             "bt_pf":  0.93, "cap_frac": 0.00},  # Binance audit 0.93 (OOS 2.01 — recent strength)
+    "e17_bb_fade_bt_4h":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.86, "cap_frac": 0.00},  # confirmed RED both venues
+    "donchian":            {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.01, "cap_frac": 0.00},  # confirmed: WR 4% Binance, WR 6.8% OKX
     "cex_dex_arb":  {"affinity": ["range", "chop"],                  "bt_pf": 0.00, "cap_frac": 0.00},  # halted: bt_pf=0, lookahead history
     "cascade_sniper_hl":   {"affinity": ["high_vol", "trend_up", "trend_down", "range", "chop"],
                              "bt_pf": 0.00, "cap_frac": 0.00},   # halted: bt_pf=0, untested

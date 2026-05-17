@@ -38,31 +38,52 @@ TF_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86
 # ----- Binance (primary, geo-restricted in some regions) -----
 
 def binance_klines(symbol: str, tf: str, start_ms: int, end_ms: int) -> list[dict]:
-    """Pull historical klines directly from Binance Futures REST. Paginated."""
-    url = "https://fapi.binance.com/fapi/v1/klines"
+    """Pull historical klines from Binance REST. Tries fapi (perps) first;
+    on 451 geo-block, falls back to data-api.binance.vision (spot, archive
+    endpoint). Spot and perp prices on Binance are typically within
+    0.1-0.3% — close enough for backtest signal validation.
+    """
+    hosts = [
+        ("https://fapi.binance.com/fapi/v1/klines", "perp"),
+        ("https://data-api.binance.vision/api/v3/klines", "spot-archive"),
+    ]
     out: list[dict] = []
-    cursor = start_ms
-    with httpx.Client(timeout=30) as c:
-        while cursor < end_ms:
-            r = c.get(url, params={"symbol": symbol, "interval": tf,
-                                   "startTime": cursor, "endTime": end_ms, "limit": 1500})
-            r.raise_for_status()
-            rows = r.json()
-            if not rows:
-                break
-            for row in rows:
-                out.append({
-                    "open_ts": int(row[0]),
-                    "open": float(row[1]),
-                    "high": float(row[2]),
-                    "low": float(row[3]),
-                    "close": float(row[4]),
-                    "volume": float(row[5]),
-                })
-            cursor = int(rows[-1][0]) + TF_SECONDS[tf] * 1000
-            if len(rows) < 1500:
-                break
-            time.sleep(0.1)
+    last_err: Exception | None = None
+    for url, kind in hosts:
+        cursor = start_ms
+        out = []
+        try:
+            with httpx.Client(timeout=30) as c:
+                while cursor < end_ms:
+                    r = c.get(url, params={"symbol": symbol, "interval": tf,
+                                           "startTime": cursor, "endTime": end_ms, "limit": 1500})
+                    r.raise_for_status()
+                    rows = r.json()
+                    if not rows:
+                        break
+                    for row in rows:
+                        out.append({
+                            "open_ts": int(row[0]),
+                            "open": float(row[1]),
+                            "high": float(row[2]),
+                            "low": float(row[3]),
+                            "close": float(row[4]),
+                            "volume": float(row[5]),
+                        })
+                    cursor = int(rows[-1][0]) + TF_SECONDS[tf] * 1000
+                    if len(rows) < 1500:
+                        break
+                    time.sleep(0.1)
+            if out:
+                return out
+        except httpx.HTTPStatusError as e:
+            last_err = e
+            if e.response.status_code != 451:
+                raise
+            # Geo-blocked, try next host
+            continue
+    if last_err:
+        raise last_err
     return out
 
 
@@ -345,15 +366,22 @@ def metrics(trades: list[Trade]) -> dict:
 def load_strategy(name: str) -> type[StrategyBase]:
     """Load a strategy class by NAME. Handles module/NAME drift cleanly.
 
-    Tries each candidate module name; in each, returns the first concrete
-    StrategyBase subclass found. Surface candidates the user can pass:
-        fsp, vsq, range_fade, range_bo, range_breakout, fd1, lh1, precog,
-        liq_cascade, cex_dex_arb.
+    Tries each candidate module name; in each, returns the class whose
+    NAME attribute matches the requested name (NOT first match — multiple
+    engines per module is common, e.g. oos_engines.py has 11).
     """
     # Hard mapping for known NAME → module-file mismatches.
     name_to_modules: dict[str, list[str]] = {
         "range_bo": ["range_breakout", "range_bo"],
         "range_breakout": ["range_breakout"],
+        # e01..e17 all live in oos_engines.py
+        **{f"e{n:02d}_{x}": ["oos_engines"] for n in (1,7,8,9,16,17)
+           for x in ("zfade3s_tu_1d","zfade2s_tu_1d","dip3d10_td_1d","pump3d10_td_1d",
+                     "bb_fade_hv_1d","bb_fade_bt_1d","zfade3s_tu_4h","zfade2s_tu_4h",
+                     "dip3d7_td_4h","bb_fade_hv_4h","bb_fade_bt_4h")},
+        "ict_confluence_4h": ["ict_confluence"],
+        "ict_confluence_1d": ["ict_confluence"],
+        "cascade_sniper_hl": ["cascade_sniper"],
     }
     candidates = name_to_modules.get(name, [name])
     last_err: Exception | None = None
@@ -363,11 +391,22 @@ def load_strategy(name: str) -> type[StrategyBase]:
         except ImportError as e:
             last_err = e
             continue
+        # Prefer exact NAME match; fall back to first concrete subclass
+        match = None
+        first = None
         for attr in dir(mod):
             obj = getattr(mod, attr)
             if (isinstance(obj, type) and issubclass(obj, StrategyBase)
                     and obj is not StrategyBase and getattr(obj, "NAME", None)):
-                return obj
+                if obj.NAME == name:
+                    match = obj
+                    break
+                if first is None:
+                    first = obj
+        if match:
+            return match
+        if first and len(candidates) == 1:  # only-candidate fallback
+            return first
     raise SystemExit(f"strategy {name!r} not found (last error: {last_err})")
 
 
