@@ -58,32 +58,49 @@ class CheckResult:
 # cex_dex_arb retained on paper.
 # All routed through same PM gate (coin lock + regime + cooldown + sizing).
 # cap_frac is advisory only; sizing is flat 5% margin per trade.
+# Engine registry — honest_pf audited 2026-05-17 (180d 1d / 90d 4h, OKX data).
+# 'bt_pf' below is HONEST out-of-sample PF, not the original inflated claims.
+# 'cap_frac' redistributed post-audit: GREEN concentrated, halted set to 0.
+# Actual sizing remains flat MARGIN_PCT_PER_TRADE × LEVERAGE per trade;
+# cap_frac is advisory (displayed on dashboard, used for future
+# size-by-weight refactor).
+#
+# Audit verdict legend:
+#   GREEN  — honest PF ≥ 1.4 & OOS PF ≥ 1.0 — keep live
+#   WATCH  — honest PF ≥ 1.4 but IS/OOS divergence or n<30 — keep live, monitor
+#   YELLOW — honest PF 1.0-1.4 — paper mode (LIVE=0 env)
+#   RED    — honest PF < 1.0 — halted (ENABLED=0 env)
+#   UNTESTED — no honest backtest possible (needs custom harness)
 ENGINE_REGISTRY: dict[str, dict] = {
-    # ─── SENTINEL-BORN / RETAINED (paper or live) ───
-    "liq_cascade":  {"affinity": ["trend_up", "trend_down"],                  "bt_pf": 1.30, "cap_frac": 0.04},  # needs Binance liq feed
-    "cex_dex_arb":  {"affinity": ["range", "chop"],                           "bt_pf": 0.00, "cap_frac": 0.08},  # paper only — needs OKX/Bybit WS up
-    # ─── OOS 11 (validated 365d HL, 116 coins, train/test split) ───
-    "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf": 10.05, "cap_frac": 0.12},
-    "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  2.12, "cap_frac": 0.06},
-    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  1.93, "cap_frac": 0.08},
-    "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  1.87, "cap_frac": 0.07},
-    "e16_bb_fade_hv_1d":   {"affinity": ["high_vol"],               "bt_pf":  1.47, "cap_frac": 0.06},
-    "e17_bb_fade_bt_1d":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.41, "cap_frac": 0.06},
-    "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  5.00, "cap_frac": 0.07},
-    "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  2.50, "cap_frac": 0.14},  # top PnL contributor
-    "e08_dip3d7_td_4h":    {"affinity": ["trend_down"],             "bt_pf":  1.50, "cap_frac": 0.06},
-    "e16_bb_fade_hv_4h":   {"affinity": ["high_vol"],               "bt_pf":  1.50, "cap_frac": 0.06},
-    "e17_bb_fade_bt_4h":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.30, "cap_frac": 0.10},
-    # ─── ICT Confluence (operator-mandated live deploy, council tightened safety) ───
-    "ict_confluence_4h":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 1.21, "cap_frac": 0.00},   # cap_frac=0: live_safety controls sizing
+    # ─── GREEN: real edge (3 engines) ───
     "ict_confluence_1d":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 1.21, "cap_frac": 0.00},
-    # ─── Cascade Sniper (council 5/6 pick — Binance liq → HL execution) ───
-    # Event-driven, NOT bar-driven. Sub-1s response on $500K+ cascades.
-    # Same live_safety controls as ICT: 0.25% risk, 3x lev, max 1 concurrent.
+                             "bt_pf": 3.77, "cap_frac": 0.00},   # PF 3.77 n=46 WR57%; live_safety controls sizing
+    "ict_confluence_4h":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
+                             "bt_pf": 3.18, "cap_frac": 0.00},   # PF 3.18 n=266 WR57%; live_safety
+    "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  3.06, "cap_frac": 0.45},  # WR 81% — strongest non-ICT
+
+    # ─── WATCH: green by PF but suspect IS/OOS or undersize n (2 engines) ───
+    "e16_bb_fade_hv_1d":   {"affinity": ["high_vol"],               "bt_pf":  2.70, "cap_frac": 0.18},  # IS 0.24 / OOS 2.97 — possibly regime-fitted
+    "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.72, "cap_frac": 0.17},  # n=20 undersize
+
+    # ─── YELLOW: marginal — paper mode only (LIVE=0 env, 2 engines) ───
+    "e17_bb_fade_bt_1d":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.35, "cap_frac": 0.03},
+    "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.18, "cap_frac": 0.03},
+
+    # ─── UNTESTED: low weight, monitor live (2 engines) ───
+    "liq_cascade":  {"affinity": ["trend_up", "trend_down"],         "bt_pf": 1.30, "cap_frac": 0.07},  # event-driven, no honest BT yet
+    "e16_bb_fade_hv_4h":   {"affinity": ["high_vol"],               "bt_pf":  1.50, "cap_frac": 0.07},  # only n=1 in 90d BT, retain at low weight
+
+    # ─── RED: honest PF < 1.0 — halted via STRATEGY_<NAME>_ENABLED=0 env ───
+    "e08_dip3d7_td_4h":    {"affinity": ["trend_down"],             "bt_pf":  0.89, "cap_frac": 0.00},  # halted: was firing 9 sigs/scan
+    "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  0.86, "cap_frac": 0.00},  # halted: claim was 3x inflated
+    "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  0.84, "cap_frac": 0.00},  # halted: claim 6x inflated
+    "e17_bb_fade_bt_4h":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.84, "cap_frac": 0.00},  # halted
+    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  0.58, "cap_frac": 0.00},  # halted: PF 0.58 = bleed
+    "donchian":            {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.20, "cap_frac": 0.00},  # halted: WR 6.8% catastrophic
+    "cex_dex_arb":  {"affinity": ["range", "chop"],                  "bt_pf": 0.00, "cap_frac": 0.00},  # halted: bt_pf=0, lookahead history
     "cascade_sniper_hl":   {"affinity": ["high_vol", "trend_up", "trend_down", "range", "chop"],
-                             "bt_pf": 0.00, "cap_frac": 0.00},   # bt_pf=0: untested, paper only
+                             "bt_pf": 0.00, "cap_frac": 0.00},   # halted: bt_pf=0, untested
 }
 
 # CUT_ENGINES — hard-blocked from check() regardless of env. The 7 legacy

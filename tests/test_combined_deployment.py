@@ -6,7 +6,7 @@ import os
 
 def test_registry_has_13_engines_after_cuts():
     from pm.pretrade import ENGINE_REGISTRY
-    assert len(ENGINE_REGISTRY) == 16  # +2 ICT
+    assert len(ENGINE_REGISTRY) == 17  # +2 ICT
 
 
 def test_registry_includes_legacy_provisional_2():
@@ -142,4 +142,4 @@ def test_provisional_legacy_still_works():
 def test_registry_is_13_engines():
     """Final registry: 11 OOS + 2 legacy provisional = 13."""
     from pm.pretrade import ENGINE_REGISTRY
-    assert len(ENGINE_REGISTRY) == 16  # +2 ICT
+    assert len(ENGINE_REGISTRY) == 17  # +2 ICT
