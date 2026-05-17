@@ -65,7 +65,8 @@ def _backfill_one(coin: str, tf: str, bars: int = 200) -> list[dict]:
     return out[-bars:]
 
 
-def backfill_all(coins: Iterable[str], cache: Cache, tfs: Iterable[str] = ("1m", "5m", "15m", "1h"),
+def backfill_all(coins: Iterable[str], cache: Cache,
+                 tfs: Iterable[str] = ("1m", "5m", "15m", "1h", "4h", "1d"),
                  bars: int = 200) -> int:
     """Synchronous bulk backfill. Returns total bars loaded."""
     total = 0

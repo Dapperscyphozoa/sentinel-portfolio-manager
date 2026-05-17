@@ -33,6 +33,8 @@ _OKX_KLINE_CHANNELS = [
     ("candle5m", "5m"),
     ("candle15m", "15m"),
     ("candle1H", "1h"),
+    ("candle4H", "4h"),
+    ("candle1D", "1d"),
 ]
 
 
