@@ -186,10 +186,48 @@ def okx_funding(symbol: str, start_ms: int, end_ms: int) -> list[dict]:
     return out
 
 
+def signal_bus_klines(symbol: str, tf: str, start_ms: int, end_ms: int) -> list[dict]:
+    """Pull historical klines from core's /signal_bus/candles endpoint.
+    
+    This is Binance data ingested through the production signal-bus, so it
+    matches what the engines see live — eliminating venue-confounding that
+    council flagged when OKX was used as a Binance proxy.
+    
+    Coin string is symbol without USDT suffix (e.g. 'BTC' not 'BTCUSDT').
+    """
+    coin = symbol.replace("USDT", "")
+    bus = os.environ.get("BACKTEST_SIGNAL_BUS_URL", "https://core-o21t.onrender.com")
+    # Bus returns last N bars; estimate N needed for the window
+    tf_s = TF_SECONDS[tf]
+    n_needed = min(int((end_ms - start_ms) / 1000 / tf_s) + 50, 1000)
+    url = f"{bus}/signal_bus/candles/{coin}/{tf}"
+    with httpx.Client(timeout=30) as c:
+        r = c.get(url, params={"n": n_needed})
+        r.raise_for_status()
+        bars = r.json()
+    # Filter to requested window, normalize schema (already matches)
+    out = []
+    for b in bars:
+        ts = int(b.get("open_ts", b.get("ts", 0)))
+        if start_ms <= ts <= end_ms:
+            out.append({
+                "open_ts": ts,
+                "open": float(b["open"]),
+                "high": float(b["high"]),
+                "low": float(b["low"]),
+                "close": float(b["close"]),
+                "volume": float(b.get("volume", 0)),
+            })
+    out.sort(key=lambda b: b["open_ts"])
+    return out
+
+
 # ----- Dispatch by venue env var -----
 
 def fetch_klines(symbol: str, tf: str, start_ms: int, end_ms: int) -> list[dict]:
     venue = os.environ.get("BACKTEST_DATA_VENUE", "binance").lower()
+    if venue == "signal_bus":
+        return signal_bus_klines(symbol, tf, start_ms, end_ms)
     if venue == "okx":
         return okx_klines(symbol, tf, start_ms, end_ms)
     return binance_klines(symbol, tf, start_ms, end_ms)

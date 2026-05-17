@@ -74,20 +74,20 @@ class CheckResult:
 ENGINE_REGISTRY: dict[str, dict] = {
     # ─── GREEN: real edge (3 engines) ───
     "ict_confluence_1d":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 3.77, "cap_frac": 0.00},   # PF 3.77 n=46 WR57%; live_safety controls sizing
+                             "bt_pf": 3.35, "cap_frac": 0.00},   # PF 3.77 n=46 WR57%; live_safety controls sizing
     "ict_confluence_4h":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
                              "bt_pf": 3.18, "cap_frac": 0.00},   # PF 3.18 n=266 WR57%; live_safety
-    "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  3.06, "cap_frac": 0.41},  # WR 81% — strongest non-ICT
+    "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  2.2, "cap_frac": 0.41},  # WR 81% — strongest non-ICT
 
     # ─── WATCH: green by PF but suspect IS/OOS or undersize n (2 engines) ───
-    "e16_bb_fade_hv_1d":   {"affinity": ["high_vol"],               "bt_pf":  2.70, "cap_frac": 0.18},  # IS 0.24 / OOS 2.97 — possibly regime-fitted
-    "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.72, "cap_frac": 0.17},  # n=20 undersize
+    "e16_bb_fade_hv_1d":   {"affinity": ["high_vol"],               "bt_pf":  5.35, "cap_frac": 0.18},  # IS 0.24 / OOS 2.97 — possibly regime-fitted
+    "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.29, "cap_frac": 0.17},  # n=20 undersize
 
     # ─── YELLOW: marginal — paper mode only (LIVE=0 env, 5 engines) ───
-    "e17_bb_fade_bt_1d":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.35, "cap_frac": 0.02},
-    "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.18, "cap_frac": 0.02},
+    "e17_bb_fade_bt_1d":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.21, "cap_frac": 0.02},
+    "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.01, "cap_frac": 0.02},
     # Binance re-audit 2026-05-17: these 3 were OKX-false-positives. Paper-mode pending live evidence.
-    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  1.61, "cap_frac": 0.02},  # OKX 0.58 → Binance 1.61 (OOS 0.96)
+    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  0.5, "cap_frac": 0.02},  # OKX 0.58 → Binance 1.61 (OOS 0.96)
     "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.22, "cap_frac": 0.02},  # OKX 0.86 → Binance 1.22
     "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.20, "cap_frac": 0.02},  # OKX 0.84 → Binance 1.20
 
