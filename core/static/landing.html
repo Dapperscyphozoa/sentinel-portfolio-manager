@@ -1080,6 +1080,15 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
         <div id="positions"></div>
     </div>
 
+    <!-- ENGINE ATTRIBUTION (per-engine WR / PF / expectancy / fee drag) -->
+    <div class="panel">
+        <div class="panel-head">
+            <div class="panel-title">Engine Attribution · Live PnL</div>
+            <div class="panel-meta" id="attr-meta">— closed</div>
+        </div>
+        <div id="attribution-body"><div style="opacity:0.5;font-size:11px">// awaiting first closures…</div></div>
+    </div>
+
     <!-- NEWS -->
     <div class="panel">
         <div class="panel-head">
@@ -2801,8 +2810,67 @@ async function loadEnginesGrid() {
 }
 
 
+// Per-engine attribution: WR, PF, expectancy, fee drag.
+// Pulled from /strategy/attribution (proxied via core).
+async function loadAttribution() {
+    try {
+        const r = await fetch('/strategy/attribution');
+        if (!r.ok) return;
+        const d = await r.json();
+        const engines = d.engines || [];
+        const total = d.total || {n:0, wr:0, net_pnl:0, fees:0};
+
+        document.getElementById('attr-meta').textContent =
+            `${total.n} closed · ${(total.wr*100).toFixed(1)}% WR · ${total.net_pnl >= 0 ? '+' : ''}$${total.net_pnl.toFixed(2)} net`;
+
+        const body = document.getElementById('attribution-body');
+        if (engines.length === 0) {
+            body.innerHTML = '<div style="opacity:0.5;font-size:11px">// awaiting first closures…</div>';
+            return;
+        }
+
+        // Sort descending by net_pnl (already sorted server-side, but be defensive)
+        engines.sort((a,b) => (b.net_pnl||0) - (a.net_pnl||0));
+
+        body.innerHTML = engines.map(e => {
+            const wrPct = (e.wr * 100).toFixed(1);
+            const pfStr = e.pf == null ? '∞' : e.pf.toFixed(2);
+            const netCls = e.net_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
+            const netSign = e.net_pnl >= 0 ? '+' : '';
+            const expectCls = e.expectancy_usd >= 0 ? 'pnl-pos' : 'pnl-neg';
+            const expectSign = e.expectancy_usd >= 0 ? '+' : '';
+            // Top 2 coins by net for this engine
+            const coinEntries = Object.entries(e.by_coin || {});
+            coinEntries.sort((a,b) => b[1].net_pnl - a[1].net_pnl);
+            const topCoins = coinEntries.slice(0,3).map(([c,v]) =>
+                `<span style="opacity:0.6">${c}:</span><span class="${v.net_pnl>=0?'pnl-pos':'pnl-neg'}">${v.net_pnl>=0?'+':''}$${v.net_pnl.toFixed(2)}</span>`
+            ).join(' · ');
+            const feeDrag = e.net_pnl !== 0 ? Math.abs(e.fees / e.net_pnl * 100).toFixed(0) : '—';
+            return `
+              <div style="border-bottom:1px solid rgba(200,204,212,0.08);padding:10px 0;display:grid;grid-template-columns:1fr auto;gap:8px;align-items:start">
+                <div style="font-size:11px">
+                  <div style="font-weight:600">${e.engine}</div>
+                  <div style="opacity:0.6;font-size:10px;margin-top:2px">
+                    n=${e.n} · W=${e.wins}/L=${e.losses} · hold=${e.avg_hold_h.toFixed(1)}h · fees=$${e.fees.toFixed(2)}
+                  </div>
+                  <div style="font-size:10px;margin-top:3px">${topCoins || ''}</div>
+                </div>
+                <div style="text-align:right;font-size:11px;line-height:1.4">
+                  <div>WR <strong>${wrPct}%</strong></div>
+                  <div>PF <strong>${pfStr}</strong></div>
+                  <div class="${expectCls}">E[t] ${expectSign}$${e.expectancy_usd.toFixed(2)}</div>
+                  <div class="${netCls}" style="font-weight:700">${netSign}$${e.net_pnl.toFixed(2)}</div>
+                </div>
+              </div>`;
+        }).join('');
+    } catch (e) {
+        console.error('loadAttribution err', e);
+    }
+}
+
 // Initial paint — immediate but no setInterval bursts at t=0
 loadDash(); loadMacroStrip(); loadEngines(); loadPMRail(); loadEnginesGrid();
+loadAttribution();
 
 // Staggered offsets keep concurrent fetches small
 poll('clock',     updateClock,     1000,   0);
@@ -2817,6 +2885,7 @@ poll('engines',   loadEngines,     8000,   2200);
 poll('systems',   loadSystems,     12000,  2500);
 poll('pmrail',    loadPMRail,      8000,   2800);
 poll('engines_grid', loadEnginesGrid, 15000, 3100);
+poll('attribution', loadAttribution, 20000, 3700);
 
 // ═══ Live Positions + 24h Equity Pulse ═══════════════════════════════════
 // Live positions table mirrors /dash.positions in a compact mono format.

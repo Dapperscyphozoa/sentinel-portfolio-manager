@@ -63,6 +63,113 @@ class Handler(BaseHTTPRequestHandler):
             since = float(q.get("since", "0"))
             rows = CONN.execute("SELECT * FROM closures WHERE close_ts>=? ORDER BY id DESC LIMIT ?", (since, n)).fetchall()
             return _json(self, 200, [dict(r) for r in rows])
+        if path == "/attribution":
+            # Per-engine attribution: n, wr, pf, expectancy, gross_pnl, fees, net_pnl
+            # Plus per-coin breakdown within each engine.
+            since = float(q.get("since", "0"))
+            rows = CONN.execute(
+                "SELECT strategy, coin, pnl_usd, fees_usd, close_reason, "
+                "(close_ts - open_ts) AS hold_s "
+                "FROM closures WHERE close_ts>=?", (since,)
+            ).fetchall()
+            # Also include open trades — unrealized PnL contributes to view of where we stand
+            open_trades = CONN.execute(
+                "SELECT strategy, coin, open_px, size_coin, is_long, open_ts, sl_px, tp_px, extras_json "
+                "FROM trades WHERE status='open'"
+            ).fetchall()
+            # Aggregate closures by engine
+            by_engine: dict = {}
+            for r in rows:
+                eng = r["strategy"]
+                e = by_engine.setdefault(eng, {
+                    "n": 0, "wins": 0, "losses": 0, "ties": 0,
+                    "gross_pnl": 0.0, "fees": 0.0, "net_pnl": 0.0,
+                    "win_pnl": 0.0, "loss_pnl": 0.0,
+                    "by_coin": {}, "by_reason": {},
+                    "hold_secs": 0.0,
+                })
+                pnl = float(r["pnl_usd"] or 0)
+                fees = float(r["fees_usd"] or 0)
+                net = pnl - fees
+                e["n"] += 1
+                e["gross_pnl"] += pnl
+                e["fees"] += fees
+                e["net_pnl"] += net
+                e["hold_secs"] += float(r["hold_s"] or 0)
+                if net > 0:
+                    e["wins"] += 1
+                    e["win_pnl"] += net
+                elif net < 0:
+                    e["losses"] += 1
+                    e["loss_pnl"] += net  # negative
+                else:
+                    e["ties"] += 1
+                # by coin
+                c = e["by_coin"].setdefault(r["coin"], {"n": 0, "net_pnl": 0.0, "wins": 0})
+                c["n"] += 1
+                c["net_pnl"] += net
+                if net > 0: c["wins"] += 1
+                # by close reason
+                reason = r["close_reason"] or "unknown"
+                br = e["by_reason"].setdefault(reason, {"n": 0, "net_pnl": 0.0})
+                br["n"] += 1
+                br["net_pnl"] += net
+            # Compute derived metrics per engine
+            out_engines = []
+            for eng, e in by_engine.items():
+                n = e["n"]
+                wr = (e["wins"] / n) if n else 0.0
+                # Profit Factor = sum(wins) / abs(sum(losses))
+                pf = (e["win_pnl"] / abs(e["loss_pnl"])) if e["loss_pnl"] < 0 else (float("inf") if e["win_pnl"] > 0 else 0.0)
+                # Expectancy in $: net_pnl / n
+                expect = (e["net_pnl"] / n) if n else 0.0
+                avg_win = (e["win_pnl"] / e["wins"]) if e["wins"] else 0.0
+                avg_loss = (e["loss_pnl"] / e["losses"]) if e["losses"] else 0.0
+                avg_hold_h = (e["hold_secs"] / n / 3600.0) if n else 0.0
+                out_engines.append({
+                    "engine": eng,
+                    "n": n,
+                    "wins": e["wins"],
+                    "losses": e["losses"],
+                    "wr": round(wr, 4),
+                    "pf": round(pf, 3) if pf != float("inf") else None,
+                    "expectancy_usd": round(expect, 4),
+                    "gross_pnl": round(e["gross_pnl"], 4),
+                    "fees": round(e["fees"], 4),
+                    "net_pnl": round(e["net_pnl"], 4),
+                    "avg_win": round(avg_win, 4),
+                    "avg_loss": round(avg_loss, 4),
+                    "avg_hold_h": round(avg_hold_h, 2),
+                    "by_coin": {c: {**v, "wr": round(v["wins"]/v["n"], 3) if v["n"] else 0,
+                                    "net_pnl": round(v["net_pnl"], 4)}
+                                for c, v in e["by_coin"].items()},
+                    "by_reason": {r: {"n": v["n"], "net_pnl": round(v["net_pnl"], 4)}
+                                  for r, v in e["by_reason"].items()},
+                })
+            # Sort by net_pnl desc
+            out_engines.sort(key=lambda x: x["net_pnl"], reverse=True)
+            # Open trades summary
+            open_summary = []
+            for ot in open_trades:
+                open_summary.append({
+                    "strategy": ot["strategy"], "coin": ot["coin"],
+                    "is_long": bool(ot["is_long"]), "open_px": ot["open_px"],
+                    "size_coin": ot["size_coin"], "open_ts": ot["open_ts"],
+                    "sl_px": ot["sl_px"], "tp_px": ot["tp_px"],
+                })
+            # Cohort totals
+            total = {"n": sum(e["n"] for e in by_engine.values()),
+                     "wins": sum(e["wins"] for e in by_engine.values()),
+                     "net_pnl": round(sum(e["net_pnl"] for e in by_engine.values()), 4),
+                     "fees": round(sum(e["fees"] for e in by_engine.values()), 4)}
+            total["wr"] = round(total["wins"] / total["n"], 4) if total["n"] else 0.0
+            return _json(self, 200, {
+                "ts": int(time.time() * 1000),
+                "since": since,
+                "engines": out_engines,
+                "open": open_summary,
+                "total": total,
+            })
         return _json(self, 404, {"error": "not_found"})
 
     def do_POST(self):
