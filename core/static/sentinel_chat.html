@@ -489,6 +489,36 @@ body {
   margin-bottom: 14px;
 }
 
+/* ─── route preview ─── */
+.route-preview {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 4px 12px 6px;
+  color: var(--chrome);
+  opacity: 0.75;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.route-preview .r-arrow { color: var(--chrome); opacity: 0.5; }
+.route-preview .r-tag {
+  text-transform: uppercase;
+  font-weight: 600;
+  letter-spacing: 0.18em;
+  padding: 2px 7px;
+  border-radius: 3px;
+  font-size: 9px;
+}
+.route-preview .r-tag.r-deep  { background: rgba(184,255,47,0.12); color: var(--heat); border: 1px solid rgba(184,255,47,0.35); }
+.route-preview .r-tag.r-ask   { background: rgba(59,130,246,0.15); color: var(--acid-bright); border: 1px solid rgba(59,130,246,0.35); }
+.route-preview .r-tag.r-build { background: rgba(217,119,6,0.15); color: var(--oxide); border: 1px solid rgba(217,119,6,0.35); }
+.route-preview .r-eta { color: var(--bone); opacity: 0.65; }
+.route-preview .r-reason { color: var(--chrome); opacity: 0.4; font-style: italic; }
+@media (max-width: 560px) {
+  .route-preview { font-size: 9px; padding: 3px 10px 5px; gap: 5px; }
+  .route-preview .r-tag { padding: 1px 5px; font-size: 8px; }
+}
+
 /* ─── PHONE OPTIMIZATIONS ─── */
 @media (max-width: 560px) {
   .hdr { padding: 10px 14px 8px; gap: 8px; }
@@ -539,6 +569,10 @@ body {
         <span>council</span>
         <b id="hdr-providers">—/—</b>
       </div>
+      <div class="hdr-stat" title="UI version">
+        <span>ui</span>
+        <b id="hdr-version">v2.1</b>
+      </div>
     </div>
   </div>
 
@@ -557,6 +591,7 @@ body {
   </div>
 
   <div class="input-wrap">
+    <div id="route-preview" class="route-preview"></div>
     <div class="input-row">
       <div class="input-box">
         <textarea id="inp"
@@ -598,6 +633,66 @@ body {
 </div>
 
 <script>
+// ─── Route selection (also called on each input to update preview) ───
+function pickRoute(text, opts) {
+  const lc = (text || '').toLowerCase().trim();
+  const wantsBuild = opts.force === 'build' || opts.auto_commit || opts.auto_deploy || opts.auto_smoke;
+
+  // Explicit prefix commands
+  if (lc.startsWith('/deep ')) return {endpoint: '/sentinel/deep', hint: 'deep', forced: 'prefix'};
+  if (lc.startsWith('/ask '))  return {endpoint: '/sentinel/ask',  hint: 'ask',  forced: 'prefix'};
+  if (lc.startsWith('/build '))return {endpoint: '/sentinel/chat', hint: 'build',forced: 'prefix'};
+
+  // Explicit build via checkboxes
+  if (wantsBuild) return {endpoint: '/sentinel/chat', hint: 'build', forced: 'opts'};
+
+  // Deep triggers — strong signal that we want a research answer not a code stub
+  const deepTriggers = [
+    'deep research', 'deep dive', 'deep analysis', 'comprehensive',
+    'in depth', 'in-depth', 'effort max', 'max effort',
+    'teach', 'curriculum', 'lecture', 'syllabus', 'course',
+    'rival', 'institutional', 'thorough', 'detailed', 'full breakdown',
+    'explain', 'analyze', 'analysis of', 'how does', 'how do',
+    'compare', 'contrast', 'evaluate', 'audit', 'review',
+    'walk through', 'walkthrough', 'breakdown', 'show me how',
+  ];
+  if (deepTriggers.some(t => lc.includes(t))) {
+    return {endpoint: '/sentinel/deep', hint: 'deep', forced: 'trigger'};
+  }
+
+  // Long queries always deep
+  if (text.split(/\s+/).filter(Boolean).length >= 12) {
+    return {endpoint: '/sentinel/deep', hint: 'deep', forced: 'long'};
+  }
+
+  return {endpoint: '/sentinel/ask', hint: 'ask', forced: 'short'};
+}
+
+function updateRoutePreview() {
+  const text = inp.value;
+  const opts = {
+    force: $('opt-force').value || null,
+    auto_commit: $('opt-commit').checked,
+    auto_deploy: $('opt-deploy').checked,
+    auto_smoke: $('opt-smoke').checked,
+  };
+  const r = pickRoute(text, opts);
+  const preview = $('route-preview');
+  if (!preview) return;
+  const eta = r.hint === 'build' ? '40-60s · writes code' :
+              r.hint === 'deep'  ? '100-140s · council + critique' :
+              '8-15s · short council';
+  const cls = r.hint === 'build' ? 'r-build' :
+              r.hint === 'deep'  ? 'r-deep' : 'r-ask';
+  const reason =
+    r.forced === 'prefix'  ? 'prefix' :
+    r.forced === 'opts'    ? 'build toggle on' :
+    r.forced === 'trigger' ? 'depth keyword' :
+    r.forced === 'long'    ? 'long query' :
+    'short query';
+  preview.innerHTML = `<span class="r-arrow">→</span> <span class="r-tag ${cls}">${r.hint}</span> <span class="r-eta">${eta}</span> <span class="r-reason">· ${reason}</span>`;
+}
+
 // ─── DOM refs ───
 const $ = id => document.getElementById(id);
 const scroll = $('scroll'), msgs = $('msgs'), empty = $('empty');
@@ -622,10 +717,11 @@ const cacheKey = (text, opts) => text.trim().toLowerCase() + '|' + JSON.stringif
 // ─── Active request abort controller ───
 let _activeReq = null;
 
-// auto-expand textarea
+// auto-expand textarea + live route preview
 inp.addEventListener('input', () => {
   inp.style.height = 'auto';
   inp.style.height = Math.min(180, inp.scrollHeight) + 'px';
+  updateRoutePreview();
 });
 
 // Enter to send on desktop, Shift+Enter newline. On mobile, button-only.
@@ -644,8 +740,11 @@ inp.addEventListener('keydown', e => {
       cb.checked = !cb.checked;
     }
     chip.classList.toggle('on', cb.checked);
+    updateRoutePreview();
   });
 });
+$('opt-force').addEventListener('change', updateRoutePreview);
+updateRoutePreview();   // initial paint
 
 // example buttons
 document.querySelectorAll('.example').forEach(b => {
@@ -924,24 +1023,10 @@ async function submitAsk() {
   inp.style.height = 'auto';
 
   // ─── ROUTE SELECTION ───
-  // 1. Explicit /chat (build) if user enables auto_commit/deploy/smoke or forces build
-  // 2. Else /sentinel/deep if query asks for depth (research, comprehensive, teach, etc.)
-  // 3. Else /sentinel/ask (fast, 8-15s)
-  const wantsBuild = opts.force === 'build' || opts.auto_commit || opts.auto_deploy || opts.auto_smoke;
-  const deepTriggers = ['deep research', 'deep dive', 'deep analysis', 'comprehensive',
-    'in depth', 'in-depth', 'effort max', 'max effort', 'teach', 'curriculum',
-    'lecture', 'syllabus', 'course', 'rival bloomberg', 'rivals bloomberg',
-    'institutional', 'thorough', 'detailed analysis', 'full breakdown', 'deep breakdown'];
-  const lc = text.toLowerCase();
-  const isDeep = !wantsBuild && deepTriggers.some(t => lc.includes(t));
-  let endpoint, routeHint, body;
-  if (wantsBuild) {
-    endpoint = '/sentinel/chat'; routeHint = 'build'; body = {text, ...opts};
-  } else if (isDeep) {
-    endpoint = '/sentinel/deep'; routeHint = 'deep'; body = {text};
-  } else {
-    endpoint = '/sentinel/ask'; routeHint = 'ask'; body = {text};
-  }
+  const route = pickRoute(text, opts);
+  const endpoint = route.endpoint;
+  const routeHint = route.hint;
+  const body = routeHint === 'build' ? {text, ...opts} : {text};
 
   const loader = appendLoading(routeHint);
 
