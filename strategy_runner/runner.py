@@ -88,36 +88,69 @@ def scan_once(bus: BusClient, pm: PMClient, on_signal) -> int:
 
     Calls on_signal(strategy_cls, signal, pm_decision) for each (allowed) signal.
     Returns count of allowed signals.
+
+    Telemetry (audit-driven, 2026-05-17): per-engine counts emitted to log so
+    the operator can see what % of evaluate() calls are returning None vs
+    firing vs being PM-denied. This confirms or contradicts the "4h/1d bars
+    missing" diagnosis without writing the fix first.
     """
     if not REGISTRY:
         _load_registered()
     n = 0
+    # Per-engine counters: name → {eval, none, sig, denied, err}
+    stats: dict[str, dict] = {}
+    enabled_count = 0
+    disabled_count = 0
+    halted_count = 0
     for strat in REGISTRY:
         if not config.strategy_enabled(strat.NAME):
+            disabled_count += 1
             continue
         if halt.is_halted(strat.NAME):
+            halted_count += 1
             continue
+        enabled_count += 1
+        s = stats.setdefault(strat.NAME, {"eval": 0, "none": 0, "sig": 0, "denied": 0, "err": 0})
         for coin in strat.UNIVERSE:
+            s["eval"] += 1
             try:
                 sig = strat.evaluate(coin, bus)
             except Exception:
+                s["err"] += 1
                 log.exception("evaluate error %s/%s", strat.NAME, coin)
                 continue
             if sig is None:
+                s["none"] += 1
                 continue
+            s["sig"] += 1
             try:
                 decision = pm.check(strat.NAME, sig.to_dict())
             except Exception:
+                s["err"] += 1
                 log.exception("pm.check error %s/%s", strat.NAME, coin)
                 continue
             if not decision.allow:
+                s["denied"] += 1
                 log.info("pm denied %s/%s: %s", strat.NAME, coin, decision.reason)
                 continue
             try:
                 on_signal(strat, sig, decision)
                 n += 1
             except Exception:
+                s["err"] += 1
                 log.exception("on_signal handler error %s/%s", strat.NAME, coin)
+
+    # Per-scan summary
+    log.info(
+        "scan_summary registry=%d enabled=%d disabled=%d halted=%d allowed_fires=%d",
+        len(REGISTRY), enabled_count, disabled_count, halted_count, n,
+    )
+    # Per-engine breakdown — one line each, easy to grep
+    for name, s in stats.items():
+        log.info(
+            "scan_engine %s eval=%d none=%d sig=%d denied=%d err=%d",
+            name, s["eval"], s["none"], s["sig"], s["denied"], s["err"],
+        )
     return n
 
 
