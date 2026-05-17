@@ -108,6 +108,30 @@ _PROXY_MAP = {
 _HEALTH_CACHE: dict = {"ts": 0, "data": None}
 _HEALTH_TTL_S = 3.0
 
+# ─── Deep research background job store ───
+# In-memory dict of job_id → {status, phase, started_at, progress, result}
+# Single-instance OK (we have one core service). Auto-evicts jobs older than 10min.
+_DEEP_JOBS: dict = {}
+_DEEP_JOB_TTL_S = 600
+
+
+def _update_deep_job(job_id: str, phase: str, extra: dict = None) -> None:
+    """Called from deep_research worker to push progress updates."""
+    job = _DEEP_JOBS.get(job_id)
+    if not job:
+        return
+    job["phase"] = phase
+    if extra:
+        job.setdefault("progress", {}).update(extra)
+
+
+def _evict_old_deep_jobs() -> None:
+    now = int(time.time() * 1000)
+    cutoff = now - _DEEP_JOB_TTL_S * 1000
+    stale = [k for k, v in _DEEP_JOBS.items() if v["started_at"] < cutoff]
+    for k in stale:
+        _DEEP_JOBS.pop(k, None)
+
 
 def _aggregate_health() -> dict:
     """Poll all 4 subsystems and aggregate their /health."""
@@ -751,11 +775,17 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_orderbook(coin)
         # Sentinel: JSON data at /sentinel.json (fetched by the panel),
         #           styled landing at /sentinel (browser navigation),
+        #           deep job polling at /sentinel/deep/{job_id} (background pattern),
         #           other /sentinel/* paths proxy to sentinel service
         if path == "/sentinel.json":
             return self._serve_sentinel()
         if path == "/sentinel" or path == "/sentinel/":
             return self._serve_landing()
+        if path.startswith("/sentinel/deep/"):
+            job_id = path[len("/sentinel/deep/"):].rstrip("/")
+            if job_id:
+                _evict_old_deep_jobs()
+                return self._serve_deep_status(job_id)
         if path.startswith("/sentinel/"):
             return self._proxy_sentinel(path)
         # Sentinel chat UI — fast, mobile-first, PSYCHO themed
@@ -798,7 +828,15 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def _handle_deep_research(self) -> None:
-        """In-process deep research: parallel-fire 10 top models, synthesize, no truncation."""
+        """In-process deep research with BACKGROUND JOB + POLLING pattern.
+
+        Synchronous HTTP doesn't work: Cloudflare/Render edge cuts at ~100s,
+        deep research takes 100-160s. Solution:
+          POST /sentinel/deep         → starts job, returns {job_id, status:'running'} in <1s
+          GET  /sentinel/deep/<id>    → returns current state (progressive)
+                                        progressively richer payloads as voters return
+        """
+        import threading, uuid, asyncio as _asyncio
         body_len = int(self.headers.get("Content-Length", "0") or 0)
         body = self.rfile.read(body_len) if body_len else b"{}"
         try:
@@ -809,68 +847,142 @@ class Handler(BaseHTTPRequestHandler):
         if not query:
             return self._json(400, {"error": "missing 'text' field"})
         enable_critique = payload.get("critique", True)
-        try:
-            import asyncio
-            from core.deep_research import run_deep_research
-            log.info("DEEP RESEARCH: %s", query[:120])
-            r = asyncio.run(run_deep_research(query, enable_critique=enable_critique))
-            timing = r["timing"]
-            # Build voters list (round 1 voters first, critics after)
-            all_voters = []
-            for v in r["voters"]:
-                all_voters.append({
-                    "model": v["model"],
-                    "provider": v.get("provider", ""),
-                    "confidence": 1.0 if v.get("ok") else 0.0,
-                    "answer": v.get("content", "")[:1500] if v.get("ok") else f"FAILED: {v.get('error','?')}",
-                    "reasoning": f"{v.get('elapsed_s','?')}s · {v.get('words',0)}w · role={v.get('role','?')} · domain={v.get('assigned_domain','?')} · skill={v.get('domain_skill_score',0):.2f}",
-                    "used_antipode": v.get("role") == "generalist",
-                    "role": v.get("role"),
-                })
-            for c in r.get("critiques", []):
-                all_voters.append({
-                    "model": c["model"],
-                    "provider": c.get("provider", ""),
-                    "confidence": 1.0 if c.get("ok") else 0.0,
-                    "answer": c.get("content", "")[:1500] if c.get("ok") else f"FAILED: {c.get('error','?')}",
-                    "reasoning": f"CRITIC · {c.get('elapsed_s','?')}s · {c.get('words',0)}w",
-                    "used_antipode": True,  # critics are adversarial by construction
-                    "role": "critic",
-                })
-            return self._json(200, {
-                "entry_id": r["entry_id"],
-                "route": "deep",
-                "answer": r["refined_synthesis"],
-                "first_synthesis": r["first_synthesis"],
-                "synth_model": r.get("synth_model"),
-                "voters_inspection": all_voters,
-                "intent_classification": {
-                    "intent": "DEEP",
-                    "confidence": r["domain"].get("confidence", 0.5),
-                    "reason": (
-                        f"domain={r['domain']['domain']} · "
-                        f"{r['providers_succeeded']}/{r['providers_called']} voters in {timing['voters_s']}s · "
-                        f"synth1 {timing['synth1_s']}s · "
-                        f"critique {timing['critique_s']}s · "
-                        f"refine {timing['refine_s']}s · "
-                        f"total {timing['total_s']}s"
+
+        job_id = "deep_" + uuid.uuid4().hex[:12]
+        _DEEP_JOBS[job_id] = {
+            "job_id": job_id,
+            "status": "running",
+            "phase": "queued",
+            "query": query,
+            "started_at": int(time.time() * 1000),
+            "elapsed_s": 0,
+            "result": None,
+            "error": None,
+        }
+
+        def worker():
+            try:
+                from core.deep_research import run_deep_research
+                # Pass the job_id so the runner can update progress
+                r = _asyncio.run(run_deep_research(
+                    query,
+                    enable_critique=enable_critique,
+                    entry_id=job_id,
+                    progress_cb=lambda phase, extra=None: _update_deep_job(
+                        job_id, phase, extra or {}
                     ),
-                },
-                "knowledge_gaps": [],
-                "similar_prior_asks": [],
-                "meta": {
-                    "domain": r["domain"],
-                    "providers_called": r["providers_called"],
-                    "providers_succeeded": r["providers_succeeded"],
-                    "critiques_succeeded": r.get("critiques_succeeded", 0),
-                    "first_words": r.get("first_words", 0),
-                    "refined_words": r.get("refined_words", 0),
-                    "timing": timing,
-                },
+                ))
+                _DEEP_JOBS[job_id].update({
+                    "status": "complete",
+                    "phase": "done",
+                    "result": r,
+                    "elapsed_s": (int(time.time() * 1000) - _DEEP_JOBS[job_id]["started_at"]) / 1000,
+                })
+            except Exception as e:
+                log.exception("deep_research job %s failed: %s", job_id, e)
+                _DEEP_JOBS[job_id].update({
+                    "status": "failed",
+                    "phase": "error",
+                    "error": str(e)[:500],
+                    "elapsed_s": (int(time.time() * 1000) - _DEEP_JOBS[job_id]["started_at"]) / 1000,
+                })
+
+        t = threading.Thread(target=worker, daemon=True, name=f"deep_{job_id}")
+        t.start()
+
+        return self._json(202, {
+            "job_id": job_id,
+            "status": "running",
+            "phase": "queued",
+            "poll_url": f"/sentinel/deep/{job_id}",
+            "started_at": _DEEP_JOBS[job_id]["started_at"],
+        })
+
+    def _serve_deep_status(self, job_id: str) -> None:
+        """Return current state of a deep research job (poll endpoint)."""
+        job = _DEEP_JOBS.get(job_id)
+        if not job:
+            return self._json(404, {"error": "job not found", "job_id": job_id})
+        now_ms = int(time.time() * 1000)
+        elapsed = (now_ms - job["started_at"]) / 1000
+
+        if job["status"] == "running":
+            return self._json(200, {
+                "job_id": job_id,
+                "status": "running",
+                "phase": job.get("phase", "running"),
+                "elapsed_s": round(elapsed, 1),
+                "progress": job.get("progress", {}),
             })
-        except Exception as e:
-            log.exception("deep_research failed: %s", e)
-            return self._json(500, {"error": "deep_research_failed", "detail": str(e)})
+
+        if job["status"] == "failed":
+            return self._json(200, {
+                "job_id": job_id,
+                "status": "failed",
+                "phase": "error",
+                "elapsed_s": round(elapsed, 1),
+                "error": job.get("error", "unknown"),
+            })
+
+        # Complete — return the full result in the same shape the synchronous
+        # endpoint used to return so the UI rendering code stays the same.
+        r = job["result"]
+        timing = r["timing"]
+        all_voters = []
+        for v in r["voters"]:
+            all_voters.append({
+                "model": v["model"],
+                "provider": v.get("provider", ""),
+                "confidence": 1.0 if v.get("ok") else 0.0,
+                "answer": v.get("content", "")[:1500] if v.get("ok") else f"FAILED: {v.get('error','?')}",
+                "reasoning": f"{v.get('elapsed_s','?')}s · {v.get('words',0)}w · role={v.get('role','?')} · domain={v.get('assigned_domain','?')} · skill={v.get('domain_skill_score',0):.2f}",
+                "used_antipode": v.get("role") == "generalist",
+                "role": v.get("role"),
+            })
+        for c in r.get("critiques", []):
+            all_voters.append({
+                "model": c["model"],
+                "provider": c.get("provider", ""),
+                "confidence": 1.0 if c.get("ok") else 0.0,
+                "answer": c.get("content", "")[:1500] if c.get("ok") else f"FAILED: {c.get('error','?')}",
+                "reasoning": f"CRITIC · {c.get('elapsed_s','?')}s · {c.get('words',0)}w",
+                "used_antipode": True,
+                "role": "critic",
+            })
+        return self._json(200, {
+            "job_id": job_id,
+            "status": "complete",
+            "phase": "done",
+            "elapsed_s": round(elapsed, 1),
+            # ↓↓↓ This block matches the old sync response shape ↓↓↓
+            "entry_id": r["entry_id"],
+            "route": "deep",
+            "answer": r["refined_synthesis"],
+            "first_synthesis": r["first_synthesis"],
+            "synth_model": r.get("synth_model"),
+            "voters_inspection": all_voters,
+            "intent_classification": {
+                "intent": "DEEP",
+                "confidence": r["domain"].get("confidence", 0.5),
+                "reason": (
+                    f"domain={r['domain']['domain']} · "
+                    f"{r['providers_succeeded']}/{r['providers_called']} voters in {timing['voters_s']}s · "
+                    f"synth1 {timing['synth1_s']}s · critique {timing['critique_s']}s · "
+                    f"refine {timing['refine_s']}s · total {timing['total_s']}s"
+                ),
+            },
+            "knowledge_gaps": [],
+            "similar_prior_asks": [],
+            "meta": {
+                "domain": r["domain"],
+                "providers_called": r["providers_called"],
+                "providers_succeeded": r["providers_succeeded"],
+                "critiques_succeeded": r.get("critiques_succeeded", 0),
+                "first_words": r.get("first_words", 0),
+                "refined_words": r.get("refined_words", 0),
+                "timing": timing,
+            },
+        })
 
     def _proxy_sentinel(self, path: str) -> None:
         """Forward POST/GET to the sentinel Render service (separate origin)."""

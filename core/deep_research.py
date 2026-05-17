@@ -152,7 +152,8 @@ Do NOT be polite. Do NOT hedge. Do NOT compliment. Your value is in dissent."""
 
 async def run_deep_research(query: str, providers_subset: Optional[list] = None,
                             entry_id: Optional[str] = None,
-                            enable_critique: bool = True) -> dict:
+                            enable_critique: bool = True,
+                            progress_cb=None) -> dict:
     """Two-stage deep research:
 
     STAGE 1 — Skill-conditioned routing:
@@ -168,12 +169,19 @@ async def run_deep_research(query: str, providers_subset: Optional[list] = None,
       Each critic produces hostile peer-review.
       Final refinement integrates synthesis + critiques.
 
-    Returns dict with: domain, voters, critiques, first_synthesis, refined_synthesis, timing.
+    progress_cb: optional callable(phase: str, extra: dict) for progress updates.
     """
     import hashlib
     from core.voter_skills import (classify_domain, get_voter_prompt_addition,
                                     VOTER_PROFILES)
     from core import skill_ledger
+
+    def _pcb(phase: str, **extra):
+        if progress_cb:
+            try:
+                progress_cb(phase, extra or {})
+            except Exception:
+                pass
 
     start = time.time()
     entry_id = entry_id or f"deep_{int(time.time())}"
@@ -183,23 +191,32 @@ async def run_deep_research(query: str, providers_subset: Optional[list] = None,
                  if (providers_subset is None or p[0] in providers_subset)
                  and os.environ.get(p[3], "")]
     log.info("[deep:%s] firing %d voters", entry_id, len(available))
+    _pcb("starting", providers_planned=len(available))
 
     async with httpx.AsyncClient() as client:
         # ─── STAGE 0: Domain classification (~3s) ───
+        _pcb("classifying")
         dom_start = time.time()
         domain_info = await classify_domain(query, client)
         dom_elapsed = time.time() - dom_start
         domain = domain_info["domain"]
         log.info("[deep:%s] domain=%s conf=%.2f in %.1fs",
                  entry_id, domain, domain_info["confidence"], dom_elapsed)
+        _pcb("voters_firing", domain=domain, classify_s=round(dom_elapsed, 1))
 
         # ─── STAGE 1: Fire all voters with skill-conditioned prompts (parallel) ───
+        _voters_done = {"count": 0}
         async def call_with_skill(prov):
             voter_name = prov[0]
             skill_addition = get_voter_prompt_addition(voter_name, domain)
             full_system = DEEP_RESEARCH_SYSTEM + "\n\n" + skill_addition
             result = await _call_provider(client, prov, full_system, query)
-            # Record to ledger
+            _voters_done["count"] += 1
+            _pcb("voters_progress",
+                 voters_done=_voters_done["count"],
+                 voters_total=len(available),
+                 last_voter=voter_name,
+                 last_ok=result.get("ok", False))
             skill_ledger.record_voter_call(
                 entry_id=entry_id, query_hash=query_hash, domain=domain,
                 voter_name=voter_name, model_id=prov[1],
@@ -209,7 +226,6 @@ async def run_deep_research(query: str, providers_subset: Optional[list] = None,
                 error_text=result.get("error"),
                 is_critique=False,
             )
-            # Annotate with skill metadata
             result["assigned_domain"] = domain
             result["domain_skill_score"] = VOTER_PROFILES.get(voter_name, {}).get(domain, 0.5)
             result["role"] = "specialist" if result["domain_skill_score"] >= 0.82 else "generalist"
@@ -221,14 +237,22 @@ async def run_deep_research(query: str, providers_subset: Optional[list] = None,
         ok_voters = [r for r in results if r.get("ok") and r.get("content")]
         log.info("[deep:%s] voters done in %.1fs: %d/%d ok",
                  entry_id, voters_elapsed, len(ok_voters), len(available))
+        _pcb("synthesizing_first",
+             voters_ok=len(ok_voters),
+             voters_total=len(available),
+             voters_s=round(voters_elapsed, 1))
 
         if not ok_voters:
             return {
                 "entry_id": entry_id, "domain": domain_info,
                 "voters": results, "critiques": [],
                 "first_synthesis": "", "refined_synthesis": "ERROR: no voters returned.",
-                "total_elapsed_s": round(time.time() - start, 1),
+                "timing": {"domain_classify_s": round(dom_elapsed, 1),
+                           "voters_s": round(voters_elapsed, 1),
+                           "synth1_s": 0, "critique_s": 0, "refine_s": 0,
+                           "total_s": round(time.time() - start, 1)},
                 "providers_called": len(available), "providers_succeeded": 0,
+                "first_words": 0, "refined_words": 0, "critiques_succeeded": 0,
             }
 
         # ─── STAGE 1b: First synthesis ───
@@ -257,6 +281,7 @@ async def run_deep_research(query: str, providers_subset: Optional[list] = None,
         refine_elapsed = 0.0
 
         if enable_critique and first_synthesis:
+            _pcb("critiquing", first_words=len(first_synthesis.split()))
             # Pick 3 strongest critics (different strengths than first synth)
             # gpt-4.1 for code/risk; mistral-large for risk/european perspective;
             # nemotron-49b for careful instruction following.
@@ -295,6 +320,7 @@ async def run_deep_research(query: str, providers_subset: Optional[list] = None,
 
             # ─── STAGE 2b: Refinement synthesis ───
             if ok_critiques:
+                _pcb("refining", critiques_ok=len(ok_critiques))
                 refine_input = (
                     f"ORIGINAL QUESTION:\n{query}\n\nDOMAIN: {domain}\n\n"
                     f"FIRST-PASS SYNTHESIS:\n{first_synthesis}\n\n"

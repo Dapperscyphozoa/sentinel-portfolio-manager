@@ -1035,19 +1035,71 @@ async function submitAsk() {
   setSendCancel(true);
 
   try {
-    const r = await fetch(endpoint, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify(body),
-      signal: _activeReq.signal,
-    });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const d = await r.json();
+    let d;
+    if (endpoint === '/sentinel/deep') {
+      // Background-job pattern to dodge Cloudflare's ~100s edge timeout.
+      // POST returns 202 with {job_id}; we then poll GET every 2.5s until
+      // status === 'complete' or 'failed'.
+      const start = await fetch(endpoint, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(body),
+        signal: _activeReq.signal,
+      });
+      if (!start.ok) throw new Error('start HTTP ' + start.status);
+      const startJson = await start.json();
+      const jobId = startJson.job_id;
+      if (!jobId) throw new Error('no job_id returned');
+
+      const pollUrl = `/sentinel/deep/${jobId}`;
+      const MAX_POLLS = 90;   // 90 * 2.5s = 225s ceiling
+      let polls = 0;
+      while (polls++ < MAX_POLLS) {
+        if (_activeReq.signal.aborted) throw new DOMException('aborted','AbortError');
+        await new Promise(r => setTimeout(r, 2500));
+        const pr = await fetch(pollUrl, {signal: _activeReq.signal});
+        if (!pr.ok) {
+          // Transient Cloudflare 502 on GET poll is OK — try again next tick
+          if (pr.status === 502 || pr.status === 504) continue;
+          throw new Error('poll HTTP ' + pr.status);
+        }
+        const pjson = await pr.json();
+        // Update loader phase from server-side progress
+        const loaderEl = msgs.querySelector('.loading:last-of-type .ld-label');
+        if (loaderEl && pjson.phase) {
+          const prog = pjson.progress || {};
+          const phaseMap = {
+            'queued': 'queued · spinning up',
+            'starting': 'starting',
+            'classifying': 'classifying domain',
+            'voters_firing': `voters firing · ${prog.domain || ''}`,
+            'voters_progress': `voters returning · ${prog.voters_done || 0}/${prog.voters_total || 10}`,
+            'synthesizing_first': `first synthesis · ${prog.voters_ok || 0}/${prog.voters_total || 10} voters ok`,
+            'critiquing': `hostile critics reviewing · ${prog.first_words || 0}w draft`,
+            'refining': `refining with ${prog.critiques_ok || 0} critiques`,
+            'done': 'finalizing',
+            'error': 'failed',
+          };
+          loaderEl.textContent = phaseMap[pjson.phase] || pjson.phase;
+        }
+        if (pjson.status === 'complete') { d = pjson; break; }
+        if (pjson.status === 'failed')   throw new Error(pjson.error || 'job failed');
+      }
+      if (!d) throw new Error('job timed out after ' + (MAX_POLLS*2.5) + 's');
+    } else {
+      // /sentinel/ask and /sentinel/chat: synchronous
+      const r = await fetch(endpoint, {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify(body),
+        signal: _activeReq.signal,
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      d = await r.json();
+    }
     if (d.error) throw new Error(d.error);
-    // Normalize: /ask returns top-level fields; /chat returns nested under .result
     if (!d.route) d.route = routeHint;
     appendAsstMsg(d, loader);
-    // Cache successful responses (skip build routes — they have side-effects)
     if (!wantsBuild) _cache.set(ck, d);
   } catch (e) {
     if (e.name === 'AbortError') {
