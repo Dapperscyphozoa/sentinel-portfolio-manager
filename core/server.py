@@ -589,6 +589,22 @@ class Handler(BaseHTTPRequestHandler):
             pass
         self._json(200, {"per_coin": per_coin, "hours": 24, "ts": int(time.time() * 1000)})
 
+    def _serve_chat(self) -> None:
+        """Serve the new PSYCHO-themed sentinel chat UI."""
+        chat_path = os.path.join(os.path.dirname(__file__), "static", "sentinel_chat.html")
+        try:
+            with open(chat_path, "rb") as f:
+                body = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except Exception as e:
+            self._json(500, {"error": "chat_unavailable", "detail": str(e)})
+
     def _serve_sentinel(self) -> None:
         """Proxy to the sentinel service /status endpoint (separate Render service)."""
         url = os.environ.get("SENTINEL_URL", "https://sentinel-eug3.onrender.com")
@@ -695,11 +711,17 @@ class Handler(BaseHTTPRequestHandler):
             coin = path.split("/")[-1]
             return self._serve_orderbook(coin)
         # Sentinel: JSON data at /sentinel.json (fetched by the panel),
-        #           styled landing at /sentinel (browser navigation)
+        #           styled landing at /sentinel (browser navigation),
+        #           other /sentinel/* paths proxy to sentinel service
         if path == "/sentinel.json":
             return self._serve_sentinel()
         if path == "/sentinel" or path == "/sentinel/":
             return self._serve_landing()
+        if path.startswith("/sentinel/"):
+            return self._proxy_sentinel(path)
+        # Sentinel chat UI — fast, mobile-first, PSYCHO themed
+        if path == "/chat" or path == "/chat/":
+            return self._serve_chat()
         # Landing sub-nav paths — serve the landing HTML so the page stays styled
         # (originally these were separate sub-pages in precog-hl, not yet ported).
         if path in ("/engines", "/audit", "/system", "/macro",
@@ -715,11 +737,46 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         path = parsed.path
+        # /sentinel/* POST → proxy to sentinel service (chat, rate, etc.)
+        if path.startswith("/sentinel/"):
+            return self._proxy_sentinel(path)
         for prefix, (port, strip) in _PROXY_MAP.items():
             if path == prefix or path.startswith(prefix + "/"):
                 self._proxy(port, strip)
                 return
         self._json(404, {"error": "not found", "path": path})
+
+    def do_OPTIONS(self):
+        # CORS preflight for chat UI calls
+        self.send_response(204)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-PM-Auth, X-Halt-Token, X-Sniper-Auth")
+        self.send_header("Access-Control-Max-Age", "3600")
+        self.end_headers()
+
+    def _proxy_sentinel(self, path: str) -> None:
+        """Forward POST/GET to the sentinel Render service (separate origin)."""
+        url_base = os.environ.get("SENTINEL_URL", "https://sentinel-eug3.onrender.com")
+        # Strip /sentinel prefix
+        target_path = path[len("/sentinel"):] or "/"
+        target_url = url_base + target_path
+        method = self.command
+        body_len = int(self.headers.get("Content-Length", "0") or 0)
+        body = self.rfile.read(body_len) if body_len else None
+        fwd_headers = {"Content-Type": self.headers.get("Content-Type", "application/json")}
+        try:
+            with httpx.Client(timeout=120.0) as cli:
+                r = cli.request(method, target_url, content=body, headers=fwd_headers)
+            self.send_response(r.status_code)
+            ct = r.headers.get("content-type", "application/json")
+            self.send_header("Content-Type", ct)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(r.content)
+        except Exception as e:
+            self._json(502, {"error": "sentinel_proxy_failed", "detail": str(e),
+                             "target": target_url})
 
     def log_message(self, fmt, *args):
         log.debug("%s - %s", self.address_string(), fmt % args)
