@@ -32,16 +32,18 @@ log = logging.getLogger("deep_research")
 # ─────────────────── Provider catalog ───────────────────
 PROVIDERS = [
     # (provider_name, model_id, base_url, env_key, max_tokens)
+    # max_tokens reduced from 8000 to 4000 to fit 512MB Render starter.
+    # 4000 tokens ≈ 3000 words, plenty for a research voter.
     ("cerebras-qwen3-235b", "qwen-3-235b-a22b-instruct-2507",
-     "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", 8000),
+     "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", 4000),
     ("cerebras-gpt-oss-120b", "gpt-oss-120b",
-     "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", 8000),
+     "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", 4000),
     ("cerebras-glm-4.7", "zai-glm-4.7",
-     "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", 8000),
+     "https://api.cerebras.ai/v1", "CEREBRAS_API_KEY", 4000),
     ("groq-llama-3.3-70b", "llama-3.3-70b-versatile",
-     "https://api.groq.com/openai/v1", "GROQ_API_KEY", 8000),
+     "https://api.groq.com/openai/v1", "GROQ_API_KEY", 4000),
     ("github-gpt-4.1", "openai/gpt-4.1",
-     "https://models.github.ai/inference", "GITHUB_MODELS_TOKEN", 8000),
+     "https://models.github.ai/inference", "GITHUB_MODELS_TOKEN", 4000),
     ("github-llama-405b", "meta/Meta-Llama-3.1-405B-Instruct",
      "https://models.github.ai/inference", "GITHUB_MODELS_TOKEN", 4000),
     ("github-deepseek-v3", "deepseek/DeepSeek-V3-0324",
@@ -204,8 +206,17 @@ async def run_deep_research(query: str, providers_subset: Optional[list] = None,
                  entry_id, domain, domain_info["confidence"], dom_elapsed)
         _pcb("voters_firing", domain=domain, classify_s=round(dom_elapsed, 1))
 
-        # ─── STAGE 1: Fire all voters with skill-conditioned prompts (parallel) ───
+        # ─── STAGE 1: Fire voters in BATCHES (memory-safe on 512MB plan) ───
+        # Holding all 10 raw httpx responses + parsed JSON + Python objects in
+        # memory simultaneously pushes us over the 512MB starter limit (OOM).
+        # Solution: fire in batches of BATCH_SIZE. Each batch completes, gets
+        # trimmed, then next batch starts. Total wall time unchanged because
+        # the slowest voter per batch still gates the batch, but peak memory
+        # drops ~3-4x.
+        import gc as _gc
+        BATCH_SIZE = int(os.environ.get("DEEP_VOTER_BATCH", "5"))
         _voters_done = {"count": 0}
+
         async def call_with_skill(prov):
             voter_name = prov[0]
             skill_addition = get_voter_prompt_addition(voter_name, domain)
@@ -232,11 +243,17 @@ async def run_deep_research(query: str, providers_subset: Optional[list] = None,
             return result
 
         voter_phase_start = time.time()
-        results = await asyncio.gather(*[call_with_skill(p) for p in available])
+        results: list = []
+        for i in range(0, len(available), BATCH_SIZE):
+            batch = available[i:i + BATCH_SIZE]
+            batch_results = await asyncio.gather(*[call_with_skill(p) for p in batch])
+            results.extend(batch_results)
+            # Force GC between batches — releases httpx response buffers
+            _gc.collect()
         voters_elapsed = time.time() - voter_phase_start
         ok_voters = [r for r in results if r.get("ok") and r.get("content")]
-        log.info("[deep:%s] voters done in %.1fs: %d/%d ok",
-                 entry_id, voters_elapsed, len(ok_voters), len(available))
+        log.info("[deep:%s] voters done in %.1fs: %d/%d ok (batched %d at a time)",
+                 entry_id, voters_elapsed, len(ok_voters), len(available), BATCH_SIZE)
         _pcb("synthesizing_first",
              voters_ok=len(ok_voters),
              voters_total=len(available),
@@ -314,6 +331,7 @@ async def run_deep_research(query: str, providers_subset: Optional[list] = None,
             crit_start = time.time()
             critiques = await asyncio.gather(*[call_critic(p) for p in critic_provs])
             critique_elapsed = time.time() - crit_start
+            _gc.collect()  # release critic response buffers
             ok_critiques = [c for c in critiques if c.get("ok") and c.get("content")]
             log.info("[deep:%s] critiques done in %.1fs: %d/%d ok",
                      entry_id, critique_elapsed, len(ok_critiques), len(critic_provs))
@@ -353,6 +371,19 @@ async def run_deep_research(query: str, providers_subset: Optional[list] = None,
                     refined_synthesis = refine_result["content"]
                 log.info("[deep:%s] refine done in %.1fs (%d words)",
                          entry_id, refine_elapsed, len(refined_synthesis.split()))
+
+    # Memory savings: the stored result dict sits in _DEEP_JOBS for 10 minutes.
+    # Don't keep full voter/critique content there — the synthesis already
+    # contains the merged information. Keep first 1500 chars per voter for
+    # the inspection panel; drop the rest.
+    _MAX_VOTER_SNIPPET = 1500
+    for v in results:
+        if v.get("content") and len(v["content"]) > _MAX_VOTER_SNIPPET:
+            v["content"] = v["content"][:_MAX_VOTER_SNIPPET] + "…[trimmed]"
+    for c in critiques:
+        if c.get("content") and len(c["content"]) > _MAX_VOTER_SNIPPET:
+            c["content"] = c["content"][:_MAX_VOTER_SNIPPET] + "…[trimmed]"
+    _gc.collect()
 
     total = time.time() - start
     return {
