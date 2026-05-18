@@ -78,67 +78,58 @@ class FundingMomentum(StrategyBase):
         if not funding or len(funding) < FMOM_MIN_SAMPLES:
             return None
 
-        # Current rate = most recent sample. CRITICAL: use the latest sample's
-        # timestamp as the "now" reference instead of time.time(). This makes
-        # the engine honest-backtestable — in a HistoricalBus replay, funding
-        # is already filtered to <= cursor_ms, so the latest sample IS the
-        # backtest's "now".
-        curr = funding[-1]
-        if not isinstance(curr, dict) or "rate" not in curr:
+        # ─── Pre-extract timestamps + rates into parallel arrays ───
+        # PERF FIX 2026-05-18 (sentinel-flagged by Qwen3 Coder 480B):
+        # Prior code did `for s2 in reversed(funding[:i])` inside a loop over
+        # ~100 outer iterations. At HL's ~1 sample/sec cadence (N=83k for 24h),
+        # the slice copy alone was O(N) per iter, plus an O(N) reverse scan.
+        # That's ~8.3M ops per evaluate(), called for 47 coins every 5min.
+        #
+        # NEW: use bisect on a single pre-built timestamp array. O(N) one-time
+        # extraction + O(log N) lookup per baseline ROC = ~100×log(83k) ≈ 1700
+        # ops for the baseline loop, vs 8.3M before. ~5000× speedup.
+        import bisect
+        try:
+            ts_list = [int(s.get("ts", 0)) for s in funding]
+            rate_list = [float(s.get("rate", 0)) for s in funding]
+        except (KeyError, ValueError, TypeError):
             return None
-        rate_now = float(curr["rate"])
-        now_ms = int(curr.get("ts", time.time() * 1000))
+        if len(ts_list) < FMOM_MIN_SAMPLES or ts_list[-1] <= 0:
+            return None
+
+        # Current rate = most recent sample. CRITICAL: use the latest sample's
+        # timestamp as the "now" reference (honest-backtestable: HistoricalBus
+        # filters funding to <= cursor_ms, so latest sample IS backtest's "now").
+        rate_now = rate_list[-1]
+        now_ms = ts_list[-1]
         lookback_ms = FMOM_LOOKBACK_H * 3_600_000
 
-        # Rate at lookback boundary
+        # Rate at lookback boundary — bisect for last sample with ts <= target
         target_ts = now_ms - lookback_ms
-        # Find sample closest to target_ts
-        past_sample = None
-        for s in reversed(funding):
-            if s.get("ts", 0) <= target_ts:
-                past_sample = s
-                break
-        if past_sample is None:
+        idx_past = bisect.bisect_right(ts_list, target_ts) - 1
+        if idx_past < 0:
             return None
-        rate_past = float(past_sample.get("rate", 0))
-
-        # Funding ROC
+        rate_past = rate_list[idx_past]
         funding_roc = rate_now - rate_past
 
-        # ─── Z-score baseline (FIX 2026-05-18: was sampling only last 1000) ───
-        # PRIOR BUG: at HL's ~1 sample/sec funding cadence, len(funding) ≈ 83k
-        # for 24h. The old loop iterated over only the last 1000 samples
-        # (last 17 min), step-sampled to ~60 ROCs. All 60 baseline ROCs shared
-        # roughly the same 2h denominator anchor, only the numerator varying
-        # across 17 min. Std artificially small → every funding movement
-        # looked like a 2σ event. This is the root cause of 10-30× over-firing
-        # vs council projection of 0.4-1.1/day.
-        #
-        # FIX: sample across the FULL funding history (24h+), targeting ~100
-        # baseline ROCs evenly distributed across the window. Each baseline
-        # ROC requires a sample at least lookback_ms before it, so we skip the
-        # earliest samples that can't form a valid lookback pair.
-        rocs = []
+        # ─── Z-score baseline (FIX 2026-05-18 #1: full 24h window) ───
+        # PRIOR BUG: old code sampled only last 1000 funding entries (~17min).
+        # All 60 baseline ROCs shared roughly the same 2h denominator anchor,
+        # only the numerator varying across 17min. Std artificially small →
+        # every funding movement looked like a 2σ event = 10-30× over-firing.
+        # FIX: sample across the FULL funding history (24h+), ~100 baseline
+        # ROCs distributed across the window.
         total = len(funding)
         step = max(1, total // 100)
-        # We need at least lookback_ms of history before each baseline ROC.
-        # Find the earliest index i such that funding[i].ts - lookback_ms exists.
-        min_required_idx = 0
-        for j, s in enumerate(funding):
-            if s.get("ts", 0) >= funding[0].get("ts", 0) + lookback_ms:
-                min_required_idx = j
-                break
+        # Earliest index where we have lookback_ms of history before it
+        target_first = ts_list[0] + lookback_ms
+        min_required_idx = bisect.bisect_left(ts_list, target_first)
+        rocs = []
         for i in range(total - 1, min_required_idx, -step):
-            s_curr = funding[i]
-            tgt = s_curr.get("ts", 0) - lookback_ms
-            s_past = None
-            # Binary-search-like reverse scan, but linear is fine: bounded by step
-            for s2 in reversed(funding[:i]):
-                if s2.get("ts", 0) <= tgt:
-                    s_past = s2
-                    break
-            if s_past is not None:
-                rocs.append(float(s_curr["rate"]) - float(s_past["rate"]))
+            tgt = ts_list[i] - lookback_ms
+            j = bisect.bisect_right(ts_list, tgt, 0, i) - 1
+            if j >= 0:
+                rocs.append(rate_list[i] - rate_list[j])
 
         if len(rocs) < 30:
             return None
@@ -252,44 +243,39 @@ class FundingMomentum(StrategyBase):
             return (False, "")
 
         # Recompute current roc_z using the SAME methodology as evaluate()
+        # PERF FIX 2026-05-18: bisect-based lookups (was O(N²) reverse scans)
         try:
-            curr = funding[-1]
-            if not isinstance(curr, dict) or "rate" not in curr:
+            import bisect
+            try:
+                ts_list = [int(s.get("ts", 0)) for s in funding]
+                rate_list = [float(s.get("rate", 0)) for s in funding]
+            except (KeyError, ValueError, TypeError):
                 return (False, "")
-            rate_now = float(curr["rate"])
-            now_ms = int(curr.get("ts", time.time() * 1000))
+            if len(ts_list) < FMOM_MIN_SAMPLES or ts_list[-1] <= 0:
+                return (False, "")
+
+            rate_now = rate_list[-1]
+            now_ms = ts_list[-1]
             lookback_ms = FMOM_LOOKBACK_H * 3_600_000
 
             target_ts = now_ms - lookback_ms
-            past_sample = None
-            for s in reversed(funding):
-                if s.get("ts", 0) <= target_ts:
-                    past_sample = s
-                    break
-            if past_sample is None:
+            idx_past = bisect.bisect_right(ts_list, target_ts) - 1
+            if idx_past < 0:
                 return (False, "")
-            rate_past = float(past_sample.get("rate", 0))
+            rate_past = rate_list[idx_past]
             funding_roc = rate_now - rate_past
 
             # Baseline ROCs (same window-wide sampling as evaluate)
-            rocs = []
             total = len(funding)
             step = max(1, total // 100)
-            min_required_idx = 0
-            for j, s in enumerate(funding):
-                if s.get("ts", 0) >= funding[0].get("ts", 0) + lookback_ms:
-                    min_required_idx = j
-                    break
+            target_first = ts_list[0] + lookback_ms
+            min_required_idx = bisect.bisect_left(ts_list, target_first)
+            rocs = []
             for i in range(total - 1, min_required_idx, -step):
-                s_curr = funding[i]
-                tgt = s_curr.get("ts", 0) - lookback_ms
-                s_past = None
-                for s2 in reversed(funding[:i]):
-                    if s2.get("ts", 0) <= tgt:
-                        s_past = s2
-                        break
-                if s_past is not None:
-                    rocs.append(float(s_curr["rate"]) - float(s_past["rate"]))
+                tgt = ts_list[i] - lookback_ms
+                j = bisect.bisect_right(ts_list, tgt, 0, i) - 1
+                if j >= 0:
+                    rocs.append(rate_list[i] - rate_list[j])
 
             if len(rocs) < 30:
                 return (False, "")
