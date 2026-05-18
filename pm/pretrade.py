@@ -219,6 +219,12 @@ def check(conn, strategy: str, signal: dict, regime: dict,
     # 5) Cooldown checks
     cd = _get_cooldown()
     if cd is not None:
+        # 5a) Permanent paper-demote check (operator 2026-05-18: 4-loss rule)
+        # Survives restarts. Reverses only via POST /reinstate/<engine>.
+        demoted, reason = cd.is_engine_demoted(strategy)
+        if demoted:
+            return CheckResult(False, 0.0, reason)
+        # 5b) Rolling 1h cooldowns
         blocked, reason = cd.is_engine_blocked(strategy)
         if blocked:
             return CheckResult(False, 0.0, reason)

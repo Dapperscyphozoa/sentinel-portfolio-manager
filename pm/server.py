@@ -1,15 +1,6 @@
-"""pm — pre-trade gate, capital fractions, attribution.
-
-Endpoints (X-PM-Auth header for mutating endpoints):
-  GET  /health
-  GET  /regime
-  POST /check                 — body: {strategy, signal}
-  POST /register_cloid        — body: {strategy, cloid, coin, side}
-  GET  /attribution?since=ms  — P&L by strategy
-"""
+"""strategy-runner HTTP server + scan/position loops."""
 from __future__ import annotations
 
-import hmac
 import json
 import logging
 import os
@@ -21,20 +12,23 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from common import config, persistence  # noqa: E402
+from common import config, halt, persistence  # noqa: E402
 from common.bus_client import BusClient  # noqa: E402
+from common.hl_exchange import HLExchange  # noqa: E402
+from common.pm_client import PMClient  # noqa: E402
 
-from pm import attribution, pretrade, regime as regime_mod  # noqa: E402
+from strategy_runner import runner  # noqa: E402
+from strategy_runner.trader import Trader  # noqa: E402
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
-log = logging.getLogger("pm")
+log = logging.getLogger("strategy_runner")
 
 
 CONN = None
 BUS = None
-REGIME_CACHE: dict = {"regime": "unknown", "confidence": 0.0, "ts": 0}
-ACCOUNT_CACHE: dict = {"value": 0.0, "ts": 0, "positions": []}
+PM = None
+TRADER = None
 
 
 def _json(handler: BaseHTTPRequestHandler, status: int, body) -> None:
@@ -46,14 +40,6 @@ def _json(handler: BaseHTTPRequestHandler, status: int, body) -> None:
     handler.wfile.write(payload)
 
 
-def _auth_ok(headers) -> bool:
-    expected = os.environ.get("PM_AUTH_TOKEN", "")
-    if not expected:
-        return False
-    presented = headers.get("X-PM-Auth", "") or headers.get("x-pm-auth", "")
-    return bool(presented) and hmac.compare_digest(expected, presented)
-
-
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -63,130 +49,496 @@ class Handler(BaseHTTPRequestHandler):
         path = u.path.rstrip("/") or "/"
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
         if path == "/health":
-            return _json(self, 200, {"ok": True, "ts": time.time(),
-                                     "regime": REGIME_CACHE, "account": ACCOUNT_CACHE})
-        if path == "/regime":
-            return _json(self, 200, REGIME_CACHE)
-        if path == "/engines":
-            # Dashboard-compatible engine list, derived from pretrade.ENGINE_REGISTRY
-            from pm import pretrade as _pt
-            base_url = os.environ.get("CORE_PUBLIC_URL", "https://core-o21t.onrender.com")
-            out = []
-            cut = _pt.CUT_ENGINES
-            for name, cfg in _pt.ENGINE_REGISTRY.items():
-                live = os.environ.get(f"STRATEGY_{name.upper()}_ENABLED", "1") == "1"
-                stage = "cut" if name in cut else ("paper" if os.environ.get("LIVE_TRADING","0") != "1" else "full")
-                out.append({
-                    "name": name,
-                    "url": f"{base_url}/strategy",
-                    "halt_url": f"{base_url}/strategy/halt/{name}",
-                    "resume_url": f"{base_url}/strategy/resume/{name}",
-                    "cloid_prefix": cfg.get("cloid_prefix", ""),
-                    "class": ",".join(cfg.get("affinity", [])),
-                    "capital_fraction": cfg.get("cap_frac", 0.0),
-                    "bt_pf": cfg.get("bt_pf", 0.0),
-                    "stage": stage,
-                    "live": live,
-                    "has_full_api": True,
-                    "warning": None if cfg.get("bt_pf", 0) >= 1.4 else "untested" if cfg.get("bt_pf", 0) == 0 else "weak_bt",
-                })
-            # Add the sniper (separate service, paper mode)
-            out.append({
-                "name": "sniper",
-                "url": "https://sniper-6w9l.onrender.com",
-                "halt_url": "https://sniper-6w9l.onrender.com/kill",
-                "resume_url": "https://sniper-6w9l.onrender.com/reset",
-                "cloid_prefix": "snipe_",
-                "class": "pre_listing_arb",
-                "capital_fraction": 0.50,
-                "bt_pf": 0.0,
-                "stage": "paper",
-                "live": os.environ.get("SNIPER_LIVE_TRADING", "0") == "1",
-                "has_full_api": True,
-                "warning": "council_validated_path_1.5_to_2.1yr",
-            })
-            return _json(self, 200, {"engines": out, "ts": int(time.time() * 1000)})
+            return _json(self, 200, {"ok": True, "ts": time.time(), "registry": runner.registry_info(),
+                                     "halted": list(halt.active_halts())})
+        if path == "/state":
+            rows = CONN.execute("SELECT cloid,strategy,coin,is_long,open_ts,open_px,size_usd,sl_px,tp_px,status,extras_json FROM trades ORDER BY open_ts DESC LIMIT 200").fetchall()
+            return _json(self, 200, [dict(r) for r in rows])
+        if path == "/signals":
+            n = int(q.get("limit", "100"))
+            rows = CONN.execute("SELECT * FROM signals ORDER BY id DESC LIMIT ?", (n,)).fetchall()
+            return _json(self, 200, [dict(r) for r in rows])
+        if path == "/closures":
+            n = int(q.get("limit", "1000"))
+            since = float(q.get("since", "0"))
+            rows = CONN.execute("SELECT * FROM closures WHERE close_ts>=? ORDER BY id DESC LIMIT ?", (since, n)).fetchall()
+            return _json(self, 200, [dict(r) for r in rows])
         if path == "/attribution":
-            if not _auth_ok(self.headers):
-                return _json(self, 401, {"error": "bad_token"})
-            since = int(q.get("since", "0"))
-            return _json(self, 200, attribution.by_strategy(CONN, since))
+            # Per-engine attribution: n, wr, pf, expectancy, gross_pnl, fees, net_pnl
+            # Plus per-coin breakdown within each engine.
+            since = float(q.get("since", "0"))
+            rows = CONN.execute(
+                "SELECT strategy, coin, pnl_usd, fees_usd, close_reason, "
+                "(close_ts - open_ts) AS hold_s "
+                "FROM closures WHERE close_ts>=?", (since,)
+            ).fetchall()
+            # Also include open trades — unrealized PnL contributes to view of where we stand
+            open_trades = CONN.execute(
+                "SELECT strategy, coin, open_px, size_coin, is_long, open_ts, sl_px, tp_px, extras_json "
+                "FROM trades WHERE status='open'"
+            ).fetchall()
+            # Aggregate closures by engine
+            by_engine: dict = {}
+            for r in rows:
+                eng = r["strategy"]
+                e = by_engine.setdefault(eng, {
+                    "n": 0, "wins": 0, "losses": 0, "ties": 0,
+                    "gross_pnl": 0.0, "fees": 0.0, "net_pnl": 0.0,
+                    "win_pnl": 0.0, "loss_pnl": 0.0,
+                    "by_coin": {}, "by_reason": {},
+                    "hold_secs": 0.0,
+                })
+                pnl = float(r["pnl_usd"] or 0)
+                fees = float(r["fees_usd"] or 0)
+                net = pnl - fees
+                e["n"] += 1
+                e["gross_pnl"] += pnl
+                e["fees"] += fees
+                e["net_pnl"] += net
+                e["hold_secs"] += float(r["hold_s"] or 0)
+                if net > 0:
+                    e["wins"] += 1
+                    e["win_pnl"] += net
+                elif net < 0:
+                    e["losses"] += 1
+                    e["loss_pnl"] += net  # negative
+                else:
+                    e["ties"] += 1
+                # by coin
+                c = e["by_coin"].setdefault(r["coin"], {"n": 0, "net_pnl": 0.0, "wins": 0})
+                c["n"] += 1
+                c["net_pnl"] += net
+                if net > 0: c["wins"] += 1
+                # by close reason
+                reason = r["close_reason"] or "unknown"
+                br = e["by_reason"].setdefault(reason, {"n": 0, "net_pnl": 0.0})
+                br["n"] += 1
+                br["net_pnl"] += net
+            # Compute derived metrics per engine
+            out_engines = []
+            for eng, e in by_engine.items():
+                n = e["n"]
+                wr = (e["wins"] / n) if n else 0.0
+                # Profit Factor = sum(wins) / abs(sum(losses))
+                pf = (e["win_pnl"] / abs(e["loss_pnl"])) if e["loss_pnl"] < 0 else (float("inf") if e["win_pnl"] > 0 else 0.0)
+                # Expectancy in $: net_pnl / n
+                expect = (e["net_pnl"] / n) if n else 0.0
+                avg_win = (e["win_pnl"] / e["wins"]) if e["wins"] else 0.0
+                avg_loss = (e["loss_pnl"] / e["losses"]) if e["losses"] else 0.0
+                avg_hold_h = (e["hold_secs"] / n / 3600.0) if n else 0.0
+                out_engines.append({
+                    "engine": eng,
+                    "n": n,
+                    "wins": e["wins"],
+                    "losses": e["losses"],
+                    "wr": round(wr, 4),
+                    "pf": round(pf, 3) if pf != float("inf") else None,
+                    "expectancy_usd": round(expect, 4),
+                    "gross_pnl": round(e["gross_pnl"], 4),
+                    "fees": round(e["fees"], 4),
+                    "net_pnl": round(e["net_pnl"], 4),
+                    "avg_win": round(avg_win, 4),
+                    "avg_loss": round(avg_loss, 4),
+                    "avg_hold_h": round(avg_hold_h, 2),
+                    "by_coin": {c: {**v, "wr": round(v["wins"]/v["n"], 3) if v["n"] else 0,
+                                    "net_pnl": round(v["net_pnl"], 4)}
+                                for c, v in e["by_coin"].items()},
+                    "by_reason": {r: {"n": v["n"], "net_pnl": round(v["net_pnl"], 4)}
+                                  for r, v in e["by_reason"].items()},
+                })
+            # Sort by net_pnl desc
+            out_engines.sort(key=lambda x: x["net_pnl"], reverse=True)
+            # Open trades summary
+            open_summary = []
+            for ot in open_trades:
+                open_summary.append({
+                    "strategy": ot["strategy"], "coin": ot["coin"],
+                    "is_long": bool(ot["is_long"]), "open_px": ot["open_px"],
+                    "size_coin": ot["size_coin"], "open_ts": ot["open_ts"],
+                    "sl_px": ot["sl_px"], "tp_px": ot["tp_px"],
+                })
+            # Cohort totals
+            total = {"n": sum(e["n"] for e in by_engine.values()),
+                     "wins": sum(e["wins"] for e in by_engine.values()),
+                     "net_pnl": round(sum(e["net_pnl"] for e in by_engine.values()), 4),
+                     "fees": round(sum(e["fees"] for e in by_engine.values()), 4)}
+            total["wr"] = round(total["wins"] / total["n"], 4) if total["n"] else 0.0
+            return _json(self, 200, {
+                "ts": int(time.time() * 1000),
+                "since": since,
+                "engines": out_engines,
+                "open": open_summary,
+                "total": total,
+            })
         return _json(self, 404, {"error": "not_found"})
 
     def do_POST(self):
         u = urlparse(self.path)
         path = u.path.rstrip("/") or "/"
-        if not _auth_ok(self.headers):
-            return _json(self, 401, {"error": "bad_token"})
+        parts = path.strip("/").split("/")
         body_len = int(self.headers.get("content-length", "0") or "0")
         raw = self.rfile.read(body_len) if body_len else b"{}"
         try:
             body = json.loads(raw or b"{}")
         except Exception:
-            return _json(self, 400, {"error": "bad_json"})
+            body = {}
+        token = self.headers.get("X-Halt-Token")
 
-        if path == "/check":
-            strategy = body.get("strategy", "")
-            signal = body.get("signal", {})
+        if len(parts) >= 2 and parts[0] == "halt":
+            if not halt.halt_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            target = parts[1]
+            reason = body.get("reason", "")
+            actor = body.get("actor", "api")
+            if target == "all":
+                halt.halt_all(CONN, reason=reason, actor=actor)
+            else:
+                halt.set_halt(CONN, target, True, reason=reason, actor=actor)
+            return _json(self, 200, {"ok": True, "halted": list(halt.active_halts())})
+
+        if len(parts) >= 2 and parts[0] == "resume":
+            if not halt.halt_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            target = parts[1]
+            halt.set_halt(CONN, target, False, actor=body.get("actor", "api"))
+            return _json(self, 200, {"ok": True, "halted": list(halt.active_halts())})
+
+        # 4-loss paper demote reinstate — operator-only.
+        # POST /reinstate/<engine>  with X-Halt-Token header.
+        # Reverses permanent paper demote set by cooldown.demote_engine().
+        if len(parts) >= 2 and parts[0] == "reinstate":
+            if not halt.halt_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            target = parts[1]
             try:
-                r = pretrade.check(
-                    CONN, strategy, signal, REGIME_CACHE,
-                    ACCOUNT_CACHE.get("value", 0.0),
-                    ACCOUNT_CACHE.get("positions", []),
-                )
+                from pm.pretrade import _get_cooldown
+                cd = _get_cooldown()
+                if cd is None:
+                    return _json(self, 503, {"error": "cooldown_tracker_unavailable"})
+                was = cd.reinstate_engine(target)
+                return _json(self, 200, {
+                    "ok": True, "engine": target, "was_demoted": was,
+                    "actor": body.get("actor", "api"),
+                })
             except Exception as e:
-                log.exception("pretrade")
-                return _json(self, 500, {"allow": False, "size_usd": 0, "reason": f"err:{e}"})
-            return _json(self, 200, {"allow": r.allow, "size_usd": r.size_usd, "reason": r.reason})
+                return _json(self, 500, {"error": str(e)[:200]})
 
-        if path == "/register_cloid":
-            attribution.register(CONN,
-                                 body.get("cloid", ""), body.get("strategy", ""),
-                                 body.get("coin", ""), body.get("side", ""))
-            return _json(self, 200, {"ok": True})
+        if path == "/reconcile":
+            # SQLite-only update — does NOT touch HL. Used when SQLite trade rows
+            # have drifted from HL's net-position truth (e.g. multiple engines
+            # firing on same coin → HL nets them, SQLite still shows N separate
+            # rows). Safe because it never sends orders, only mutates DB state.
+            if not halt.halt_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            action = body.get("action", "")
+            cloids = body.get("cloids") or []
+            reason = body.get("reason", "reconcile")
+            actor = body.get("actor", "operator")
+            ts_now = time.time()
+            if not cloids:
+                return _json(self, 400, {"error": "no_cloids"})
+            results = []
+            for cloid in cloids:
+                row = CONN.execute(
+                    "SELECT cloid, strategy, coin, status, size_coin, extras_json FROM trades WHERE cloid=?",
+                    (cloid,)
+                ).fetchone()
+                if not row:
+                    results.append({"cloid": cloid, "ok": False, "error": "not_found"})
+                    continue
+                try:
+                    extras = json.loads(row["extras_json"] or "{}")
+                except Exception:
+                    extras = {}
+                extras["reconciled"] = {"action": action, "reason": reason, "actor": actor, "ts": ts_now,
+                                        "prior_status": row["status"], "prior_size_coin": row["size_coin"]}
+                if action == "off_book":
+                    # Mark as closed via reconciliation, no HL call.
+                    CONN.execute(
+                        "UPDATE trades SET status='reconciled_off_book', extras_json=? WHERE cloid=?",
+                        (json.dumps(extras, default=str), cloid)
+                    )
+                    results.append({"cloid": cloid, "ok": True, "new_status": "reconciled_off_book",
+                                    "coin": row["coin"], "strategy": row["strategy"]})
+                elif action == "adjust_size":
+                    new_size = body.get("size_coin")
+                    if new_size is None:
+                        results.append({"cloid": cloid, "ok": False, "error": "no_size_coin"})
+                        continue
+                    CONN.execute(
+                        "UPDATE trades SET size_coin=?, extras_json=? WHERE cloid=?",
+                        (float(new_size), json.dumps(extras, default=str), cloid)
+                    )
+                    results.append({"cloid": cloid, "ok": True, "new_size_coin": float(new_size),
+                                    "coin": row["coin"], "strategy": row["strategy"]})
+                else:
+                    results.append({"cloid": cloid, "ok": False, "error": f"unknown_action:{action}"})
+            return _json(self, 200, {"ok": True, "action": action, "results": results})
+
+        if path == "/admin/force_close":
+            # OPERATOR-INITIATED close. Sends HL market_close on the listed
+            # cloids, then marks them closed in our DB. Auth via HALT_TOKEN
+            # (same as halt — only operator should have it). Body:
+            #   {"cloids": ["0x...", ...],     # specific positions
+            #    "reason": "string",            # logged in extras_json
+            #    "actor": "string"}
+            # Returns per-cloid result list.
+            if not halt.halt_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            cloids = body.get("cloids") or []
+            reason = body.get("reason", "operator_force_close")
+            actor = body.get("actor", "operator")
+            if not cloids:
+                return _json(self, 400, {"error": "no_cloids"})
+            from common.bus_client import BusClient as _BC
+            results = []
+            for cloid in cloids:
+                row = CONN.execute(
+                    "SELECT * FROM trades WHERE cloid=? AND status='open'",
+                    (cloid,)
+                ).fetchone()
+                if not row:
+                    results.append({"cloid": cloid, "ok": False, "error": "not_open_or_not_found"})
+                    continue
+                coin = row["coin"]
+                size_coin = float(row["size_coin"])
+                try:
+                    # Get current mark for the close_px record.
+                    # BUS.markprice returns a dict {hl_mid, binance_mid, ...}, NOT a scalar.
+                    # Pre-2026-05-18 this fell through to row["open_px"] which made every
+                    # force_closed PnL look like $0.00 — masked real losses on red-engine cull.
+                    px = BUS.markprice(coin) or {}
+                    if isinstance(px, dict):
+                        close_px = float(px.get("hl_mid") or px.get("binance_mid") or row["open_px"])
+                    else:
+                        close_px = float(px) if px else float(row["open_px"])
+                except Exception:
+                    close_px = float(row["open_px"])
+                try:
+                    res = TRADER.hl.market_close(coin=coin, size_coin=size_coin, cloid=cloid) if TRADER.hl else None
+                except Exception as e:
+                    log.exception("admin/force_close HL call failed cloid=%s", cloid)
+                    results.append({"cloid": cloid, "coin": coin, "ok": False, "error": f"hl_raised:{e}"})
+                    continue
+                if res is None or not res.ok:
+                    err = (res.error if res else "hl_disabled")
+                    log.error("force_close FAILED cloid=%s coin=%s err=%s", cloid, coin, err)
+                    results.append({"cloid": cloid, "coin": coin, "ok": False, "error": err})
+                    continue
+                # Cancel orphan brackets
+                try:
+                    extras = json.loads(row["extras_json"] or "{}")
+                    tp_orphan = extras.get("tp_cloid")
+                    sl_orphan = extras.get("sl_cloid")
+                    if tp_orphan and hasattr(TRADER.hl, "cancel_by_cloid"):
+                        try: TRADER.hl.cancel_by_cloid(coin, tp_orphan)
+                        except Exception: log.warning("orphan TP cancel failed")
+                    if sl_orphan and hasattr(TRADER.hl, "cancel_by_cloid"):
+                        try: TRADER.hl.cancel_by_cloid(coin, sl_orphan)
+                        except Exception: log.warning("orphan SL cancel failed")
+                except Exception:
+                    pass
+                # Mark closed in DB + record close in closures table if it exists
+                ts_now = time.time()
+                pnl = (close_px - float(row["open_px"])) * size_coin * (1 if row["is_long"] else -1)
+                # Fees: round-trip taker (entry already paid at open, exit is taker via market_close)
+                # Default HL taker fee 0.045% per side. We can only record exit-side here unless
+                # extras_json has entry_fee already; fall back to 2x taker as estimate.
+                FORCE_CLOSE_FEE_RATE = 0.00045
+                notional = float(row["open_px"]) * size_coin
+                fees_usd = notional * FORCE_CLOSE_FEE_RATE * 2  # entry + exit estimate
+                pnl_net = pnl - fees_usd  # subtract fees from gross
+                try:
+                    extras = json.loads(row["extras_json"] or "{}")
+                except Exception:
+                    extras = {}
+                extras["force_closed"] = {"reason": reason, "actor": actor, "ts": ts_now,
+                                          "close_px": close_px, "pnl_usd_gross": pnl,
+                                          "pnl_usd_net": pnl_net, "fees_usd": fees_usd}
+                CONN.execute(
+                    "UPDATE trades SET status=?, extras_json=? WHERE cloid=?",
+                    ("closed", json.dumps(extras, default=str), cloid)
+                )
+                try:
+                    CONN.execute(
+                        "INSERT OR IGNORE INTO closures(cloid, strategy, coin, is_long, open_ts, "
+                        "close_ts, open_px, close_px, size_coin, pnl_usd, fees_usd, close_reason, extras_json) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (cloid, row["strategy"], coin, row["is_long"], row["open_ts"], ts_now,
+                         row["open_px"], close_px, size_coin, pnl_net, fees_usd,
+                         f"force_close:{reason}", json.dumps(extras, default=str))
+                    )
+                except Exception:
+                    log.exception("closures insert failed for %s", cloid)
+                results.append({"cloid": cloid, "coin": coin, "ok": True,
+                                "close_px": close_px, "pnl_usd": round(pnl_net, 4),
+                                "fees_usd": round(fees_usd, 4)})
+            return _json(self, 200, {"ok": True, "n_processed": len(cloids), "results": results})
+
+        if path == "/admin/backfill_force_close_pnl":
+            # ONE-SHOT backfill for the force_close PnL bug (pre-c5b055d).
+            # The bug: BUS.markprice(coin) returned a dict; float(dict) raised
+            # TypeError, caught silently → close_px defaulted to open_px → pnl=0
+            # for every force_closed row. This endpoint fetches real HL price
+            # at the original close_ts and rewrites pnl_usd + close_px + fees_usd.
+            # Auth via HALT_TOKEN. Body:
+            #   {"close_reason_like": "force_close:%",  # SQL LIKE pattern
+            #    "dry_run": true|false}                 # default true
+            if not halt.halt_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            reason_like = body.get("close_reason_like", "force_close:%")
+            dry_run = bool(body.get("dry_run", True))
+            import httpx as _httpx
+            HL_INFO = "https://api.hyperliquid.xyz/info"
+            TAKER_FEE = 0.00045
+
+            rows = CONN.execute(
+                "SELECT * FROM closures WHERE close_reason LIKE ? AND pnl_usd = 0.0",
+                (reason_like,)
+            ).fetchall()
+            results = []
+            total_delta = 0.0
+            n_fixed = 0
+            for r in rows:
+                coin = r["coin"]
+                close_ts = float(r["close_ts"])
+                open_px = float(r["open_px"])
+                size = float(r["size_coin"])
+                is_long = int(r["is_long"])
+                end_ms = int(close_ts * 1000)
+                start_ms = end_ms - 60_000
+                try:
+                    rr = _httpx.post(HL_INFO, json={
+                        "type": "candleSnapshot",
+                        "req": {"coin": coin, "interval": "1m",
+                                "startTime": start_ms, "endTime": end_ms}
+                    }, timeout=10.0)
+                    bars = rr.json() or []
+                except Exception as e:
+                    results.append({"cloid": r["cloid"], "coin": coin, "ok": False,
+                                    "error": f"hl_fetch:{e}"})
+                    continue
+                if not bars:
+                    results.append({"cloid": r["cloid"], "coin": coin, "ok": False,
+                                    "error": "no_hl_bars"})
+                    continue
+                b = bars[-1]
+                real_close = float(b.get("c") or b.get("o") or 0)
+                if real_close <= 0:
+                    results.append({"cloid": r["cloid"], "coin": coin, "ok": False,
+                                    "error": "invalid_close_px"})
+                    continue
+                gross = (real_close - open_px) * size * (1 if is_long else -1)
+                notional = open_px * size
+                fees = notional * TAKER_FEE * 2
+                net = gross - fees
+                if not dry_run:
+                    extras = json.loads(r["extras_json"] or "{}")
+                    extras["backfilled"] = {
+                        "ts": time.time(),
+                        "real_close_px": real_close,
+                        "real_pnl_gross": gross,
+                        "real_pnl_net": net,
+                        "real_fees": fees,
+                        "original_pnl": r["pnl_usd"],
+                        "original_close_px": r["close_px"],
+                        "source": "HL_info_candleSnapshot_1m"
+                    }
+                    CONN.execute(
+                        "UPDATE closures SET close_px=?, pnl_usd=?, fees_usd=?, extras_json=? WHERE cloid=?",
+                        (real_close, net, fees, json.dumps(extras, default=str), r["cloid"])
+                    )
+                    n_fixed += 1
+                    total_delta += net
+                results.append({"cloid": r["cloid"], "coin": coin, "strategy": r["strategy"],
+                                "ok": True, "open_px": open_px, "real_close_px": real_close,
+                                "pnl_net": round(net, 4), "fees": round(fees, 4),
+                                "applied": not dry_run})
+            return _json(self, 200, {"ok": True, "dry_run": dry_run,
+                                     "n_candidates": len(rows),
+                                     "n_fixed": n_fixed,
+                                     "total_pnl_correction": round(total_delta, 4),
+                                     "results": results})
+
+        if path == "/precog/webhook":
+            # HMAC verification of X-Precog-Sig (hex sha256 of body with PRECOG_WEBHOOK_SECRET)
+            import hmac, hashlib
+            secret = os.environ.get("PRECOG_WEBHOOK_SECRET", "")
+            sig_hdr = self.headers.get("X-Precog-Sig") or self.headers.get("x-precog-sig", "")
+            if not secret:
+                return _json(self, 503, {"error": "no_secret_configured"})
+            expected = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+            if not hmac.compare_digest(expected, (sig_hdr or "").lower()):
+                return _json(self, 401, {"error": "bad_signature"})
+            coin = (body.get("coin") or "").upper()
+            if not coin:
+                return _json(self, 400, {"error": "no_coin"})
+            try:
+                from strategy_runner.strategies import precog as precog_mod
+                precog_mod.enqueue(coin, body)
+            except Exception as e:
+                return _json(self, 500, {"error": str(e)})
+            return _json(self, 200, {"ok": True, "queue": precog_mod.queue_stats()})
 
         return _json(self, 404, {"error": "not_found"})
 
 
-def _refresh_loop() -> None:
-    """Pull BTC 1h candles and HL account from signal-bus periodically."""
-    interval = config.get_int("PM_REFRESH_SEC", 30)
+def _scan_loop() -> None:
+    interval = config.get_int("SCAN_INTERVAL_SEC", 300)
+    log.info("scan loop interval=%ds", interval)
+    while True:
+        t0 = time.time()
+        try:
+            def on_sig(strat, sig, decision):
+                TRADER.open(strat, sig, decision.size_usd)
+            n = runner.scan_once(BUS, PM, on_sig, trader=TRADER)
+            if n:
+                log.info("scan: %d signals processed", n)
+        except Exception:
+            log.exception("scan error")
+        elapsed = time.time() - t0
+        time.sleep(max(0, interval - elapsed))
+
+
+def _position_loop() -> None:
+    from .runner import REGISTRY
     while True:
         try:
-            bars = BUS.candles("BTC", "1h", 80)
-            closes = [float(b["close"]) for b in bars]
-            highs = [float(b["high"]) for b in bars]
-            lows = [float(b["low"]) for b in bars]
-            REGIME_CACHE.update(regime_mod.classify(closes, highs, lows))
+            # Defense in depth: clear any stale 'pending' rows (>5min old)
+            # from interrupted opens, which would otherwise hold the coin lock
+            # indefinitely.
+            try:
+                TRADER.sweep_stale_pending()
+            except Exception:
+                log.exception("sweep_stale_pending failed")
+            closed = TRADER.position_loop_once(registry=REGISTRY)
+            if closed:
+                log.info("position loop: closed %d", closed)
         except Exception:
-            log.exception("regime refresh")
-        try:
-            acct = BUS.hl_account()
-            ACCOUNT_CACHE.update({
-                "value": float(acct.get("value", 0)),
-                "ts": time.time(),
-                "positions": [
-                    {"coin": p.get("coin", ""), "is_long": bool(p.get("is_long")),
-                     "notional": abs(float(p.get("szi", 0))) * float(p.get("entry_px", 0) or 0),
-                     "strategy": ""}  # strategy attribution requires fill→cloid join (future)
-                    for p in (acct.get("positions") or [])
-                ],
-            })
-        except Exception:
-            log.exception("account refresh")
-        time.sleep(interval)
+            log.exception("position loop error")
+        time.sleep(60)
 
 
 def main() -> None:
-    global CONN, BUS
+    global CONN, BUS, PM, TRADER
     state = config.state_dir()
-    CONN = persistence.init_db(os.path.join(state, "pm.db"))
-    attribution.init(CONN)
+    CONN = persistence.init_db(os.path.join(state, "strategy_runner.db"))
+    halt.load_active_halts(CONN)
+
     BUS = BusClient()
-    threading.Thread(target=_refresh_loop, daemon=True, name="pm_refresh").start()
+    PM = PMClient()
+    try:
+        hl = HLExchange()
+    except Exception:
+        hl = None
+    TRADER = Trader(CONN, BUS, PM, hl)
+
+    threading.Thread(target=_scan_loop, daemon=True, name="scan").start()
+    threading.Thread(target=_position_loop, daemon=True, name="positions").start()
+
     port = config.get_int("HTTP_PORT", 10000)
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    log.info("pm listening on :%d", port)
+    log.info("strategy-runner listening on :%d; registry=%s", port, runner.registry_info())
     server.serve_forever()
 
 

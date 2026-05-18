@@ -2,10 +2,12 @@
 
 Rules:
   - 4 consecutive losses on same COIN → 1h coin cooldown (engine still runs other coins)
-  - 6 consecutive losses on any ENGINE → 1h engine cooldown (all coins blocked)
+  - 4 consecutive losses on any ENGINE → PERMANENT paper demote (operator reinstates)
+    (was: 6 consec → 1h cooldown — superseded by operator 2026-05-18)
   - Engine DD > 12% → 1h engine cooldown
   - Live PF < 0.74 × backtest PF after 22+ trades → 1h engine cooldown
-  - Cooldowns are ROLLING (not permanent halts). Engines resume after 1h.
+  - Cooldowns are ROLLING (not permanent halts) EXCEPT the engine-level 4-loss
+    demote which is PERMANENT until operator calls POST /reinstate/<engine>.
 
 Persisted to /var/data/cooldowns.sqlite for survival across restarts.
 """
@@ -19,10 +21,11 @@ from typing import Optional
 
 COOLDOWN_SECS = 3600   # 1h
 CONSEC_LOSS_COIN = 4
-CONSEC_LOSS_ENGINE = 6
+CONSEC_LOSS_ENGINE = 4              # was 6 — operator 2026-05-18
 MAX_DD_PCT = 0.12
 MIN_TRADES_FOR_PF_CHECK = 22
 MIN_PF_RATIO = 0.74    # live PF / backtest PF
+DEMOTE_REASON_4LOSS = "consec_loss_engine_demote"
 
 
 class CooldownTracker:
@@ -34,6 +37,7 @@ class CooldownTracker:
       consec_losses(engine TEXT, coin TEXT, count INTEGER, updated_ts INTEGER)
       engine_consec_losses(engine TEXT, count INTEGER, updated_ts INTEGER)
       engine_pnl(engine TEXT, ts INTEGER, pnl REAL)   -- for DD + live PF calc
+      engine_demotions(engine TEXT PRIMARY KEY, demoted_ts INTEGER, reason TEXT)
     """
 
     def __init__(self, db_path: str = "/var/data/cooldowns.sqlite") -> None:
@@ -66,6 +70,11 @@ class CooldownTracker:
             engine TEXT, ts INTEGER, pnl REAL,
             PRIMARY KEY (engine, ts)
         );
+        CREATE TABLE IF NOT EXISTS engine_demotions (
+            engine TEXT PRIMARY KEY,
+            demoted_ts INTEGER NOT NULL,
+            reason TEXT NOT NULL
+        );
         """)
         c.commit()
         c.close()
@@ -92,6 +101,36 @@ class CooldownTracker:
         if row and row["until_ts"] > now:
             return (True, f"engine_cooldown:{row['reason']}:{row['until_ts']}")
         return (False, "")
+
+    def is_engine_demoted(self, engine: str) -> tuple[bool, str]:
+        """Permanent paper-demote check. Operator must reinstate explicitly."""
+        c = self._conn()
+        row = c.execute(
+            "SELECT demoted_ts, reason FROM engine_demotions WHERE engine=?", (engine,)
+        ).fetchone()
+        c.close()
+        if row:
+            return (True, f"paper_demoted:{row['reason']}:{row['demoted_ts']}")
+        return (False, "")
+
+    def demote_engine(self, engine: str, reason: str, now_ts: Optional[int] = None) -> None:
+        now = now_ts or int(time.time())
+        c = self._conn()
+        c.execute(
+            "INSERT OR REPLACE INTO engine_demotions VALUES (?, ?, ?)",
+            (engine, now, reason),
+        )
+        c.commit()
+        c.close()
+
+    def reinstate_engine(self, engine: str) -> bool:
+        c = self._conn()
+        cur = c.execute("DELETE FROM engine_demotions WHERE engine=?", (engine,))
+        c.commit()
+        n = cur.rowcount
+        c.close()
+        return n > 0
+
 
     def record_close(self, engine: str, coin: str, pnl_usd: float,
                      backtest_pf: float, now_ts: Optional[int] = None) -> dict:
@@ -147,13 +186,16 @@ class CooldownTracker:
                 (engine, new_count, now),
             )
             if new_count >= CONSEC_LOSS_ENGINE:
+                # OPERATOR 2026-05-18: 4 consec losses → permanent paper demote
+                # (was 6 → 1h). Operator must POST /reinstate/<engine> to revive.
                 c.execute(
-                    "INSERT OR REPLACE INTO engine_cooldowns VALUES (?, ?, ?)",
-                    (engine, now + COOLDOWN_SECS, f"consec_loss_engine={new_count}"),
+                    "INSERT OR REPLACE INTO engine_demotions VALUES (?, ?, ?)",
+                    (engine, now, f"{DEMOTE_REASON_4LOSS}={new_count}"),
                 )
-                triggered.append({"type": "engine", "engine": engine,
-                                  "until_ts": now + COOLDOWN_SECS,
-                                  "reason": f"consec_loss_engine={new_count}"})
+                triggered.append({"type": "engine_demote", "engine": engine,
+                                  "demoted_ts": now,
+                                  "reason": f"{DEMOTE_REASON_4LOSS}={new_count}",
+                                  "permanent": True})
                 c.execute(
                     "INSERT OR REPLACE INTO engine_consec_losses VALUES (?, ?, ?)",
                     (engine, 0, now),
