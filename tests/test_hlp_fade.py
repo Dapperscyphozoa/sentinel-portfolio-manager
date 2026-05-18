@@ -84,7 +84,7 @@ def test_evaluate_returns_none_when_single_vault():
 
 def test_evaluate_returns_none_when_insufficient_history():
     hlp = {"net_size": 1000, "net_usd": 100_000, "vault_count": 2,
-           "zscore_7d": 3.0, "history_n": 100, "ts": 0}  # below 200 min
+           "zscore_7d": 3.0, "history_n": 50, "ts": 0}  # below 100 min (HLP_MIN_HISTORY)
     sig = HLPFade.evaluate("BTC", FakeBus(hlp_position_data=hlp))
     assert sig is None
 

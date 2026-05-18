@@ -43,6 +43,7 @@ HLP_Z_ENTER = float(os.environ.get("HLP_FADE_Z_ENTER", "2.0"))
 HLP_Z_EXIT = float(os.environ.get("HLP_FADE_Z_EXIT", "0.5"))
 HLP_MIN_USD = float(os.environ.get("HLP_FADE_MIN_USD", "50000"))
 HLP_MIN_VAULT_COUNT = int(os.environ.get("HLP_FADE_MIN_VAULT_COUNT", "2"))
+HLP_MIN_HISTORY = int(os.environ.get("HLP_FADE_MIN_HISTORY", "100"))  # ~8h at 5min poll
 HLP_SL_PCT = float(os.environ.get("HLP_FADE_SL_PCT", "0.10"))
 HLP_TP_PCT = float(os.environ.get("HLP_FADE_TP_PCT", "0.05"))
 HLP_MAX_HOLD_H = int(os.environ.get("HLP_FADE_MAX_HOLD_H", "24"))
@@ -88,7 +89,7 @@ class HLPFade(StrategyBase):
             return None
         if abs(net_usd) < HLP_MIN_USD:
             return None
-        if z is None or history_n < 200:
+        if z is None or history_n < HLP_MIN_HISTORY:
             return None
         if abs(z) < HLP_Z_ENTER:
             return None

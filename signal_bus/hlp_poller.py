@@ -106,7 +106,13 @@ def _poll_loop(cache) -> None:
             for coin, data in positions.items():
                 cache.hlp_history[coin].append((data["ts"], data["net_usd"]))
 
-            log.info("hlp poll ok: %d coins tracked", len(positions))
+            # Persist this snapshot to SQLite — survives redeploys.
+            try:
+                n_persisted = cache.flush_hlp_history()
+                log.info("hlp poll ok: %d coins tracked, %d persisted", len(positions), n_persisted)
+            except Exception:
+                log.exception("hlp persist failed")
+                log.info("hlp poll ok: %d coins tracked (NOT persisted)", len(positions))
         except Exception:
             log.exception("hlp_poller iteration failed")
         time.sleep(POLL_INTERVAL_S)
@@ -118,6 +124,13 @@ def run_in_thread(cache) -> threading.Thread:
         cache.hlp_positions = {}
     if not hasattr(cache, "hlp_history"):
         cache.hlp_history = defaultdict(lambda: deque(maxlen=8640))
+    # Cold-load history from SQLite so the engine doesn't need to wait
+    # ~17h after each redeploy to accumulate the 200-sample threshold.
+    try:
+        n_loaded = cache.cold_load_hlp()
+        log.info("hlp cold-loaded %d rows from sqlite", n_loaded)
+    except Exception:
+        log.exception("hlp cold-load failed")
     t = threading.Thread(target=_poll_loop, args=(cache,), daemon=True, name="hlp_poller")
     t.start()
     return t

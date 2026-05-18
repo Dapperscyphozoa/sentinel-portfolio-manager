@@ -66,6 +66,14 @@ CREATE TABLE IF NOT EXISTS hl_fills (
     raw_json   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_hl_fills_ts ON hl_fills(ts DESC);
+
+CREATE TABLE IF NOT EXISTS hlp_history (
+    coin       TEXT NOT NULL,
+    ts         INTEGER NOT NULL,
+    net_usd    REAL NOT NULL,
+    PRIMARY KEY (coin, ts)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_hlp_coin_ts ON hlp_history(coin, ts DESC);
 """
 
 
@@ -216,6 +224,47 @@ class Cache:
             self.db.execute("DELETE FROM liq_events WHERE ts < ?", (cutoff,))
         self.last_update["liq_flush"] = time.time()
         return n
+
+    def flush_hlp_history(self) -> int:
+        """Persist HLP positioning history to SQLite (5min cadence from poller).
+        Called by the poller on every successful poll; survives redeploys."""
+        if not hasattr(self, "hlp_history"):
+            return 0
+        n = 0
+        with _DB_LOCK:
+            for coin, hist_deque in self.hlp_history.items():
+                if not hist_deque:
+                    continue
+                # Only persist the latest entry — earlier entries already on disk
+                ts, net_usd = hist_deque[-1]
+                try:
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO hlp_history(coin, ts, net_usd) VALUES(?,?,?)",
+                        (coin, ts, net_usd),
+                    )
+                    n += 1
+                except Exception:
+                    pass
+            # prune SQLite to last 30d
+            cutoff = int((time.time() - 30 * 86400) * 1000)
+            self.db.execute("DELETE FROM hlp_history WHERE ts < ?", (cutoff,))
+        self.last_update["hlp_flush"] = time.time()
+        return n
+
+    def cold_load_hlp(self) -> int:
+        """Rehydrate hlp_history deque from SQLite on boot. Returns total rows loaded."""
+        if not hasattr(self, "hlp_history"):
+            from collections import defaultdict, deque as _dq
+            self.hlp_history = defaultdict(lambda: _dq(maxlen=8640))
+        since = int((time.time() - 30 * 86400) * 1000)
+        rows = self.db.execute(
+            "SELECT coin, ts, net_usd FROM hlp_history WHERE ts >= ? ORDER BY ts ASC",
+            (since,),
+        ).fetchall()
+        with self._lock:
+            for r in rows:
+                self.hlp_history[r["coin"]].append((r["ts"], r["net_usd"]))
+        return len(rows)
 
     def cold_load(self, hours_klines: int = 24, hours_liqs: int = 24) -> None:
         """On boot: rehydrate ring buffers from SQLite."""

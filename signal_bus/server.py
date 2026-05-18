@@ -149,14 +149,24 @@ class Handler(BaseHTTPRequestHandler):
             return _json_resp(self, 200, getattr(CACHE, "hlp_positions", {}))
 
         if len(parts) == 2 and parts[0] == "hlp_position":
-            coin = parts[1].upper()
+            # Coin names may be mixed-case in HLP (e.g. kLUNC, kPEPE, kSHIB).
+            # Look up case-insensitively to avoid 404s on those tokens.
+            req = parts[1]
             positions = getattr(CACHE, "hlp_positions", {})
-            pos = positions.get(coin)
+            pos = positions.get(req)
             if pos is None:
-                return _json_resp(self, 404, {"error": "no_hlp_position", "coin": coin})
+                # Case-insensitive fallback
+                lower = req.lower()
+                for k, v in positions.items():
+                    if k.lower() == lower:
+                        pos = v
+                        req = k  # use canonical form for history lookup
+                        break
+            if pos is None:
+                return _json_resp(self, 404, {"error": "no_hlp_position", "coin": req})
             # Include rolling z-score if history is available
             from signal_bus.hlp_poller import compute_zscore
-            history = getattr(CACHE, "hlp_history", {}).get(coin)
+            history = getattr(CACHE, "hlp_history", {}).get(req)
             z = None
             if history is not None:
                 z = compute_zscore(history, pos["net_usd"])
