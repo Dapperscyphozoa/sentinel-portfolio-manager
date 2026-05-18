@@ -191,7 +191,7 @@ def test_pretrade_registry_cap_fracs_sum_to_1():
 
 def test_pretrade_all_11_engines_registered():
     from pm.pretrade import OOS_ENGINE_REGISTRY
-    assert len(OOS_ENGINE_REGISTRY) == 17  # +2 ICT  # combined: 9 legacy + 11 OOS
+    assert len(OOS_ENGINE_REGISTRY) == 18  # +2 ICT  # combined: 9 legacy + 11 OOS
     expected_prefixes = ["e01", "e07", "e08", "e09", "e16", "e17"]
     for prefix in expected_prefixes:
         matches = [k for k in OOS_ENGINE_REGISTRY if k.startswith(prefix)]

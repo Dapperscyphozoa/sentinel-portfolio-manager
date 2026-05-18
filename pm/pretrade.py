@@ -100,8 +100,12 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "e17_bb_fade_bt_4h":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.86, "cap_frac": 0.00},  # confirmed RED both venues
     "donchian":            {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.01, "cap_frac": 0.00},  # confirmed: WR 4% Binance, WR 6.8% OKX
     "cex_dex_arb":  {"affinity": ["range", "chop"],                  "bt_pf": 0.00, "cap_frac": 0.00},  # halted: bt_pf=0, lookahead history
-    "cascade_sniper_hl":   {"affinity": ["high_vol", "trend_up", "trend_down", "range", "chop"],
-                             "bt_pf": 0.00, "cap_frac": 0.00},   # halted: bt_pf=0, untested
+    "cascade_sniper_hl":   {"affinity": ["high_vol", "trend_up", "trend_down", "range", "chop"], "bt_pf": 0.00, "cap_frac": 0.00},  # halted: bt_pf=0, untested
+    # ─── World-first: HLP Vault Fade (Council #1 pick, Tier 1 ship-first) ───
+    # Trade WITH HLP positioning when z-score >2σ from 7d mean. Custom exit
+    # when HLP returns near-neutral. No bt_pf yet — forward-validate live.
+    "hlp_fade":            {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
+                             "bt_pf": 2.50, "cap_frac": 0.00},   # 2.5 = expected midpoint (council 2.0-3.5)
 }
 
 # CUT_ENGINES — hard-blocked from check() regardless of env. The 7 legacy

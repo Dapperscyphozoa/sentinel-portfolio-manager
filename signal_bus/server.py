@@ -144,6 +144,24 @@ class Handler(BaseHTTPRequestHandler):
                 "position": pos,
             })
 
+        # HLP (Hyperliquidity Provider vault) positioning — for hlp_fade engine
+        if path == "/hlp_positions":
+            return _json_resp(self, 200, getattr(CACHE, "hlp_positions", {}))
+
+        if len(parts) == 2 and parts[0] == "hlp_position":
+            coin = parts[1].upper()
+            positions = getattr(CACHE, "hlp_positions", {})
+            pos = positions.get(coin)
+            if pos is None:
+                return _json_resp(self, 404, {"error": "no_hlp_position", "coin": coin})
+            # Include rolling z-score if history is available
+            from signal_bus.hlp_poller import compute_zscore
+            history = getattr(CACHE, "hlp_history", {}).get(coin)
+            z = None
+            if history is not None:
+                z = compute_zscore(history, pos["net_usd"])
+            return _json_resp(self, 200, {**pos, "zscore_7d": z, "history_n": len(history) if history else 0})
+
         return _json_resp(self, 404, {"error": "not_found", "path": path})
 
 
@@ -238,6 +256,15 @@ def main() -> None:
             log.info("cross-venue ws started for %d coins", len(coins))
         except Exception:
             log.warning("cross_venue_ws not started", exc_info=True)
+
+    # HLP (Hyperliquidity Provider vault) poller — for hlp_fade engine
+    if config.get_bool("HLP_POLLER_ENABLED", default=True):
+        try:
+            from signal_bus import hlp_poller
+            hlp_poller.run_in_thread(CACHE)
+            log.info("hlp poller started")
+        except Exception:
+            log.warning("hlp_poller not started", exc_info=True)
 
     port = config.get_int("HTTP_PORT", 10000)
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)

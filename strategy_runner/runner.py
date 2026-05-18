@@ -59,6 +59,14 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load cascade sniper")
 
+    # 1.7) HLP Fade (council 5+ voters world-first pick — fade WITH HLP vault)
+    try:
+        from .strategies.hlp_fade import HLPFade
+        register(HLPFade)
+        log.info("Loaded hlp_fade: %s", HLPFade.NAME)
+    except Exception:
+        log.exception("failed to load hlp_fade")
+
     # 2) Remaining keepers — liq_cascade (sentinel-born), cex_dex_arb (paper),
     #    donchian (post-sentinel build). The 7 legacy ports (fsp, vsq,
     #    range_fade, range_breakout, lh1, fd1, precog) live in _archived/

@@ -76,6 +76,31 @@ class BusClient:
         r.raise_for_status()
         return r.json()
 
+    def hlp_position(self, coin: str) -> Optional[dict]:
+        """HLP (Hyperliquidity Provider) vault positioning for a coin.
+        
+        Returns dict with: net_size, net_usd, vault_count, ts, zscore_7d,
+        history_n. Returns None if HLP has no position in this coin or
+        endpoint unavailable.
+        """
+        try:
+            r = self._client.get(f"{self.base_url}/hlp_position/{coin.upper()}")
+            if r.status_code == 404:
+                return None
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return None
+
+    def hlp_positions(self) -> dict:
+        """All HLP positions {coin: {net_size, net_usd, vault_count, ts}}."""
+        try:
+            r = self._client.get(f"{self.base_url}/hlp_positions")
+            r.raise_for_status()
+            return r.json() or {}
+        except Exception:
+            return {}
+
     def health(self) -> dict:
         r = self._client.get(f"{self.base_url}/health")
         r.raise_for_status()
