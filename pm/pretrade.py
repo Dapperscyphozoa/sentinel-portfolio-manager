@@ -118,6 +118,17 @@ ENGINE_REGISTRY: dict[str, dict] = {
     # mechanics (≥50% bar, ≥20bps sweep, body >10bps). Expected WR 65-75%.
     "stop_hunt":           {"affinity": ["range", "chop", "high_vol"],
                              "bt_pf": 3.00, "cap_frac": 0.00},   # 3.0 midpoint of council 2.5-3.5
+    # ─── Tier 1 #5: VPOC Retest (naked weekly POC magnet) ───
+    # Universe restricted to BTC/ETH/SOL/BNB/XRP (institutional flow respects
+    # VPOCs; memes do not). Distinct from ICT structure (uses volume, not OB).
+    "vpoc_retest":         {"affinity": ["range", "chop", "trend_up", "trend_down"],
+                             "bt_pf": 1.90, "cap_frac": 0.00},   # 1.9 midpoint of council 1.6-2.2
+    # ─── Tier 1 #6: OI Concentration (pre-cascade detector, v1 vol-proxy) ───
+    # Detects extreme volume + price near major S/R. Fires when conditions for
+    # cascading liquidation are present. v1 uses volume percentile as OI proxy
+    # (true wallet-level aggregation deferred to v2). Low frequency, asymmetric.
+    "oi_concentration":    {"affinity": ["high_vol", "range", "chop"],
+                             "bt_pf": 2.75, "cap_frac": 0.00},   # 2.75 midpoint of council 2.0-3.5
 }
 
 # CUT_ENGINES — hard-blocked from check() regardless of env. The 7 legacy

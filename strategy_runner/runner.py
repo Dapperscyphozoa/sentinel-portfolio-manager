@@ -83,6 +83,22 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load stop_hunt")
 
+    # 1.11) VPOC Retest (Tier 1 #5 — naked weekly POC retest, top-5 only)
+    try:
+        from .strategies.vpoc_retest import VPOCRetest
+        register(VPOCRetest)
+        log.info("Loaded vpoc_retest: %s", VPOCRetest.NAME)
+    except Exception:
+        log.exception("failed to load vpoc_retest")
+
+    # 1.12) OI Concentration (Tier 1 #6 — pre-cascade detector, v1 volume proxy)
+    try:
+        from .strategies.oi_concentration import OIConcentration
+        register(OIConcentration)
+        log.info("Loaded oi_concentration: %s", OIConcentration.NAME)
+    except Exception:
+        log.exception("failed to load oi_concentration")
+
     # 1.9) HL Hourly Funding Boundary (Tier 1 #3 — only HL has hourly funding)
     try:
         from .strategies.hl_settle_5m import HLSettle5m
