@@ -37,6 +37,7 @@ import time
 from typing import Optional
 
 from ._base import Signal, StrategyBase
+from common import edge_filters
 
 
 HLP_Z_ENTER = float(os.environ.get("HLP_FADE_Z_ENTER", "2.0"))
@@ -130,6 +131,17 @@ class HLPFade(StrategyBase):
                 bars_for_filter = []
             passes, nav_detail = edge_filters.hlp_nav_divergence(
                 hlp, bars_for_filter, min_pct=HLP_NAV_MIN_PCT,
+            )
+            if not passes:
+                return None
+
+
+        # ── Stage 2 council filter: CVD-alignment multiplier (+5-15% WR) ──
+        # If we're fading HLP toward direction X, trade-tape flow should agree.
+        if int(os.environ.get("HLPFD_CVD_ALIGN_ENABLED", "1")) == 1:
+            passes, _ = edge_filters.cvd_alignment(
+                bus, coin, is_long=is_long, window_ms=60_000,
+                min_z=float(os.environ.get("HLPFD_CVD_MIN_Z", "0.3")),
             )
             if not passes:
                 return None

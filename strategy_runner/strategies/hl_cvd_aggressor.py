@@ -25,6 +25,7 @@ import time
 from typing import Optional
 
 from strategy_runner.strategies._base import Signal, StrategyBase
+from common import edge_filters
 
 
 log = logging.getLogger("strategy.hl_cvd_aggressor")
@@ -136,6 +137,17 @@ class HLCVDAggressor(StrategyBase):
         else:
             sl_px = close * (1 + CVD_SL_PCT)
             tp_px = close * (1 - CVD_TP_PCT)
+
+        # ── Stage 2 council filter: OI-delta confluence (+22% PF) ──
+        # CVD says flow is one-sided; OI must also be increasing in same direction
+        # to confirm position-building (not just noise).
+        if int(os.environ.get("CVD_OI_CONFLUENCE_ENABLED", "1")) == 1:
+            passes, oi_d = edge_filters.oi_delta_increasing(
+                bus, coin, lookback_n=12,
+                min_pct_delta=float(os.environ.get("CVD_OI_MIN_PCT", "0.002")),
+            )
+            if not passes:
+                return None
 
         return Signal(
             coin=coin, side=side, is_long=is_long, ref_price=close,

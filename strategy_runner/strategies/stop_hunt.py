@@ -43,6 +43,7 @@ import time
 from typing import Optional
 
 from ._base import Signal, StrategyBase
+from common import edge_filters
 
 
 STOPH_SWING_LOOKBACK = int(os.environ.get("STOPH_SWING_LOOKBACK", "48"))   # bars to find S/R
@@ -182,6 +183,16 @@ class StopHunt(StrategyBase):
                 bus, coin, is_long, min_far_side_depth_usd=STOPH_LIQ_MIN_DEPTH_USD,
             )
             extras.update(liq_detail)
+            if not passes:
+                return None
+
+        # ── Stage 2 council filter: CVD-alignment confluence (+5-15% WR) ──
+        if int(os.environ.get("STOPH_CVD_ALIGN_ENABLED", "1")) == 1 and bus is not None:
+            passes, cvd_d = edge_filters.cvd_alignment(
+                bus, coin, is_long=is_long, window_ms=60_000,
+                min_z=float(os.environ.get("STOPH_CVD_MIN_Z", "0.3")),
+            )
+            extras.update(cvd_d)
             if not passes:
                 return None
         return Signal(

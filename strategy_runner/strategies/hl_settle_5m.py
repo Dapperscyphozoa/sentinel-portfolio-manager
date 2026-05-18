@@ -43,6 +43,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from ._base import Signal, StrategyBase
+from common import edge_filters
 
 
 HL_SETTLE_PRE_MIN = int(os.environ.get("HL_SETTLE_PRE_MIN", "5"))      # fire if T-X to T window

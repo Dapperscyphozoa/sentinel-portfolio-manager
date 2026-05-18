@@ -41,6 +41,7 @@ import time
 from typing import Optional
 
 from ._base import Signal, StrategyBase
+from common import edge_filters
 
 
 VPOC_BINS = int(os.environ.get("VPOC_BINS", "50"))
