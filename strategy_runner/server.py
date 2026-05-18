@@ -355,6 +355,91 @@ class Handler(BaseHTTPRequestHandler):
                                 "fees_usd": round(fees_usd, 4)})
             return _json(self, 200, {"ok": True, "n_processed": len(cloids), "results": results})
 
+        if path == "/admin/backfill_force_close_pnl":
+            # ONE-SHOT backfill for the force_close PnL bug (pre-c5b055d).
+            # The bug: BUS.markprice(coin) returned a dict; float(dict) raised
+            # TypeError, caught silently → close_px defaulted to open_px → pnl=0
+            # for every force_closed row. This endpoint fetches real HL price
+            # at the original close_ts and rewrites pnl_usd + close_px + fees_usd.
+            # Auth via HALT_TOKEN. Body:
+            #   {"close_reason_like": "force_close:%",  # SQL LIKE pattern
+            #    "dry_run": true|false}                 # default true
+            if not halt.halt_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            reason_like = body.get("close_reason_like", "force_close:%")
+            dry_run = bool(body.get("dry_run", True))
+            import httpx as _httpx
+            HL_INFO = "https://api.hyperliquid.xyz/info"
+            TAKER_FEE = 0.00045
+
+            rows = CONN.execute(
+                "SELECT * FROM closures WHERE close_reason LIKE ? AND pnl_usd = 0.0",
+                (reason_like,)
+            ).fetchall()
+            results = []
+            total_delta = 0.0
+            n_fixed = 0
+            for r in rows:
+                coin = r["coin"]
+                close_ts = float(r["close_ts"])
+                open_px = float(r["open_px"])
+                size = float(r["size_coin"])
+                is_long = int(r["is_long"])
+                end_ms = int(close_ts * 1000)
+                start_ms = end_ms - 60_000
+                try:
+                    rr = _httpx.post(HL_INFO, json={
+                        "type": "candleSnapshot",
+                        "req": {"coin": coin, "interval": "1m",
+                                "startTime": start_ms, "endTime": end_ms}
+                    }, timeout=10.0)
+                    bars = rr.json() or []
+                except Exception as e:
+                    results.append({"cloid": r["cloid"], "coin": coin, "ok": False,
+                                    "error": f"hl_fetch:{e}"})
+                    continue
+                if not bars:
+                    results.append({"cloid": r["cloid"], "coin": coin, "ok": False,
+                                    "error": "no_hl_bars"})
+                    continue
+                b = bars[-1]
+                real_close = float(b.get("c") or b.get("o") or 0)
+                if real_close <= 0:
+                    results.append({"cloid": r["cloid"], "coin": coin, "ok": False,
+                                    "error": "invalid_close_px"})
+                    continue
+                gross = (real_close - open_px) * size * (1 if is_long else -1)
+                notional = open_px * size
+                fees = notional * TAKER_FEE * 2
+                net = gross - fees
+                if not dry_run:
+                    extras = json.loads(r["extras_json"] or "{}")
+                    extras["backfilled"] = {
+                        "ts": time.time(),
+                        "real_close_px": real_close,
+                        "real_pnl_gross": gross,
+                        "real_pnl_net": net,
+                        "real_fees": fees,
+                        "original_pnl": r["pnl_usd"],
+                        "original_close_px": r["close_px"],
+                        "source": "HL_info_candleSnapshot_1m"
+                    }
+                    CONN.execute(
+                        "UPDATE closures SET close_px=?, pnl_usd=?, fees_usd=?, extras_json=? WHERE cloid=?",
+                        (real_close, net, fees, json.dumps(extras, default=str), r["cloid"])
+                    )
+                    n_fixed += 1
+                    total_delta += net
+                results.append({"cloid": r["cloid"], "coin": coin, "strategy": r["strategy"],
+                                "ok": True, "open_px": open_px, "real_close_px": real_close,
+                                "pnl_net": round(net, 4), "fees": round(fees, 4),
+                                "applied": not dry_run})
+            return _json(self, 200, {"ok": True, "dry_run": dry_run,
+                                     "n_candidates": len(rows),
+                                     "n_fixed": n_fixed,
+                                     "total_pnl_correction": round(total_delta, 4),
+                                     "results": results})
+
         if path == "/precog/webhook":
             # HMAC verification of X-Precog-Sig (hex sha256 of body with PRECOG_WEBHOOK_SECRET)
             import hmac, hashlib
