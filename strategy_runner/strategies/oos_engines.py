@@ -465,7 +465,11 @@ class E08_dip3d_7_TD_4h(StrategyBase):
     AFFINITY = ["trend_down"]
     TF = "4h"
     UNIVERSE = DEFAULT_UNIVERSE
-    _DROP_PCT = 0.07
+    # sentinel council 2026-05-19 (4 voters; n=8 WR 0% net -$6.81 6.5h): deepen
+    # dip threshold from -7% to -10% to avoid catching falling knives whose
+    # downtrends keep extending past entry. Range-regime + 4h TF needs deeper
+    # capitulation signal.
+    _DROP_PCT = 0.10
     _LOOKBACK = 18   # 3 days × 6 4h bars = 18
     _HOLD_BARS = 12  # 48h
 
