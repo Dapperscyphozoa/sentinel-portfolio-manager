@@ -56,6 +56,18 @@ class BusClient:
         r.raise_for_status()
         return r.json()
 
+    def cvd(self, coin: str, window_ms: int = 30_000) -> dict:
+        """HL Cumulative Volume Delta — aggressor flow imbalance.
+        Returns: {window_ms, n_trades, cvd_size, cvd_notional, buy_notional, sell_notional,
+                  rolling_5m_sigma, z_score}.
+        Z-score: cvd_size normalized vs rolling 5min distribution.
+        """
+        r = self._client.get(f"{self.base_url}/cvd/{coin}",
+                             params={"window_ms": window_ms},
+                             timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
     def hl_account(self) -> dict:
         r = self._client.get(f"{self.base_url}/hl/account")
         r.raise_for_status()

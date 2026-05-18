@@ -105,6 +105,9 @@ class Cache:
         self.hl_account: dict = {"value": 0.0, "margin_used": 0.0, "positions": []}
         self.hl_positions: list[dict] = []
         self.hl_fills: Deque[dict] = deque(maxlen=10000)
+        # HL public trades per-coin for CVD aggregator (council priority — world-first edge)
+        # maxlen=6000: ~10min of trades on a busy coin like BTC
+        self.hl_trades: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=6000))
         self.last_update: dict[str, float] = {
             "binance_ws": 0.0, "hl_ws": 0.0, "binance_flush": 0.0, "liq_flush": 0.0,
             "okx_ws": 0.0, "bybit_ws": 0.0, "oi_poll": 0.0,
@@ -155,6 +158,69 @@ class Cache:
         with self._lock:
             self.liqs.append(ev)
             self.last_update["binance_ws"] = time.time()
+
+    def push_hl_trade(self, coin: str, ts_ms: int, side: str, sz: float, px: float) -> None:
+        """HL public trade event. side='B'=buyer-taker, 'A'=seller-taker.
+        Aggressor: 'B' → +sz (buy pressure), 'A' → -sz (sell pressure)."""
+        signed_sz = sz if side == "B" else (-sz if side == "A" else 0.0)
+        if signed_sz == 0.0:
+            return
+        with self._lock:
+            self.hl_trades[coin].append({
+                "ts": ts_ms, "side": side, "sz": sz, "px": px, "signed_sz": signed_sz,
+                "notional": sz * px,
+            })
+
+    def get_cvd(self, coin: str, window_ms: int = 30_000) -> dict:
+        """Cumulative Volume Delta for trailing window.
+        Returns: {window_ms, n_trades, cvd_size, cvd_notional, buy_notional, sell_notional,
+                  rolling_5m_sigma, z_score}"""
+        now_ms = int(time.time() * 1000)
+        cutoff = now_ms - window_ms
+        with self._lock:
+            dq = self.hl_trades.get(coin)
+            if not dq:
+                return {"window_ms": window_ms, "n_trades": 0, "cvd_size": 0.0,
+                        "cvd_notional": 0.0, "buy_notional": 0.0, "sell_notional": 0.0,
+                        "rolling_5m_sigma": 0.0, "z_score": 0.0}
+            recent = [t for t in dq if t["ts"] >= cutoff]
+            # 5min sigma context for z-score normalization
+            cutoff_5m = now_ms - 300_000
+            window_5m = [t for t in dq if t["ts"] >= cutoff_5m]
+
+        cvd_size = sum(t["signed_sz"] for t in recent)
+        buy_ntl = sum(t["notional"] for t in recent if t["signed_sz"] > 0)
+        sell_ntl = sum(t["notional"] for t in recent if t["signed_sz"] < 0)
+        cvd_ntl = buy_ntl - sell_ntl
+
+        # rolling 5m sigma of window_ms-sized CVDs (estimated by chunking 5m into N buckets)
+        if len(window_5m) >= 10 and window_ms > 0:
+            n_buckets = max(1, 300_000 // window_ms)
+            bucket_size = 300_000 // n_buckets
+            buckets = [0.0] * n_buckets
+            base_ts = now_ms - 300_000
+            for t in window_5m:
+                idx = int((t["ts"] - base_ts) // bucket_size)
+                if 0 <= idx < n_buckets:
+                    buckets[idx] += t["signed_sz"]
+            mean = sum(buckets) / n_buckets
+            var = sum((b - mean) ** 2 for b in buckets) / max(1, n_buckets - 1)
+            sigma = var ** 0.5
+            z = (cvd_size - mean) / sigma if sigma > 0 else 0.0
+        else:
+            sigma = 0.0
+            z = 0.0
+
+        return {
+            "window_ms": window_ms,
+            "n_trades": len(recent),
+            "cvd_size": round(cvd_size, 6),
+            "cvd_notional": round(cvd_ntl, 2),
+            "buy_notional": round(buy_ntl, 2),
+            "sell_notional": round(sell_ntl, 2),
+            "rolling_5m_sigma": round(sigma, 6),
+            "z_score": round(z, 3),
+        }
 
     def push_mark(self, coin: str, m: dict) -> None:
         with self._lock:

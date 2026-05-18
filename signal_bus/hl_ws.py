@@ -47,6 +47,7 @@ async def _consume(wallet: str, cache: Cache, mark_coins: Iterable[str]) -> None
         await ws.send(_subscribe_msg("webData2", user=wallet))
         for coin in mark_coins:
             await ws.send(_subscribe_msg("activeAssetCtx", coin=coin))
+            await ws.send(_subscribe_msg("trades", coin=coin))
 
         async for raw in ws:
             try:
@@ -61,6 +62,8 @@ async def _consume(wallet: str, cache: Cache, mark_coins: Iterable[str]) -> None
                 _on_webdata2(cache, data)
             elif ch == "activeAssetCtx":
                 _on_active_asset_ctx(cache, data)
+            elif ch == "trades":
+                _on_trades(cache, data)
             cache.last_update["hl_ws"] = time.time()
 
 
@@ -164,6 +167,32 @@ def _on_active_asset_ctx(cache: Cache, data) -> None:
             cache.push_funding(coin, int(time.time() * 1000), rate, venue="hyperliquid")
         except Exception:
             pass
+
+
+
+
+def _on_trades(cache: Cache, data) -> None:
+    """HL public trades channel — feed aggressor-side flow into CVD aggregator.
+    Schema: list of {coin, side ("B"=buyer-taker, "A"=seller-taker), px, sz, time, hash}.
+    """
+    if not data:
+        return
+    if isinstance(data, dict):
+        data = [data]
+    for t in data:
+        try:
+            coin = str(t.get("coin", "")).upper()
+            if not coin:
+                continue
+            side = t.get("side")
+            sz = float(t.get("sz", 0) or 0)
+            px = float(t.get("px", 0) or 0)
+            ts = int(t.get("time", 0) or 0)
+            if sz <= 0 or px <= 0 or ts <= 0:
+                continue
+            cache.push_hl_trade(coin, ts, side, sz, px)
+        except Exception:
+            log.exception("trades parse")
 
 
 async def _runner(wallet: str, cache: Cache, mark_coins: list[str]) -> None:

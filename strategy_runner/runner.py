@@ -107,6 +107,14 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load hl_settle_5m")
 
+    # 1.13) HL CVD Aggressor (Stage 1 — world-first HL CVD edge per council 4/4)
+    try:
+        from .strategies.hl_cvd_aggressor import HLCVDAggressor
+        register(HLCVDAggressor)
+        log.info("Loaded hl_cvd_aggressor: %s", HLCVDAggressor.NAME)
+    except Exception:
+        log.exception("failed to load hl_cvd_aggressor")
+
     # 1.13) UZT — Unified Zone Trading (Lesson #2 framework).
     # STATUS: PROVISIONAL / DISABLED by default. v1 implementation failed §1.5
     # honest backtest gate (30d × 4 majors via OKX: n=21, WR 14.3%, PF 0.18,

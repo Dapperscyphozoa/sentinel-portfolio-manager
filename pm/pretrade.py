@@ -161,7 +161,19 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "fmom":                {"affinity": ["trend_up", "trend_down", "range", "chop"],
                              "bt_pf": 1.75, "cap_frac": 0.00},
     "hl_settle_5m":        {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 1.85, "cap_frac": 0.20},   # PROMOTED 2026-05-18 post short-only fix
+                             "bt_pf": 1.85, "cap_frac": 0.20},
+    # Stage 1 NEW ENGINE — paper-only pending honest backtest gate (council priority)
+    "hl_cvd_aggressor": {
+        "class": "cvd_aggressor_flow",
+        "affinity": ["trend_up", "trend_down", "range"],
+        "capital_fraction": 0.00,           # 0 = paper-only until honest backtest passes
+        "bt_pf": 2.20,                       # council est +1.8-2.5%/mo
+        "bt_n": 0,                           # not yet backtested
+        "min_n_for_gate": 30,
+        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
+        "notes": "world-first HL CVD aggressor flow. Needs honest backtest before live.",
+    },
+   # PROMOTED 2026-05-18 post short-only fix
     # ─── Tier 1 #4: Stop Hunt Rejection ───
     # ACTIVATED 2026-05-18 — council Q5 unblocked: news-spike ATR filter
     # added (STOPH_NEWS_SPIKE_ATR_MULT=3.0). Bars with range >3×ATR_14

@@ -10,6 +10,8 @@ Endpoints per SPEC §5.3:
   GET /hl/fills?since=<ms>
   GET /hl/positions
   GET /oi/{coin}?n=N
+  GET /cvd/{coin}?window_ms=30000  (HL CVD aggregator)
+  GET /hl/trades/{coin}?n=50
 
 Uses stdlib http.server (SPEC §2.2: stdlib by legacy convention).
 """
@@ -178,6 +180,22 @@ class Handler(BaseHTTPRequestHandler):
             coin = parts[1].upper()
             n = int(q.get("n", "60"))
             return _json_resp(self, 200, CACHE.get_oi(coin, n))
+
+        # CVD aggregator (council priority — world-first HL CVD edge).
+        # /cvd/{coin}?window_ms=30000  default 30s
+        if len(parts) == 2 and parts[0] == "cvd":
+            coin = parts[1].upper()
+            window_ms = int(q.get("window_ms", "30000"))
+            return _json_resp(self, 200, CACHE.get_cvd(coin, window_ms))
+
+        # Raw HL trades inspect — diagnostics. /hl/trades/{coin}?n=N
+        if len(parts) == 3 and parts[0] == "hl" and parts[1] == "trades":
+            coin = parts[2].upper()
+            n = int(q.get("n", "50"))
+            with CACHE._lock:
+                dq = CACHE.hl_trades.get(coin)
+                rows = list(dq)[-n:] if dq else []
+            return _json_resp(self, 200, rows)
 
 
         return _json_resp(self, 404, {"error": "not_found", "path": path})
