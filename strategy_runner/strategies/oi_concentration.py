@@ -36,6 +36,7 @@ import time
 from typing import Optional
 
 from ._base import Signal, StrategyBase
+from common import edge_filters
 
 
 # Renamed from OIC_VOLUME_PCTILE (real OI now). Backward-compat env var read.

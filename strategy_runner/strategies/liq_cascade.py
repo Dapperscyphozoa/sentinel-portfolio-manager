@@ -14,6 +14,7 @@ import time
 from typing import Optional
 
 from ._base import Signal, StrategyBase
+from common import edge_filters
 
 
 def _f(name: str, default: float) -> float:
@@ -33,6 +34,19 @@ class LiqCascade(StrategyBase):
 
     @classmethod
     def evaluate(cls, coin: str, bus) -> Optional[Signal]:
+        # ── Stage 2 council filters (cheap, short-circuit early) ──
+        if int(os.environ.get("LIQC_ASIA_KILL_ENABLED", "1")) == 1:
+            passes, _ = edge_filters.asia_kill_window()
+            if not passes:
+                return None
+        if int(os.environ.get("LIQC_SPREAD_FILTER_ENABLED", "1")) == 1:
+            passes, _ = edge_filters.spread_max(
+                bus, coin,
+                max_bps=float(os.environ.get("LIQC_SPREAD_MAX_BPS", "8.0")),
+            )
+            if not passes:
+                return None
+
         window_s = int(_f("LC_WINDOW_SEC", 60))
         min_usd = _f("LC_MIN_USD", 250_000)
         min_events = int(_f("LC_MIN_EVENTS", 3))

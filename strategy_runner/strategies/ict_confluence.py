@@ -1,4 +1,3 @@
-from common import edge_filters
 """ICT Confluence Engine — unified OB + FVG + Wick-Sweep entry.
 
 Council-mandated specification (5/5 voters converged):
@@ -39,6 +38,13 @@ from __future__ import annotations
 from typing import Optional
 
 from ._base import Signal, StrategyBase
+from common import edge_filters
+
+# Stage 2 council filter env-toggles (module-level)
+import os as _ict_os
+ICT_OI_FILTER_ENABLED = int(_ict_os.environ.get("ICT_OI_FILTER_ENABLED", "1"))
+ICT_OI_LOOKBACK_N = int(_ict_os.environ.get("ICT_OI_LOOKBACK_N", "6"))
+ICT_OI_MIN_PCT_DELTA = float(_ict_os.environ.get("ICT_OI_MIN_PCT_DELTA", "0.002"))
 from ._indicators import atr as _atr
 
 
@@ -446,6 +452,18 @@ class ICT_Confluence_4h(StrategyBase):
                 min_pct_delta=ICT_OI_MIN_PCT_DELTA,
             )
             extras.update(oi_detail)
+            if not passes:
+                return None
+
+        # ── Stage 2 council filter: CVD-alignment (+5-15% WR per Mistral) ──
+        # Require trade-tape flow to align with signal direction. Fail-soft.
+        if int(_os.environ.get("ICT_CVD_ALIGN_ENABLED", "1")) == 1:
+            passes, cvd_detail = edge_filters.cvd_alignment(
+                bus, coin, is_long=is_long,
+                window_ms=int(_os.environ.get("ICT_CVD_WINDOW_MS", "60000")),
+                min_z=float(_os.environ.get("ICT_CVD_MIN_Z", "0.3")),
+            )
+            extras.update(cvd_detail)
             if not passes:
                 return None
 
