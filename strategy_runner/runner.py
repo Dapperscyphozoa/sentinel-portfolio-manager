@@ -107,6 +107,24 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load hl_settle_5m")
 
+    # 1.13) UZT — Unified Zone Trading (Lesson #2 framework).
+    # STATUS: PROVISIONAL / DISABLED by default. v1 implementation failed §1.5
+    # honest backtest gate (30d × 4 majors via OKX: n=21, WR 14.3%, PF 0.18,
+    # 0 TP hits, 12 SL hits, 9 timeouts — RED per gate rules). Loaded so the
+    # registry knows about it, but auto-skipped at scan time unless explicitly
+    # re-enabled via STRATEGY_UZT_ENABLED=1 after parameter retuning + re-backtest.
+    # See backtests/uzt_*.md and references/uzt_postmortem.md.
+    import os as _os
+    if _os.environ.get("STRATEGY_UZT_ENABLED", "0") == "1":
+        try:
+            from .strategies.uzt import UZT
+            register(UZT)
+            log.warning("Loaded uzt (PROVISIONAL, opt-in via STRATEGY_UZT_ENABLED=1)")
+        except Exception:
+            log.exception("failed to load uzt")
+    else:
+        log.info("uzt skipped (PROVISIONAL — set STRATEGY_UZT_ENABLED=1 to load)")
+
     # 2) Remaining keepers — liq_cascade (sentinel-born), cex_dex_arb (paper),
     #    donchian (post-sentinel build). The 7 legacy ports (fsp, vsq,
     #    range_fade, range_breakout, lh1, fd1, precog) live in _archived/
