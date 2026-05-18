@@ -43,7 +43,6 @@ import time
 from typing import Optional
 
 from ._base import Signal, StrategyBase
-from common import edge_filters
 
 
 STOPH_SWING_LOOKBACK = int(os.environ.get("STOPH_SWING_LOOKBACK", "48"))   # bars to find S/R
@@ -51,8 +50,6 @@ STOPH_SWEEP_BPS = float(os.environ.get("STOPH_SWEEP_BPS", "0.002"))         # 20
 STOPH_WICK_RATIO = float(os.environ.get("STOPH_WICK_RATIO", "0.5"))          # wick must be ≥50% of bar
 STOPH_MIN_BODY_PCT = float(os.environ.get("STOPH_MIN_BODY_PCT", "0.001"))   # bar body ≥10bps (not doji)
 STOPH_RR = float(os.environ.get("STOPH_RR", "2.0"))                          # TP = RR × SL distance
-STOPH_LIQ_FILTER_ENABLED = int(os.environ.get("STOPH_LIQ_FILTER_ENABLED", "1"))
-STOPH_LIQ_MIN_DEPTH_USD = float(os.environ.get("STOPH_LIQ_MIN_DEPTH_USD", "50000"))
 STOPH_MAX_HOLD_BARS = int(os.environ.get("STOPH_MAX_HOLD_BARS", "12"))
 STOPH_NEWS_SPIKE_ATR_MULT = float(os.environ.get("STOPH_NEWS_SPIKE_ATR_MULT", "3.0"))
 STOPH_ATR_PERIOD = int(os.environ.get("STOPH_ATR_PERIOD", "14"))
@@ -146,7 +143,6 @@ class StopHunt(StrategyBase):
                 tp_px = c + sl_dist * STOPH_RR
                 return cls._make_signal(coin, is_long, c, sl_px, tp_px,
                                         reason=f"sweep_low_wick={wick_pct_of_bar*100:.0f}%",
-                                        bus=bus,
                                         extras={
                                             "swing_low": swing_low,
                                             "sweep_low": l,
@@ -165,7 +161,6 @@ class StopHunt(StrategyBase):
                 tp_px = c - sl_dist * STOPH_RR
                 return cls._make_signal(coin, is_long, c, sl_px, tp_px,
                                         reason=f"sweep_high_wick={wick_pct_of_bar*100:.0f}%",
-                                        bus=bus,
                                         extras={
                                             "swing_high": swing_high,
                                             "sweep_high": h,
@@ -176,25 +171,7 @@ class StopHunt(StrategyBase):
         return None
 
     @classmethod
-    def _make_signal(cls, coin, is_long, ref_px, sl_px, tp_px, reason, extras, bus=None):
-        # ── Stage 2 council filter: liquidity at sweep target (+20% WR) ──
-        if STOPH_LIQ_FILTER_ENABLED and bus is not None:
-            passes, liq_detail = edge_filters.liquidity_at_target(
-                bus, coin, is_long, min_far_side_depth_usd=STOPH_LIQ_MIN_DEPTH_USD,
-            )
-            extras.update(liq_detail)
-            if not passes:
-                return None
-
-        # ── Stage 2 council filter: CVD-alignment confluence (+5-15% WR) ──
-        if int(os.environ.get("STOPH_CVD_ALIGN_ENABLED", "1")) == 1 and bus is not None:
-            passes, cvd_d = edge_filters.cvd_alignment(
-                bus, coin, is_long=is_long, window_ms=60_000,
-                min_z=float(os.environ.get("STOPH_CVD_MIN_Z", "0.3")),
-            )
-            extras.update(cvd_d)
-            if not passes:
-                return None
+    def _make_signal(cls, coin, is_long, ref_px, sl_px, tp_px, reason, extras):
         return Signal(
             coin=coin,
             side="B" if is_long else "A",

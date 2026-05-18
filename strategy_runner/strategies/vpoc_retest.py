@@ -41,7 +41,6 @@ import time
 from typing import Optional
 
 from ._base import Signal, StrategyBase
-from common import edge_filters
 
 
 VPOC_BINS = int(os.environ.get("VPOC_BINS", "50"))
@@ -50,10 +49,6 @@ VPOC_RETEST_PCT = float(os.environ.get("VPOC_RETEST_PCT", "0.005"))       # with
 VPOC_NAKED_LOOKBACK_WEEKS = int(os.environ.get("VPOC_NAKED_LOOKBACK_WEEKS", "4"))
 VPOC_SL_PCT = float(os.environ.get("VPOC_SL_PCT", "0.015"))               # 1.5% SL
 VPOC_TP_PCT = float(os.environ.get("VPOC_TP_PCT", "0.025"))               # 2.5% TP (1:~1.7 RR)
-VPOC_OI_FILTER_ENABLED = int(os.environ.get("VPOC_OI_FILTER_ENABLED", "1"))
-VPOC_OI_MIN_PCT_DELTA = float(os.environ.get("VPOC_OI_MIN_PCT_DELTA", "0.002"))
-VPOC_VOL_FILTER_ENABLED = os.environ.get("VPOC_VOL_FILTER_ENABLED", "1") == "1"
-VPOC_VOL_MIN_RATIO = float(os.environ.get("VPOC_VOL_MIN_RATIO", "1.5"))
 VPOC_MAX_HOLD_BARS = int(os.environ.get("VPOC_MAX_HOLD_BARS", "48"))      # 48h
 
 
@@ -197,31 +192,6 @@ class VPOCRetest(StrategyBase):
             sl_px = c * (1 + VPOC_SL_PCT)
             tp_px = c * (1 - VPOC_TP_PCT)
 
-        # ── Stage 2 council filter: VPOC volume gate (+0.5% WR per Mistral) ──
-        # Require retest bar's volume to be ≥1.5× rolling average. Low-vol
-        # retests are weak signals.
-        vol_detail = {}
-        if VPOC_VOL_FILTER_ENABLED:
-            # Use last 20 bars' volumes; bar -2 is our trigger
-            recent_bars = candles[-22:-1]
-            passes, vol_detail = edge_filters.vpoc_min_volume(
-                recent_bars, vpoc_bar_idx=len(recent_bars) - 1,
-                min_volume_ratio=VPOC_VOL_MIN_RATIO,
-            )
-            if not passes:
-                return None
-
-        # ── Stage 2 council filter: OI-delta confirms participation (+0.4-22% WR) ──
-        oi_detail = {}
-        if VPOC_OI_FILTER_ENABLED:
-            passes, oi_detail = edge_filters.oi_delta_increasing(
-                bus, coin,
-                lookback_n=6,
-                min_pct_delta=VPOC_OI_MIN_PCT_DELTA,
-            )
-            if not passes:
-                return None
-
         return Signal(
             coin=coin,
             side="B" if is_long else "A",
@@ -237,7 +207,5 @@ class VPOCRetest(StrategyBase):
                 "distance_pct": round(dist_pct * 100, 3),
                 "naked_pocs_total": len(naked_pocs),
                 "weeks_lookback": VPOC_NAKED_LOOKBACK_WEEKS,
-                **oi_detail,
-                **vol_detail,
             },
         )
