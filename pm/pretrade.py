@@ -106,6 +106,11 @@ ENGINE_REGISTRY: dict[str, dict] = {
     # when HLP returns near-neutral. No bt_pf yet — forward-validate live.
     "hlp_fade":            {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
                              "bt_pf": 2.50, "cap_frac": 0.00},   # 2.5 = expected midpoint (council 2.0-3.5)
+    # ─── Tier 1 #2: Funding Momentum (2nd-derivative funding signal) ───
+    # Z-score on funding-rate ROC vs price ROC divergence. Distinct from
+    # dead fsp (level-based) and fd1 (1st-derivative divergence).
+    "fmom":                {"affinity": ["trend_up", "trend_down", "range", "chop"],
+                             "bt_pf": 1.75, "cap_frac": 0.00},   # 1.75 midpoint of council 1.5-2.0
 }
 
 # CUT_ENGINES — hard-blocked from check() regardless of env. The 7 legacy

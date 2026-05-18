@@ -67,6 +67,14 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load hlp_fade")
 
+    # 1.8) Funding Momentum (Tier 1 #2 — 2nd-derivative funding signal)
+    try:
+        from .strategies.fmom import FundingMomentum
+        register(FundingMomentum)
+        log.info("Loaded fmom: %s", FundingMomentum.NAME)
+    except Exception:
+        log.exception("failed to load fmom")
+
     # 2) Remaining keepers — liq_cascade (sentinel-born), cex_dex_arb (paper),
     #    donchian (post-sentinel build). The 7 legacy ports (fsp, vsq,
     #    range_fade, range_breakout, lh1, fd1, precog) live in _archived/
