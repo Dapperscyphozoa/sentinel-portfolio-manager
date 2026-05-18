@@ -445,6 +445,14 @@ def load_strategy(name: str) -> type[StrategyBase]:
         "ict_confluence_4h": ["ict_confluence"],
         "ict_confluence_1d": ["ict_confluence"],
         "cascade_sniper_hl": ["cascade_sniper"],
+        # Stage 1 engines (council 2026-05-18)
+        "hl_cvd_aggressor": ["hl_cvd_aggressor"],
+        "funding_triangulation": ["funding_triangulation"],
+        "cross_coin_zscore": ["cross_coin_zscore"],
+        "liq_cluster_hunt": ["liq_cluster_hunt"],
+        "hl_whale_frontrun": ["hl_whale_frontrun"],
+        "hl_depth_shock": ["hl_depth_shock"],
+        "hl_vault_predict": ["hl_vault_predict"],
     }
     candidates = name_to_modules.get(name, [name])
     last_err: Exception | None = None
