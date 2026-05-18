@@ -115,6 +115,22 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load hl_cvd_aggressor")
 
+    # 1.14) Funding Triangulation (Stage 1 #2 — HL vs CEX funding divergence)
+    try:
+        from .strategies.funding_triangulation import FundingTriangulation
+        register(FundingTriangulation)
+        log.info("Loaded funding_triangulation: %s", FundingTriangulation.NAME)
+    except Exception:
+        log.exception("failed to load funding_triangulation")
+
+    # 1.15) Cross-Coin Z-Score (Stage 1 #3 — pair ratio mean-revert)
+    try:
+        from .strategies.cross_coin_zscore import CrossCoinZScore
+        register(CrossCoinZScore)
+        log.info("Loaded cross_coin_zscore: %s", CrossCoinZScore.NAME)
+    except Exception:
+        log.exception("failed to load cross_coin_zscore")
+
     # 1.13) UZT — Unified Zone Trading (Lesson #2 framework).
     # STATUS: PROVISIONAL / DISABLED by default. v1 implementation failed §1.5
     # honest backtest gate (30d × 4 majors via OKX: n=21, WR 14.3%, PF 0.18,

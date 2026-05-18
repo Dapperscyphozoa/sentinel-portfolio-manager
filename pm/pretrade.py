@@ -173,6 +173,26 @@ ENGINE_REGISTRY: dict[str, dict] = {
         "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
         "notes": "world-first HL CVD aggressor flow. Needs honest backtest before live.",
     },
+    "funding_triangulation": {
+        "class": "cross_venue_funding_divergence",
+        "affinity": ["range", "chop", "trend_up", "trend_down"],
+        "capital_fraction": 0.00,
+        "bt_pf": 2.00,
+        "bt_n": 0,
+        "min_n_for_gate": 30,
+        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
+        "notes": "HL funding vs Binance/OKX consensus. Single-leg HL execution.",
+    },
+    "cross_coin_zscore": {
+        "class": "pair_ratio_mean_reversion",
+        "affinity": ["range", "chop", "trend_up", "trend_down"],
+        "capital_fraction": 0.00,
+        "bt_pf": 1.80,
+        "bt_n": 0,
+        "min_n_for_gate": 30,
+        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
+        "notes": "ETH/BTC + 9 other pairs ratio z-score mean reversion.",
+    },
    # PROMOTED 2026-05-18 post short-only fix
     # ─── Tier 1 #4: Stop Hunt Rejection ───
     # ACTIVATED 2026-05-18 — council Q5 unblocked: news-spike ATR filter
