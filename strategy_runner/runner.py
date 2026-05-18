@@ -131,6 +131,38 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load cross_coin_zscore")
 
+    # 1.16) Liq Cluster Hunt (Stage 1 #4 — predict sweep path from stacked clusters)
+    try:
+        from .strategies.liq_cluster_hunt import LiqClusterHunt
+        register(LiqClusterHunt)
+        log.info("Loaded liq_cluster_hunt: %s", LiqClusterHunt.NAME)
+    except Exception:
+        log.exception("failed to load liq_cluster_hunt")
+
+    # 1.17) HL Whale Frontrun (Stage 1 #5 — world-first, highest single-engine edge)
+    try:
+        from .strategies.hl_whale_frontrun import HLWhaleFrontrun
+        register(HLWhaleFrontrun)
+        log.info("Loaded hl_whale_frontrun: %s", HLWhaleFrontrun.NAME)
+    except Exception:
+        log.exception("failed to load hl_whale_frontrun")
+
+    # 1.18) HL Depth Shock (Stage 1 #6 — orderbook liquidity-eviction fade)
+    try:
+        from .strategies.hl_depth_shock import HLDepthShock
+        register(HLDepthShock)
+        log.info("Loaded hl_depth_shock: %s", HLDepthShock.NAME)
+    except Exception:
+        log.exception("failed to load hl_depth_shock")
+
+    # 1.19) HL Vault Predict (Stage 1 #7 — HLP rebalance anticipation)
+    try:
+        from .strategies.hl_vault_predict import HLVaultPredict
+        register(HLVaultPredict)
+        log.info("Loaded hl_vault_predict: %s", HLVaultPredict.NAME)
+    except Exception:
+        log.exception("failed to load hl_vault_predict")
+
     # 1.13) UZT — Unified Zone Trading (Lesson #2 framework).
     # STATUS: PROVISIONAL / DISABLED by default. v1 implementation failed §1.5
     # honest backtest gate (30d × 4 majors via OKX: n=21, WR 14.3%, PF 0.18,

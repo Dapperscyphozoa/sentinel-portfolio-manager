@@ -108,9 +108,17 @@ class Cache:
         # HL public trades per-coin for CVD aggregator (council priority — world-first edge)
         # maxlen=6000: ~10min of trades on a busy coin like BTC
         self.hl_trades: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=6000))
+        # Whale tracker (Stage 1 #5 — world-first edge per Qwen3 235B +3.2%/mo)
+        # whale_events: detected new opens; consumed by hl_whale_frontrun engine
+        self.whale_events: Deque[dict] = deque(maxlen=2000)
+        self.whale_stats: dict = {"ts": 0, "n_whales": 0, "new_events": 0}
+        # L2 order book per coin (Stage 1 #6 — depth shock detection)
+        # Each: {ts, bids: [{px,sz,n}, ...20], asks: [{px,sz,n}, ...20]}
+        self.l2book_latest: dict[str, dict] = {}
+        self.l2book_history: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=300))
         self.last_update: dict[str, float] = {
             "binance_ws": 0.0, "hl_ws": 0.0, "binance_flush": 0.0, "liq_flush": 0.0,
-            "okx_ws": 0.0, "bybit_ws": 0.0, "oi_poll": 0.0,
+            "okx_ws": 0.0, "bybit_ws": 0.0, "oi_poll": 0.0, "whale_poll": 0.0,
         }
         self.ws_alive: dict[str, bool] = {"binance": False, "hl": False, "okx": False, "bybit": False}
         # OI state (HL openInterest via metaAndAssetCtxs, 60s poll)
@@ -170,6 +178,113 @@ class Cache:
                 "ts": ts_ms, "side": side, "sz": sz, "px": px, "signed_sz": signed_sz,
                 "notional": sz * px,
             })
+
+
+    def push_whale_event(self, ev: dict) -> None:
+        """Append whale-position-open event. Consumed by hl_whale_frontrun."""
+        with self._lock:
+            self.whale_events.append(ev)
+
+    def get_whale_events(self, since_ms: int = 0, coin: Optional[str] = None) -> list[dict]:
+        """Return whale events since timestamp, optionally filtered by coin."""
+        with self._lock:
+            evs = list(self.whale_events)
+        out = []
+        for ev in evs:
+            if ev["ts"] < since_ms:
+                continue
+            if coin and ev["coin"].upper() != coin.upper():
+                continue
+            out.append(ev)
+        return out
+
+
+    def push_l2book(self, coin: str, ts_ms: int, bids: list, asks: list) -> None:
+        """Store latest L2 snapshot per coin + append to history."""
+        if not bids or not asks:
+            return
+        # Compute total depth at ±0.5% and ±1.0% bands
+        best_bid = bids[0]["px"]
+        best_ask = asks[0]["px"]
+        mid = (best_bid + best_ask) / 2 if (best_bid > 0 and best_ask > 0) else 0
+        if mid <= 0:
+            return
+        band_05 = mid * 0.005
+        band_10 = mid * 0.010
+        bid_depth_05 = sum(b["sz"] * b["px"] for b in bids if b["px"] >= mid - band_05)
+        ask_depth_05 = sum(a["sz"] * a["px"] for a in asks if a["px"] <= mid + band_05)
+        bid_depth_10 = sum(b["sz"] * b["px"] for b in bids if b["px"] >= mid - band_10)
+        ask_depth_10 = sum(a["sz"] * a["px"] for a in asks if a["px"] <= mid + band_10)
+        spread_bps = (best_ask - best_bid) / mid * 10_000 if mid > 0 else 0
+
+        snap = {
+            "ts": ts_ms,
+            "mid": mid,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "spread_bps": spread_bps,
+            "bid_depth_05pct_usd": bid_depth_05,
+            "ask_depth_05pct_usd": ask_depth_05,
+            "bid_depth_10pct_usd": bid_depth_10,
+            "ask_depth_10pct_usd": ask_depth_10,
+        }
+        with self._lock:
+            self.l2book_latest[coin] = snap
+            self.l2book_history[coin].append(snap)
+            self.last_update["hl_ws"] = time.time()
+
+    def get_l2book(self, coin: str) -> dict:
+        """Latest L2 snapshot for coin (compact form)."""
+        with self._lock:
+            return dict(self.l2book_latest.get(coin, {}))
+
+    def get_depth_shock(self, coin: str, window_s: int = 5) -> dict:
+        """Detect liquidity shock — bid or ask depth drop in last window_s seconds.
+        Returns: {coin, mid, spread_bps, bid_shock_pct, ask_shock_pct, price_move_bps,
+                  shock_kind: 'bid'|'ask'|None}
+        """
+        with self._lock:
+            dq = self.l2book_history.get(coin)
+            if not dq or len(dq) < 2:
+                return {"coin": coin, "shock_kind": None}
+            now_ms = int(time.time() * 1000)
+            cutoff = now_ms - window_s * 1000
+            recent = [s for s in dq if s["ts"] >= cutoff]
+            if len(recent) < 2:
+                return {"coin": coin, "shock_kind": None}
+            first = recent[0]
+            last = recent[-1]
+
+        # Depth shock: percentage drop in bid or ask depth at 0.5% band
+        b0 = first.get("bid_depth_05pct_usd", 0)
+        b1 = last.get("bid_depth_05pct_usd", 0)
+        a0 = first.get("ask_depth_05pct_usd", 0)
+        a1 = last.get("ask_depth_05pct_usd", 0)
+        bid_drop = (b0 - b1) / b0 if b0 > 0 else 0
+        ask_drop = (a0 - a1) / a0 if a0 > 0 else 0
+        mid0 = first.get("mid", 0)
+        mid1 = last.get("mid", 0)
+        price_move_bps = (mid1 - mid0) / mid0 * 10_000 if mid0 > 0 else 0
+
+        shock_kind = None
+        # Liquidity-eviction definition: depth drops >30% but price hasn't moved much (<10bps)
+        if bid_drop > 0.30 and abs(price_move_bps) < 10 and bid_drop > ask_drop:
+            shock_kind = "bid"
+        elif ask_drop > 0.30 and abs(price_move_bps) < 10 and ask_drop > bid_drop:
+            shock_kind = "ask"
+
+        return {
+            "coin": coin,
+            "mid": mid1,
+            "spread_bps": last.get("spread_bps", 0),
+            "bid_shock_pct": round(bid_drop * 100, 2),
+            "ask_shock_pct": round(ask_drop * 100, 2),
+            "price_move_bps": round(price_move_bps, 2),
+            "shock_kind": shock_kind,
+            "bid_depth_now_usd": b1,
+            "ask_depth_now_usd": a1,
+            "samples": len(recent),
+        }
 
     def get_cvd(self, coin: str, window_ms: int = 30_000) -> dict:
         """Cumulative Volume Delta for trailing window.

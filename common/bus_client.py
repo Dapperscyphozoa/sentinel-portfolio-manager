@@ -68,6 +68,34 @@ class BusClient:
         r.raise_for_status()
         return r.json()
 
+    def whale_events(self, since_ms: int = 0, coin: Optional[str] = None) -> list[dict]:
+        """Whale-wallet new-position-open events (Stage 1 #5).
+        Each event: {ts, wallet, coin, is_long, size, entry_px, ntl_usd, kind, delta_ntl_usd}.
+        kind: 'new'|'flip'|'grow'.
+        """
+        params: dict = {"since": since_ms}
+        if coin:
+            params["coin"] = coin
+        r = self._client.get(f"{self.base_url}/whale_events",
+                             params=params, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def l2book(self, coin: str) -> dict:
+        """Latest HL L2 book snapshot for coin (Stage 1 #6)."""
+        r = self._client.get(f"{self.base_url}/l2book/{coin}", timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def depth_shock(self, coin: str, window_s: int = 5) -> dict:
+        """Detect bid/ask depth shock in last window_s seconds.
+        Returns shock_kind: 'bid'|'ask'|None.
+        """
+        r = self._client.get(f"{self.base_url}/depth_shock/{coin}",
+                             params={"window_s": window_s}, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
     def hl_account(self) -> dict:
         r = self._client.get(f"{self.base_url}/hl/account")
         r.raise_for_status()

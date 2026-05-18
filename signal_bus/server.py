@@ -11,6 +11,10 @@ Endpoints per SPEC §5.3:
   GET /hl/positions
   GET /oi/{coin}?n=N
   GET /cvd/{coin}?window_ms=30000  (HL CVD aggregator)
+  GET /whale_events?since=<ms>&coin=<optional>  (whale opens)
+  GET /whale_stats
+  GET /l2book/{coin}
+  GET /depth_shock/{coin}?window_s=5
   GET /hl/trades/{coin}?n=50
 
 Uses stdlib http.server (SPEC §2.2: stdlib by legacy convention).
@@ -32,6 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from common import config  # noqa: E402
 from signal_bus import binance_ws  # noqa: E402
 from signal_bus import oi_poller  # noqa: E402
+from signal_bus import whale_poller  # noqa: E402
 from signal_bus.cache import Cache  # noqa: E402
 
 
@@ -188,6 +193,30 @@ class Handler(BaseHTTPRequestHandler):
             window_ms = int(q.get("window_ms", "30000"))
             return _json_resp(self, 200, CACHE.get_cvd(coin, window_ms))
 
+        # Whale events (Stage 1 #5 — world-first edge)
+        # GET /whale_events?since=<ms>&coin=<optional>
+        if path == "/whale_events":
+            since = int(q.get("since", "0"))
+            coin = q.get("coin")
+            if coin: coin = coin.upper()
+            return _json_resp(self, 200, CACHE.get_whale_events(since, coin))
+
+        # Whale poller stats / health
+        if path == "/whale_stats":
+            return _json_resp(self, 200, CACHE.whale_stats)
+
+        # L2 book snapshot (Stage 1 #6)
+        if len(parts) == 2 and parts[0] == "l2book":
+            coin = parts[1].upper()
+            return _json_resp(self, 200, CACHE.get_l2book(coin))
+
+        # Depth shock detector (Stage 1 #6)
+        # /depth_shock/{coin}?window_s=5
+        if len(parts) == 2 and parts[0] == "depth_shock":
+            coin = parts[1].upper()
+            window_s = int(q.get("window_s", "5"))
+            return _json_resp(self, 200, CACHE.get_depth_shock(coin, window_s))
+
         # Raw HL trades inspect — diagnostics. /hl/trades/{coin}?n=N
         if len(parts) == 3 and parts[0] == "hl" and parts[1] == "trades":
             coin = parts[2].upper()
@@ -309,6 +338,14 @@ def main() -> None:
             log.info("oi poller started")
         except Exception:
             log.warning("oi_poller not started", exc_info=True)
+
+    # Whale wallet tracker (Stage 1 #5 — world-first edge)
+    if config.get_bool("WHALE_POLLER_ENABLED", default=True):
+        try:
+            whale_poller.run_in_thread(CACHE)
+            log.info("whale poller started")
+        except Exception:
+            log.warning("whale_poller not started", exc_info=True)
 
     port = config.get_int("HTTP_PORT", 10000)
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)

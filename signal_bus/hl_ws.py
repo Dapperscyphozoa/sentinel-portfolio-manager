@@ -48,6 +48,7 @@ async def _consume(wallet: str, cache: Cache, mark_coins: Iterable[str]) -> None
         for coin in mark_coins:
             await ws.send(_subscribe_msg("activeAssetCtx", coin=coin))
             await ws.send(_subscribe_msg("trades", coin=coin))
+            await ws.send(_subscribe_msg("l2Book", coin=coin))
 
         async for raw in ws:
             try:
@@ -64,6 +65,8 @@ async def _consume(wallet: str, cache: Cache, mark_coins: Iterable[str]) -> None
                 _on_active_asset_ctx(cache, data)
             elif ch == "trades":
                 _on_trades(cache, data)
+            elif ch == "l2Book":
+                _on_l2book(cache, data)
             cache.last_update["hl_ws"] = time.time()
 
 
@@ -193,6 +196,33 @@ def _on_trades(cache: Cache, data) -> None:
             cache.push_hl_trade(coin, ts, side, sz, px)
         except Exception:
             log.exception("trades parse")
+
+
+
+
+def _on_l2book(cache: Cache, data) -> None:
+    """L2 order book snapshot. Used by hl_depth_shock engine.
+    Schema: {coin, levels: [bids_array, asks_array], time}
+    Each level: {px: str, sz: str, n: int}
+    """
+    if not isinstance(data, dict):
+        return
+    coin = str(data.get("coin", "")).upper()
+    if not coin:
+        return
+    levels = data.get("levels") or []
+    if not isinstance(levels, list) or len(levels) < 2:
+        return
+    bids_raw = levels[0] or []
+    asks_raw = levels[1] or []
+    try:
+        bids = [{"px": float(b.get("px", 0)), "sz": float(b.get("sz", 0)),
+                 "n": int(b.get("n", 0))} for b in bids_raw[:20]]
+        asks = [{"px": float(a.get("px", 0)), "sz": float(a.get("sz", 0)),
+                 "n": int(a.get("n", 0))} for a in asks_raw[:20]]
+    except Exception:
+        return
+    cache.push_l2book(coin, int(data.get("time", time.time() * 1000)), bids, asks)
 
 
 async def _runner(wallet: str, cache: Cache, mark_coins: list[str]) -> None:
