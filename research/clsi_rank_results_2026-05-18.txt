@@ -1,0 +1,105 @@
+CLSI v2 rank test — 2026-05-18 03:37:46 UTC
+
+Source: https://core-o21t.onrender.com/signal_bus
+Coins:  ['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'AVAX', 'LINK', 'ARB', 'OP']
+TF:     1h  (200 bars target)
+
+==============================================================================
+
+BTC    candles= 200  funding_raw= 83237  funding_aligned= 25  liqs=  0  clean_rows= 25
+
+ETH    candles= 200  funding_raw= 83233  funding_aligned= 25  liqs=  0  clean_rows= 25
+
+SOL    candles= 200  funding_raw= 83233  funding_aligned= 25  liqs=  0  clean_rows= 25
+
+XRP    candles= 200  funding_raw= 83229  funding_aligned= 25  liqs=  0  clean_rows= 25
+
+BNB    candles= 200  funding_raw= 83229  funding_aligned= 25  liqs=  0  clean_rows= 25
+
+DOGE   candles= 200  funding_raw= 83225  funding_aligned= 25  liqs=  0  clean_rows= 25
+
+AVAX   candles= 200  funding_raw= 83220  funding_aligned= 25  liqs=  0  clean_rows= 25
+
+LINK   candles= 200  funding_raw= 83218  funding_aligned= 25  liqs=  0  clean_rows= 25
+
+ARB    candles= 200  funding_raw= 83214  funding_aligned= 25  liqs=  0  clean_rows= 25
+
+OP     candles= 200  funding_raw= 83213  funding_aligned= 25  liqs=  0  clean_rows= 25
+
+==============================================================================
+
+PER-COIN EFFECTIVE RANK
+
+coin    kept  rank@95%   rank@99%     cond_raw     cond_LW  dropped
+BTC        3          2          3        34.6        14.8  funding_vel,liq_density
+ETH        3          1          2       169.4        23.7  funding_vel,liq_density
+SOL        3          2          3        40.4        15.6  funding_vel,liq_density
+XRP        3          2          3        38.7        14.2  funding_vel,liq_density
+BNB        3          2          3        27.6        12.6  funding_vel,liq_density
+DOGE       3          2          3        48.2        14.2  funding_vel,liq_density
+AVAX       3          2          3        44.8        14.0  funding_vel,liq_density
+LINK       3          3          3        13.6         8.6  funding_vel,liq_density
+ARB        3          2          3        36.1        14.5  funding_vel,liq_density
+OP         3          2          3        36.6        15.3  funding_vel,liq_density
+
+POOLED ACROSS 10 COINS  (n_rows=250)
+
+Explained variance per PC:  [0.82, 0.15, 0.03]
+Cumulative:                  [0.82, 0.97, 1.0]
+Effective rank @ 95% var: 2
+Effective rank @ 99% var: 3
+Σ condition number (raw):    27.4
+Σ condition number (L-W):    12.8
+
+Features kept after degenerate-drop:  ['abs_ret', 'hl_range', 'vol_z_abs']
+Features dropped (zero variance):     ['funding_vel', 'liq_density']
+
+POOLED CORRELATION MATRIX (kept features only):
+              abs_ret    hl_range   vol_z_abs
+   abs_ret       1.000       0.723       0.573
+  hl_range       0.723       1.000       0.885
+ vol_z_abs       0.573       0.885       1.000
+
+==============================================================================
+
+DATA INFRASTRUCTURE GAPS BLOCKING CLSI v2 PRODUCTION DEPLOY
+(diagnosed from this run vs the v2 design):
+
+1. LIQUIDATION STREAM IS DEAD
+   - signal_bus /health shows liq_events=0 cached
+   - Per-coin /liq queries returned zero events across 8d windows
+   - Root cause: OKX liquidation channel subscribe failed (code 60018)
+     and Binance forceOrder stream not active (DATA_VENUE=okx)
+   - Fix: either correct OKX channel name or set DATA_VENUE=binance
+   - Until fixed: D5 (liquidation density) cannot be computed historically
+
+2. FUNDING HISTORY LIMITED TO ~34h (target: 30d)
+   - signal_bus only caches funding back to deploy boot time
+   - For 30d rolling Mahalanobis Σ, need REST backfill of HL historical
+     funding via the /info historicalFunding endpoint
+   - Until fixed: D2 (funding velocity) Σ estimate is high-variance
+
+3. NO BASIS HISTORY — CURRENT SNAPSHOT ONLY
+   - /markprice returns {hl_mid, binance_mid} at request time
+   - No historical persistence of basis time series
+   - Fix: add a basis_snapshot persistence loop in signal_bus that
+     samples /markprice every 60s and flushes to SQLite
+   - Until fixed: D1 (basis stress) cannot be computed historically
+
+4. NO OPEN-INTEREST ENDPOINT
+   - signal_bus has no /oi route; HL exposes OI via /info metaAndAssetCtxs
+   - Fix: add HL OI poller + /oi/{coin} endpoint OR derive OI proxy from
+     funding_rate * notional_open from /hlp_positions (partial substitute)
+   - Until fixed: D3 (OI momentum) substituted with vol_z_abs (weaker proxy)
+
+5. HLP HISTORY SPARSE (26 samples for BTC)
+   - Fresh redeploy lost any persisted history
+   - z-scores return null until ≥200 samples accumulated (~17h at 5min)
+   - Already running on the resumed core; will be usable in ~12h
+
+RECOMMENDED SEQUENCING:
+  (a) Ship signal_bus PR fixing liq stream + basis-history sampler
+      (small, ~1-2 days work in signal_bus/ + 1 new endpoint each)
+  (b) Wait 7-30d for data accumulation
+  (c) Re-run this rank test on the complete 5-dim feature set
+  (d) Then commit to CLSI v2 build OR abandon based on the empirical rank

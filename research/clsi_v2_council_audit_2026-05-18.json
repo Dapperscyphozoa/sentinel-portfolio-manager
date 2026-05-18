@@ -1,0 +1,94 @@
+{
+  "verdict": "CRITICAL",
+  "confidence": 0.6625766871165644,
+  "voters": 6,
+  "silent": 0,
+  "failed": 3,
+  "wall_time_s": 22.479079008102417,
+  "severity_vote": {
+    "CRITICAL": 4,
+    "MODERATE": 2
+  },
+  "bug_type_vote": {
+    "OTHER": 6
+  },
+  "audits": [
+    {
+      "model": "GPT-OSS 120B",
+      "provider": "groq",
+      "weight": 1.0,
+      "severity": "CRITICAL",
+      "bug_type": "OTHER",
+      "specific_issue": "The proposal rests on untested, crypto\u2011specific proxies (e.g., HLP vault P&L) and a fragile Mahalanobis\u2011based index that is likely unstable, collinear, and poorly calibrated across assets, making the single\u2011filter claim unsound and overconfident.",
+      "confidence": 0.78,
+      "latency_s": 0.9893651008605957
+    },
+    {
+      "model": "GPT-OSS (Cerebras)",
+      "provider": "cerebras",
+      "weight": 1.0,
+      "severity": "CRITICAL",
+      "bug_type": "OTHER",
+      "specific_issue": "The proposal assumes a single Mahalanobis\u2011based index can replace both VPIN and HMM without rigorous validation, but the covariance estimation on 5\u2011dimensional crypto data is unstable, the chosen features are highly collinear, and fixed thresholds ignore coin\u2011specific distributional differences, mak",
+      "confidence": 0.88,
+      "latency_s": 0.9549667835235596
+    },
+    {
+      "model": "Qwen3 235B",
+      "provider": "cerebras",
+      "weight": 1.0,
+      "severity": "CRITICAL",
+      "bug_type": "OTHER",
+      "specific_issue": "The MM-bleed signal (D4) is a fundamentally polluted proxy for toxicity, as HLP vault P&L reflects its own strategy decisions rather than pure market toxicity, risking false signals when HLP mispositions rather than when retail dominates.",
+      "confidence": 0.95,
+      "latency_s": 7.571148157119751
+    },
+    {
+      "model": "Mistral Large",
+      "provider": "mistral",
+      "weight": 1.0,
+      "severity": "MODERATE",
+      "bug_type": "OTHER",
+      "specific_issue": "Mahalanobis distance may amplify noise in poorly-conditioned dimensions due to rolling covariance estimation on limited data.",
+      "confidence": 0.85,
+      "latency_s": 22.34043550491333
+    },
+    {
+      "model": "Codestral",
+      "provider": "mistral",
+      "weight": 0.7,
+      "severity": "CRITICAL",
+      "bug_type": "OTHER",
+      "specific_issue": "The Mahalanobis distance approach risks overfitting to noise due to insufficient data (30-90d) and potential collinearity, while the fixed thresholds (0.3, 0.7) may not adapt to per-coin volatility differences.",
+      "confidence": 0.9,
+      "latency_s": 1.0755889415740967
+    },
+    {
+      "model": "GPT-4o",
+      "provider": "github",
+      "weight": 1.0,
+      "severity": "MODERATE",
+      "bug_type": "OTHER",
+      "specific_issue": "The Mahalanobis distance approach is theoretically sound for handling collinearity, but the stability of \u03a3 estimation over a rolling 30-90 day window with only 5 features may be insufficient, especially in highly volatile crypto markets.",
+      "confidence": 0.8,
+      "latency_s": 2.266941785812378
+    }
+  ],
+  "errors": [
+    {
+      "model": "Llama 4 Maverick",
+      "provider": "sambanova",
+      "error": "Rate limit exceeded"
+    },
+    {
+      "model": "Qwen3 Coder 480B",
+      "provider": "nvidia",
+      "error": "{'message': 'ResourceExhausted: All workers are busy, please retry later', 'type': 'Service Unavaila"
+    },
+    {
+      "model": "GPT-4.1",
+      "provider": "github",
+      "error": "HTTP 429"
+    }
+  ]
+}
