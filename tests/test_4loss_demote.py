@@ -58,3 +58,28 @@ def test_alternating_wins_reset_engine_counter(tmp_path):
     cd.record_close(eng, "BTC", -1.0, 1.5)
     demoted, _ = cd.is_engine_demoted(eng)
     assert demoted, "4 consec after win should demote"
+
+
+
+def test_reinstate_clears_engine_demotion(tmp_path):
+    """Verify reinstate_engine() clears the engine_demotions row."""
+    db = str(tmp_path / "cd.sqlite")
+    cd = CooldownTracker(db)
+    eng = "test_promote"
+    for _ in range(4):
+        cd.record_close(eng, "BTC", -1.0, backtest_pf=1.5)
+    demoted, _ = cd.is_engine_demoted(eng)
+    assert demoted
+
+    # Operator (or monitor auto-promote) calls reinstate
+    ok = cd.reinstate_engine(eng)
+    assert ok
+    demoted, _ = cd.is_engine_demoted(eng)
+    assert not demoted, "engine should be live again post-reinstate"
+
+    # Loss counter is reset (no carryover)
+    cd.record_close(eng, "ETH", -1.0, backtest_pf=1.5)
+    cd.record_close(eng, "ETH", -1.0, backtest_pf=1.5)
+    cd.record_close(eng, "ETH", -1.0, backtest_pf=1.5)
+    demoted, _ = cd.is_engine_demoted(eng)
+    assert not demoted, "3 losses post-reinstate shouldn't demote (counter reset on prior demote)"

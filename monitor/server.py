@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from common import config, persistence  # noqa: E402
 from monitor import spend  # noqa: E402
-from monitor.routines import health_check, daily_report, drawdown_check, lock_audit, auto_demote  # noqa: E402
+from monitor.routines import health_check, daily_report, drawdown_check, lock_audit, auto_demote, auto_4loss_demote  # noqa: E402
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -75,6 +75,8 @@ def main() -> None:
 
     threading.Thread(target=_runner, args=("drawdown_check", drawdown_check.run, 300),
                      daemon=True, name="drawdown_loop").start()
+    threading.Thread(target=_runner, args=("auto_4loss_demote", auto_4loss_demote.run, 300),
+                     daemon=True, name="auto_4loss_loop").start()
     threading.Thread(target=_runner, args=("health_check", health_check.run, 900),
                      daemon=True, name="health_loop").start()
     threading.Thread(target=_runner, args=("daily_report", daily_report.run, 86400),

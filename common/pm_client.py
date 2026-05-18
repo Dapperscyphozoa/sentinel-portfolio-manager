@@ -26,10 +26,22 @@ class PMDecision:
 
 class PMClient:
     def __init__(self, base_url: Optional[str] = None, token: Optional[str] = None, timeout: float = DEFAULT_TIMEOUT):
-        self.base_url = (base_url or config.get("PM_URL", required=True)).rstrip("/")
+        # Lazy: PM_URL is REQUIRED only when actually making requests. This lets
+        # the PM service itself load PMClient code without crashing on startup
+        # (PM service is the server, doesn't need to call itself). Sentinel
+        # discovered the orphan-crash pattern 2026-05-18.
+        self._explicit_base = base_url
         self.token = token or os.environ.get("PM_AUTH_TOKEN", "")
         self.timeout = timeout
         self._client = httpx.Client(timeout=timeout)
+
+    @property
+    def base_url(self) -> str:
+        if self._explicit_base:
+            return self._explicit_base.rstrip("/")
+        # Lazy resolve — raises only at first use, not at construction
+        return config.get("PM_URL", required=True).rstrip("/")
+
 
     def _headers(self) -> dict:
         h = {"content-type": "application/json"}

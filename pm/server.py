@@ -58,6 +58,22 @@ class Handler(BaseHTTPRequestHandler):
             n = int(q.get("limit", "100"))
             rows = CONN.execute("SELECT * FROM signals ORDER BY id DESC LIMIT ?", (n,)).fetchall()
             return _json(self, 200, [dict(r) for r in rows])
+        if path == "/demotions":
+            # Expose engine_demotions for monitor.auto_4loss_demote routine.
+            try:
+                from pm.pretrade import _get_cooldown
+                cd = _get_cooldown()
+                if cd is None:
+                    return _json(self, 200, [])
+                c = cd._conn()
+                rows = c.execute(
+                    "SELECT engine, demoted_ts, reason FROM engine_demotions"
+                ).fetchall()
+                c.close()
+                return _json(self, 200, [dict(r) for r in rows])
+            except Exception as e:
+                return _json(self, 500, {"error": str(e)[:200]})
+
         if path == "/closures":
             n = int(q.get("limit", "1000"))
             since = float(q.get("since", "0"))
