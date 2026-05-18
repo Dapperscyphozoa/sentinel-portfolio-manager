@@ -107,13 +107,37 @@ class Cache:
         self.hl_fills: Deque[dict] = deque(maxlen=10000)
         self.last_update: dict[str, float] = {
             "binance_ws": 0.0, "hl_ws": 0.0, "binance_flush": 0.0, "liq_flush": 0.0,
-            "okx_ws": 0.0, "bybit_ws": 0.0,
+            "okx_ws": 0.0, "bybit_ws": 0.0, "oi_poll": 0.0,
         }
         self.ws_alive: dict[str, bool] = {"binance": False, "hl": False, "okx": False, "bybit": False}
+        # OI state (HL openInterest via metaAndAssetCtxs, 60s poll)
+        self.oi_latest: dict[str, dict] = {}
+        self.oi_history: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=8640))
         self._lock = threading.RLock()
         # Sentinel fix: flush cursor for liq events. Without this, each flush
         # re-wrote every event in the ring buffer (50k×12/hour duplicates).
         self._last_flushed_liq_ts: int = 0
+
+    def update_oi(self, snap: dict) -> None:
+        """Update oi_latest snapshot and append to per-coin history."""
+        if not snap:
+            return
+        with self._lock:
+            for coin, row in snap.items():
+                self.oi_latest[coin] = row
+                self.oi_history[coin].append({
+                    "ts": row["ts"], "oi": row["oi"], "oi_usd": row["oi_usd"],
+                })
+
+    def get_oi(self, coin: str, n: int = 60) -> list[dict]:
+        """Return last n OI snapshots for coin (oldest first)."""
+        with self._lock:
+            dq = self.oi_history.get(coin)
+            if not dq:
+                return []
+            n = max(1, min(n, len(dq)))
+            return list(dq)[-n:]
+
 
     # -------- writers --------
 

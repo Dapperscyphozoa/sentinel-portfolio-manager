@@ -136,7 +136,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "e17_bb_fade_bt_1d":   {"affinity": ["high_vol", "range"],      "bt_pf":  1.21, "cap_frac": 0.01},
     "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.01, "cap_frac": 0.02},
     # Binance re-audit 2026-05-17: these 3 were OKX-false-positives.
-    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  0.5, "cap_frac": 0.06},  # OOS 1.85
+    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  0.5, "cap_frac": 0.04},  # OOS 1.85 — trimmed for oi_concentration funding
     "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.22, "cap_frac": 0.06},
     "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.20, "cap_frac": 0.02},
 
@@ -169,9 +169,12 @@ ENGINE_REGISTRY: dict[str, dict] = {
     # ACTIVATED 2026-05-18 — sentinel council 5/5 YES (unanimous activation vote)
     "vpoc_retest":         {"affinity": ["range", "chop", "trend_up", "trend_down"],
                              "bt_pf": 1.90, "cap_frac": 0.03},
-    # ─── Tier 1 #6: OI Concentration (pre-cascade detector, v1 vol-proxy) ───
+    # ─── Tier 1 #6: OI Concentration ───
+    # ACTIVATED 2026-05-18 (council Q5 unblock) — real OI feed now wired via
+    # signal_bus.oi_poller (HL metaAndAssetCtxs, 5min poll, 30d history).
+    # Strategy reparameterized off real OI (was volume-proxy v1).
     "oi_concentration":    {"affinity": ["high_vol", "range", "chop"],
-                             "bt_pf": 2.75, "cap_frac": 0.00},
+                             "bt_pf": 2.75, "cap_frac": 0.02},
 }
 
 # CUT_ENGINES — hard-blocked from check() regardless of env. The 7 legacy

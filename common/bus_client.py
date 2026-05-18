@@ -50,6 +50,12 @@ class BusClient:
         r.raise_for_status()
         return r.json()
 
+    def oi(self, coin: str, n: int = 8640) -> list[dict]:
+        """HL openInterest history for coin — last n snapshots (60s apart)."""
+        r = self._client.get(f"{self.base_url}/oi/{coin}", params={"n": n})
+        r.raise_for_status()
+        return r.json()
+
     def hl_account(self) -> dict:
         r = self._client.get(f"{self.base_url}/hl/account")
         r.raise_for_status()

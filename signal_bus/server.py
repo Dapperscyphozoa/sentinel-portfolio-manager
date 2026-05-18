@@ -9,6 +9,7 @@ Endpoints per SPEC §5.3:
   GET /hl/account
   GET /hl/fills?since=<ms>
   GET /hl/positions
+  GET /oi/{coin}?n=N
 
 Uses stdlib http.server (SPEC §2.2: stdlib by legacy convention).
 """
@@ -28,6 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from common import config  # noqa: E402
 from signal_bus import binance_ws  # noqa: E402
+from signal_bus import oi_poller  # noqa: E402
 from signal_bus.cache import Cache  # noqa: E402
 
 
@@ -172,6 +174,12 @@ class Handler(BaseHTTPRequestHandler):
                 z = compute_zscore(history, pos["net_usd"])
             return _json_resp(self, 200, {**pos, "zscore_7d": z, "history_n": len(history) if history else 0})
 
+        if path.startswith("/oi/"):
+            coin = parts[1] if len(parts) > 1 else ""
+            n = int(qs.get("n", ["60"])[0])
+            return _json_resp(self, 200, CACHE.get_oi(coin, n))
+
+
         return _json_resp(self, 404, {"error": "not_found", "path": path})
 
 
@@ -275,6 +283,14 @@ def main() -> None:
             log.info("hlp poller started")
         except Exception:
             log.warning("hlp_poller not started", exc_info=True)
+
+    # HL Open Interest poller — for oi_concentration engine (council Q5 fix)
+    if config.get_bool("OI_POLLER_ENABLED", default=True):
+        try:
+            oi_poller.run_in_thread(CACHE)
+            log.info("oi poller started")
+        except Exception:
+            log.warning("oi_poller not started", exc_info=True)
 
     port = config.get_int("HTTP_PORT", 10000)
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
