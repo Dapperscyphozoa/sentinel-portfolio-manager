@@ -46,6 +46,10 @@ FMOM_PRICE_ROC_MAX = float(os.environ.get("FMOM_PRICE_ROC_MAX", "0.015"))  # 1.5
 FMOM_SL_PCT = float(os.environ.get("FMOM_SL_PCT", "0.015"))
 FMOM_TP_PCT = float(os.environ.get("FMOM_TP_PCT", "0.030"))
 FMOM_MAX_HOLD_H = int(os.environ.get("FMOM_MAX_HOLD_H", "8"))
+# In production signal-bus serves ~1 sample/sec (200+ per hour); in backtest
+# HistoricalBus forward-fills to hourly (24 per day). Threshold ensures the
+# z-score baseline can be computed regardless of cadence.
+FMOM_MIN_SAMPLES = int(os.environ.get("FMOM_MIN_SAMPLES", "30"))
 
 # 47-coin HL universe (those with active funding)
 DEFAULT_UNIVERSE = [
@@ -68,20 +72,23 @@ class FundingMomentum(StrategyBase):
     def evaluate(cls, coin: str, bus) -> Optional[Signal]:
         # Get funding history — last ~24h gives us enough to compute ROC + baseline
         try:
-            funding = bus.funding(coin, hours=24)
+            funding = bus.funding(coin, hours=48)
         except Exception:
             return None
-        if not funding or len(funding) < 200:
+        if not funding or len(funding) < FMOM_MIN_SAMPLES:
             return None
 
-        now_ms = int(time.time() * 1000)
-        lookback_ms = FMOM_LOOKBACK_H * 3_600_000
-
-        # Current rate = most recent sample
+        # Current rate = most recent sample. CRITICAL: use the latest sample's
+        # timestamp as the "now" reference instead of time.time(). This makes
+        # the engine honest-backtestable — in a HistoricalBus replay, funding
+        # is already filtered to <= cursor_ms, so the latest sample IS the
+        # backtest's "now".
         curr = funding[-1]
         if not isinstance(curr, dict) or "rate" not in curr:
             return None
         rate_now = float(curr["rate"])
+        now_ms = int(curr.get("ts", time.time() * 1000))
+        lookback_ms = FMOM_LOOKBACK_H * 3_600_000
 
         # Rate at lookback boundary
         target_ts = now_ms - lookback_ms
@@ -100,7 +107,8 @@ class FundingMomentum(StrategyBase):
 
         # Z-score the funding ROC against last 24h of ROCs at same lookback
         rocs = []
-        for i in range(len(funding) - 1, max(0, len(funding) - 1000), -10):
+        step = max(1, len(funding) // 60)   # ~60 baseline rocs regardless of cadence
+        for i in range(len(funding) - 1, max(0, len(funding) - 1000), -step):
             s_curr = funding[i]
             tgt = s_curr.get("ts", 0) - lookback_ms
             s_past = None

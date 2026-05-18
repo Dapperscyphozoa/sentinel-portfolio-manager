@@ -233,8 +233,27 @@ def fetch_klines(symbol: str, tf: str, start_ms: int, end_ms: int) -> list[dict]
     return binance_klines(symbol, tf, start_ms, end_ms)
 
 
+def signal_bus_funding(symbol: str, start_ms: int, end_ms: int) -> list[dict]:
+    """Pull HL funding history via signal-bus. Returns full series within window."""
+    coin = symbol.replace("USDT", "")
+    bus = os.environ.get("BACKTEST_SIGNAL_BUS_URL", "https://core-o21t.onrender.com")
+    hours = max(24, int((end_ms - start_ms) / 3_600_000) + 24)
+    with httpx.Client(timeout=60) as c:
+        r = c.get(f"{bus}/signal_bus/funding/{coin}", params={"hours": hours})
+        r.raise_for_status()
+        rows = r.json()
+    out = [{"ts": int(x["ts"]), "rate": float(x["rate"])}
+           for x in rows if start_ms <= int(x.get("ts", 0)) <= end_ms]
+    out.sort(key=lambda x: x["ts"])
+    return out
+
+
 def fetch_funding(symbol: str, start_ms: int, end_ms: int) -> list[dict]:
-    venue = os.environ.get("BACKTEST_DATA_VENUE", "binance").lower()
+    # Funding venue is separately configurable (fmom needs HL funding regardless of price venue)
+    venue = os.environ.get("BACKTEST_FUNDING_VENUE",
+                          os.environ.get("BACKTEST_DATA_VENUE", "binance")).lower()
+    if venue == "signal_bus":
+        return signal_bus_funding(symbol, start_ms, end_ms)
     if venue == "okx":
         return okx_funding(symbol, start_ms, end_ms)
     return binance_funding(symbol, start_ms, end_ms)
@@ -256,19 +275,25 @@ class HistoricalBus:
         return visible[-n:]
 
     def funding(self, coin: str, hours: int) -> list[dict]:
-        """Return hourly forward-filled funding rates for [cursor - hours, cursor].
+        """Return funding rates for [cursor - hours, cursor].
 
-        Settled funding (Binance/OKX: every 4-8h) is interpolated to hourly cadence
-        by carrying forward the most recent rate. This matches the production
-        signal-bus behavior, which receives the live funding rate field on the
-        Binance markPrice@1s stream and so effectively sees an hourly+ cadence.
+        - If raw source has high-frequency data (signal-bus HL funding, ~1 sample/sec),
+          return raw samples within the window — preserves the variation fmom needs.
+        - Otherwise (Binance/OKX settled funding, every 4-8h), forward-fill to hourly
+          cadence by carrying the most recent rate.
         """
         full = self.funding_h.get(coin) or []
         if not full:
             return []
         end_ms = self.cursor_ms
         start_ms = end_ms - hours * 3600_000
-        # Find last rate before start_ms to carry forward
+
+        # Sample density check: if avg spacing < 30min, treat as high-frequency (signal_bus)
+        if len(full) > 200 and (full[-1]["ts"] - full[0]["ts"]) / max(1, len(full)) < 1800_000:
+            # High-frequency: return raw samples in window
+            return [r for r in full if start_ms <= r["ts"] <= end_ms]
+
+        # Low-frequency: forward-fill to hourly
         last_rate: float | None = None
         for r in full:
             if r["ts"] <= start_ms:
@@ -477,7 +502,7 @@ def main():
         except Exception as e:
             print(f"    klines failed: {e}")
             klines_by_coin[coin] = []
-        if args.strategy in ("fsp", "fd1"):
+        if args.strategy in ("fsp", "fd1", "fmom"):
             try:
                 funding_by_coin[coin] = fetch_funding(sym, start_ms, end_ms)
             except Exception as e:
