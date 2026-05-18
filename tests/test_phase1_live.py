@@ -135,8 +135,12 @@ def test_ict_in_engine_registry():
     from pm.pretrade import ENGINE_REGISTRY
     assert "ict_confluence_4h" in ENGINE_REGISTRY
     assert "ict_confluence_1d" in ENGINE_REGISTRY
-    # ICT cap_frac is 0 because live_safety controls sizing
-    assert ENGINE_REGISTRY["ict_confluence_4h"]["cap_frac"] == 0.00
+    # ICT cap_frac promoted 2026-05-18 (council audit): OOS PF 2.63 n=188 earned
+    # an evidence-weighted allocation. Initial 0.25 was trimmed to 0.15 after
+    # 7-voter council MODERATE flagged over-concentration risk for $491 wallet.
+    # Sizing still routed through live_safety controller (ATR-based).
+    assert ENGINE_REGISTRY["ict_confluence_4h"]["cap_frac"] == 0.15
+    assert ENGINE_REGISTRY["ict_confluence_1d"]["cap_frac"] == 0.05
 
 
 def test_ict_engine_classes_load():

@@ -232,6 +232,15 @@ class ICT_Confluence_4h(StrategyBase):
 
     Built per council unanimous spec. Walk-forward gated: must pass
     PF > 1.4 AND DD < 35% in EVERY of 5×90d windows BEFORE deploy.
+
+    Promotion audit 2026-05-18 (council unanimous CRITICAL on hl_settle_5m
+    asymmetry → checked here):
+      - Full-sample direction asymmetry 5pp (symmetric, no short-only ban)
+      - OOS direction asymmetry 13pp (LONG WR 46.3% vs SHORT WR 59.5%) —
+        flag for monitoring at n≥30 live; auto-flip to short-only if it
+        persists. Env override ICT_4H_SHORT_ONLY=1 enables ahead of n=30.
+      - Coin bleeders (backtest n≥3, WR<50%, PF<1.0): ETH, AAVE, PENDLE
+        → blocked at evaluate() entry.
     """
     NAME = "ict_confluence_4h"
     CLOID_PREFIX = "ictc_"
@@ -243,6 +252,14 @@ class ICT_Confluence_4h(StrategyBase):
         "TIA", "JUP", "WIF", "kPEPE", "kSHIB", "FTM", "AAVE", "UNI", "MKR",
         "COMP", "SEI", "ADA", "TRX", "BCH", "PENDLE", "RNDR", "PYTH", "WLD",
     ]
+    # Bleeder denylist — backtest n=266: ETH 2/10 PF 0.61, AAVE 2/5 PF 0.68,
+    # PENDLE 2/6 PF 0.74. Universe-wide WR 57% / PF 3.18; these 3 are the only
+    # statistically significant drags. Reviewed quarterly.
+    COIN_DENYLIST: set = {"ETH", "AAVE", "PENDLE"}
+    # Env-flippable short-only mode (default off; flip to 1 if OOS asymmetry
+    # persists past n≥30 live trades).
+    import os as _os
+    SHORT_ONLY: bool = _os.environ.get("ICT_4H_SHORT_ONLY", "0") == "1"
 
     # Council-set thresholds
     SWING_LB = 2
@@ -261,6 +278,9 @@ class ICT_Confluence_4h(StrategyBase):
 
     @classmethod
     def evaluate(cls, coin: str, bus) -> Optional[Signal]:
+        # Bleeder denylist (council promotion audit 2026-05-18)
+        if coin in cls.COIN_DENYLIST:
+            return None
         bars = bus.candles(coin, cls.TF, n=200) or []
         if len(bars) < 60:
             return None
@@ -332,6 +352,10 @@ class ICT_Confluence_4h(StrategyBase):
         # Entry at confluence midpoint
         entry_px = sum(z["mid"] for z in zones) / len(zones)
         is_long = (direction == "BULL")
+
+        # Short-only gate (council promotion audit: OOS LONG WR 46.3% vs SHORT 59.5%)
+        if cls.SHORT_ONLY and is_long:
+            return None
 
         # SL: beyond the deepest zone edge + ATR buffer
         if is_long:

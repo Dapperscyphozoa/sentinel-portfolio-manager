@@ -264,7 +264,18 @@ class E09_pump3d_10_TD_1d(StrategyBase):
 # ============================================================
 class E16_bb_fade_HV_1d(StrategyBase):
     """Bollinger band fade in HIGH_VOL regime, daily.
-    Backtest PF: 1.47 (n=130). High-vol bounce capturer.
+
+    Honest backtest (2026-05-17, 180d, 47 coins, OOS half):
+      n=29, WR 72.4%, PF 5.35, expectancy +3.86%/trade
+      OOS:  n=15 (post-split) WR 73%, PF 8.59
+      LONG:  n=15 WR 67%, PF 2.84   SHORT: n=14 WR 79%, PF 13.07
+    Direction asymmetry 12pp (moderate). Small-sample warning: n=29
+    overall; PF 8.59 OOS is largely driven by a few outliers. Council
+    promotion audit 2026-05-18: PROVISIONAL — keep symmetric (do not
+    short-only at this n), revisit after n≥40 live trades.
+
+    cap_frac in PM registry = 0.30 is advisory only; actual sizing is
+    flat MARGIN_PCT_PER_TRADE × LEVERAGE per trade.
     """
     NAME = "e16_bb_fade_hv_1d"
     CLOID_PREFIX = "e16_"

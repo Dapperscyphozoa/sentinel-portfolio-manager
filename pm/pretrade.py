@@ -73,62 +73,64 @@ class CheckResult:
 #   UNTESTED — no honest backtest possible (needs custom harness)
 ENGINE_REGISTRY: dict[str, dict] = {
     # ─── GREEN: real edge (3 engines) ───
+    # cap_frac REBALANCED 2026-05-18 per council promotion audit:
+    #   ict_confluence_4h: 0.00 → 0.15 (council trim from 0.25 — diversification
+    #     ethos for $491 wallet; OOS PF 1.37 on longs means asymmetry is real
+    #     but longs are still profitable, so monitor not ban — kept SHORT_ONLY=0)
+    #   hl_settle_5m:      0.00 → 0.20 (most-tested live engine, n=55; promoted
+    #     after short-only + denylist fix, fee-cleanup TP 0.4%)
+    #   e08_dip3d7_td_4h:  0.00 → 0.10 (OOS PF 2.01 n=191; force_close bug fixed)
+    #   ict_confluence_1d: 0.00 → 0.05 (paper-only via live_safety)
+    #   e16_bb_fade_hv_1d: 0.30 → 0.05 (council trim — n=29 too thin for 0.10)
+    #   e09_pump3d10_td_1d: 0.41 → 0.10 (n=26 over-allocated)
+    # Verdict: 7-voter council MODERATE — over-concentration risk addressed.
     "ict_confluence_1d":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 3.35, "cap_frac": 0.00},   # PF 3.77 n=46 WR57%; live_safety controls sizing
+                             "bt_pf": 3.35, "cap_frac": 0.05},
     "ict_confluence_4h":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 3.18, "cap_frac": 0.00},   # PF 3.18 n=266 WR57%; live_safety
-    "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  2.2, "cap_frac": 0.41},  # WR 81% — strongest non-ICT
+                             "bt_pf": 3.18, "cap_frac": 0.15},   # council-trimmed from 0.25
+    "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  2.2, "cap_frac": 0.10},
 
     # ─── WATCH: green by PF but suspect IS/OOS or undersize n (2 engines) ───
-    "e16_bb_fade_hv_1d":   {"affinity": ["high_vol"],               "bt_pf":  5.35, "cap_frac": 0.30},  # PROMOTED 2026-05-18: backtest_v2 confirms PF 2.70 n=37, walk-forward 1.38→22.96
-    "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.29, "cap_frac": 0.05},  # DEMOTED 2026-05-18: backtest_v2 n=8 WR 50% PF 0.78; walk-forward 1.07→0.49
+    "e16_bb_fade_hv_1d":   {"affinity": ["high_vol"],               "bt_pf":  5.35, "cap_frac": 0.05},  # council-trimmed from 0.10 — n=29
+    "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.29, "cap_frac": 0.05},
 
     # ─── YELLOW: marginal — paper mode only (LIVE=0 env, 5 engines) ───
-    "e17_bb_fade_bt_1d":   {"affinity": ["high_vol", "range"],      "bt_pf":  1.21, "cap_frac": 0.02},  # regime gate inverted 2026-05-18 per backtest_v2
+    "e17_bb_fade_bt_1d":   {"affinity": ["high_vol", "range"],      "bt_pf":  1.21, "cap_frac": 0.01},
     "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.01, "cap_frac": 0.02},
-    # Binance re-audit 2026-05-17: these 3 were OKX-false-positives. Paper-mode pending live evidence.
-    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  0.5, "cap_frac": 0.02},  # OKX 0.58 → Binance 1.61 (OOS 0.96)
-    "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.22, "cap_frac": 0.02},  # OKX 0.86 → Binance 1.22
-    "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.20, "cap_frac": 0.02},  # OKX 0.84 → Binance 1.20
+    # Binance re-audit 2026-05-17: these 3 were OKX-false-positives.
+    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  0.5, "cap_frac": 0.07},  # OOS 1.85
+    "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.22, "cap_frac": 0.06},
+    "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.20, "cap_frac": 0.02},
 
     # ─── UNTESTED: low weight, monitor live (2 engines) ───
-    "liq_cascade":  {"affinity": ["trend_up", "trend_down"],         "bt_pf": 1.30, "cap_frac": 0.07},  # event-driven, no honest BT yet
-    "e16_bb_fade_hv_4h":   {"affinity": ["high_vol"],               "bt_pf":  1.50, "cap_frac": 0.07},  # only n=1 in 90d BT, retain at low weight
+    "liq_cascade":  {"affinity": ["trend_up", "trend_down"],         "bt_pf": 1.30, "cap_frac": 0.10},  # event-driven, sentinel-born
+    "e16_bb_fade_hv_4h":   {"affinity": ["high_vol"],               "bt_pf":  1.50, "cap_frac": 0.02},  # n=1 BT only, low weight
 
     # ─── RED: honest PF < 1.0 — halted via STRATEGY_<NAME>_ENABLED=0 env ───
-    "e08_dip3d7_td_4h":    {"affinity": ["trend_down"],             "bt_pf":  0.93, "cap_frac": 0.00},  # Binance audit 0.93 (OOS 2.01 — recent strength)
-    "e17_bb_fade_bt_4h":   {"affinity": ["high_vol", "range"],      "bt_pf":  0.86, "cap_frac": 0.00},  # regime gate inverted 2026-05-18; cap stays 0 pending 30+ trades under new gate
-    "donchian":            {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.01, "cap_frac": 0.00},  # confirmed: WR 4% Binance, WR 6.8% OKX
-    "cex_dex_arb":  {"affinity": ["range", "chop"],                  "bt_pf": 0.00, "cap_frac": 0.00},  # halted: bt_pf=0, lookahead history
-    "cascade_sniper_hl":   {"affinity": ["high_vol", "trend_up", "trend_down", "range", "chop"], "bt_pf": 0.00, "cap_frac": 0.00},  # halted: bt_pf=0, untested
+    # e08_dip3d7_td_4h PROMOTED 2026-05-18: OOS PF 2.01 n=191; force_close PnL
+    # bug masked real performance. Re-graded after bug fix c5b055d.
+    "e08_dip3d7_td_4h":    {"affinity": ["trend_down"],             "bt_pf":  0.93, "cap_frac": 0.10},
+    "e17_bb_fade_bt_4h":   {"affinity": ["high_vol", "range"],      "bt_pf":  0.86, "cap_frac": 0.00},
+    "donchian":            {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.01, "cap_frac": 0.00},
+    "cex_dex_arb":  {"affinity": ["range", "chop"],                  "bt_pf": 0.00, "cap_frac": 0.00},
+    "cascade_sniper_hl":   {"affinity": ["high_vol", "trend_up", "trend_down", "range", "chop"], "bt_pf": 0.00, "cap_frac": 0.00},
     # ─── World-first: HLP Vault Fade (Council #1 pick, Tier 1 ship-first) ───
-    # Trade WITH HLP positioning when z-score >2σ from 7d mean. Custom exit
-    # when HLP returns near-neutral. No bt_pf yet — forward-validate live.
     "hlp_fade":            {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 2.50, "cap_frac": 0.00},   # 2.5 = expected midpoint (council 2.0-3.5)
+                             "bt_pf": 2.50, "cap_frac": 0.00},
     # ─── Tier 1 #2: Funding Momentum (2nd-derivative funding signal) ───
-    # Z-score on funding-rate ROC vs price ROC divergence. Distinct from
-    # dead fsp (level-based) and fd1 (1st-derivative divergence).
     "fmom":                {"affinity": ["trend_up", "trend_down", "range", "chop"],
-                             "bt_pf": 1.75, "cap_frac": 0.00},   # 1.75 midpoint of council 1.5-2.0
+                             "bt_pf": 1.75, "cap_frac": 0.00},
     "hl_settle_5m":        {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 1.85, "cap_frac": 0.00},   # 1.85 midpoint of council 1.5-2.2, MAKER ONLY
+                             "bt_pf": 1.85, "cap_frac": 0.20},   # PROMOTED 2026-05-18 post short-only fix
     # ─── Tier 1 #4: Stop Hunt Rejection (S/R wick-sweep + reversal) ───
-    # Detects algorithmic stop sweeps at horizontal S/R with strict wick
-    # mechanics (≥50% bar, ≥20bps sweep, body >10bps). Expected WR 65-75%.
     "stop_hunt":           {"affinity": ["range", "chop", "high_vol"],
-                             "bt_pf": 3.00, "cap_frac": 0.00},   # 3.0 midpoint of council 2.5-3.5
+                             "bt_pf": 3.00, "cap_frac": 0.00},
     # ─── Tier 1 #5: VPOC Retest (naked weekly POC magnet) ───
-    # Universe restricted to BTC/ETH/SOL/BNB/XRP (institutional flow respects
-    # VPOCs; memes do not). Distinct from ICT structure (uses volume, not OB).
     "vpoc_retest":         {"affinity": ["range", "chop", "trend_up", "trend_down"],
-                             "bt_pf": 1.90, "cap_frac": 0.00},   # 1.9 midpoint of council 1.6-2.2
+                             "bt_pf": 1.90, "cap_frac": 0.00},
     # ─── Tier 1 #6: OI Concentration (pre-cascade detector, v1 vol-proxy) ───
-    # Detects extreme volume + price near major S/R. Fires when conditions for
-    # cascading liquidation are present. v1 uses volume percentile as OI proxy
-    # (true wallet-level aggregation deferred to v2). Low frequency, asymmetric.
     "oi_concentration":    {"affinity": ["high_vol", "range", "chop"],
-                             "bt_pf": 2.75, "cap_frac": 0.00},   # 2.75 midpoint of council 2.0-3.5
+                             "bt_pf": 2.75, "cap_frac": 0.00},
 }
 
 # CUT_ENGINES — hard-blocked from check() regardless of env. The 7 legacy
