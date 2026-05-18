@@ -60,6 +60,50 @@ async def _consume_okx(coins: list[str], cache: Cache) -> None:
             cache.last_update["okx_ws"] = time.time()
 
 
+# -------- OKX liquidations (replaces dead Binance forceOrder feed) --------
+
+async def _consume_okx_liq(cache: Cache) -> None:
+    """Subscribe OKX SWAP liquidation-orders for all symbols.
+    Binance !forceOrder@arr stopped delivering events from our IP range
+    (2026-05-19 verified: 0 events in 12s on both /stream and /market/stream).
+    OKX SWAP liquidation feed is the replacement for liq_cascade engine."""
+    sub = {"op": "subscribe", "args": [{"channel": "liquidation-orders", "instType": "SWAP"}]}
+    async with websockets.connect(OKX_WS_PUBLIC, ping_interval=20, ping_timeout=20) as ws:
+        await ws.send(json.dumps(sub))
+        log.info("okx liquidation-orders subscribed (instType=SWAP)")
+        async for raw in ws:
+            try:
+                msg = json.loads(raw)
+            except Exception:
+                continue
+            if msg.get("event") in ("subscribe", "error"):
+                continue
+            arg = msg.get("arg", {})
+            if arg.get("channel") != "liquidation-orders":
+                continue
+            for d in msg.get("data", []):
+                inst = d.get("instId", "")
+                if not inst.endswith("-USDT-SWAP"):
+                    continue
+                coin = inst.replace("-USDT-SWAP", "")
+                for det in d.get("details", []):
+                    try:
+                        qty = float(det.get("sz", 0))
+                        price = float(det.get("bkPx", 0))
+                        side_raw = det.get("side", "")  # OKX: "buy" means short was liquidated; "sell" means long was liquidated
+                        # Map to Binance forceOrder convention: 'BUY'=short-liq, 'SELL'=long-liq
+                        side = "BUY" if side_raw == "buy" else "SELL"
+                        ts = int(det.get("ts") or time.time() * 1000)
+                    except Exception:
+                        continue
+                    if qty <= 0 or price <= 0:
+                        continue
+                    cache.push_liq({
+                        "ts": ts, "coin": coin, "side": side,
+                        "qty": qty, "price": price, "usd": qty * price,
+                    })
+
+
 # -------- Bybit --------
 
 async def _consume_bybit(coins: list[str], cache: Cache) -> None:
@@ -128,7 +172,19 @@ async def _runner(coins: list[str], cache: Cache) -> None:
             else:
                 backoff_byb = 1.0
 
-    await asyncio.gather(run_okx(), run_bybit())
+    async def run_okx_liq():
+        backoff = 1.0
+        while True:
+            try:
+                await _consume_okx_liq(cache)
+            except Exception as e:
+                log.warning("okx liq disconnect: %s; reconnect in %.1fs", e, backoff)
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 60.0)
+            else:
+                backoff = 1.0
+
+    await asyncio.gather(run_okx(), run_bybit(), run_okx_liq())
 
 
 def run_in_thread(coins: list[str], cache: Cache) -> None:
