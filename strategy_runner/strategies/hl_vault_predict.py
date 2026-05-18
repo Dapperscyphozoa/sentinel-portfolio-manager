@@ -27,6 +27,7 @@ import os
 import time
 from typing import Optional
 
+from common import edge_filters
 from strategy_runner.strategies._base import Signal, StrategyBase
 
 
@@ -142,6 +143,11 @@ class HLVaultPredict(StrategyBase):
         else:
             sl_px = close * (1 + VP_SL_PCT)
             tp_px = close * (1 - VP_TP_PCT)
+
+        # ── Stage 2 council filter: spread max ──
+        spread_pass, spread_detail = edge_filters.spread_max(bus, coin, max_bps=6.0)
+        if not spread_pass:
+            return None
 
         return Signal(
             coin=coin, side=side, is_long=is_long, ref_price=close,

@@ -46,6 +46,8 @@ HLP_MIN_VAULT_COUNT = int(os.environ.get("HLP_FADE_MIN_VAULT_COUNT", "2"))
 HLP_MIN_HISTORY = int(os.environ.get("HLP_FADE_MIN_HISTORY", "100"))  # ~8h at 5min poll
 HLP_SL_PCT = float(os.environ.get("HLP_FADE_SL_PCT", "0.10"))
 HLP_TP_PCT = float(os.environ.get("HLP_FADE_TP_PCT", "0.05"))
+HLP_NAV_FILTER_ENABLED = int(os.environ.get("HLP_NAV_FILTER_ENABLED", "1"))
+HLP_NAV_MIN_PCT = float(os.environ.get("HLP_NAV_MIN_PCT", "0.0010"))
 HLP_MAX_HOLD_H = int(os.environ.get("HLP_FADE_MAX_HOLD_H", "24"))
 
 
@@ -119,6 +121,19 @@ class HLPFade(StrategyBase):
 
         max_hold_bars = HLP_MAX_HOLD_H * 12  # 5m bars × 12 = 1h
 
+        # ── Stage 2 council filter: NAV divergence is meaningful (+30% edge) ──
+        nav_detail = {}
+        if HLP_NAV_FILTER_ENABLED:
+            try:
+                bars_for_filter = bus.candles(coin, "5m", n=5)
+            except Exception:
+                bars_for_filter = []
+            passes, nav_detail = edge_filters.hlp_nav_divergence(
+                hlp, bars_for_filter, min_pct=HLP_NAV_MIN_PCT,
+            )
+            if not passes:
+                return None
+
         return Signal(
             coin=coin,
             side="B" if is_long else "A",
@@ -136,6 +151,7 @@ class HLPFade(StrategyBase):
                 "hlp_vault_count": vault_count,
                 "hlp_history_n": history_n,
                 "z_enter": HLP_Z_ENTER,
+                **nav_detail,
             },
         )
 

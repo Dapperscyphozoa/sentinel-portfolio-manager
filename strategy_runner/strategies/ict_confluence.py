@@ -1,3 +1,4 @@
+from common import edge_filters
 """ICT Confluence Engine — unified OB + FVG + Wick-Sweep entry.
 
 Council-mandated specification (5/5 voters converged):
@@ -436,6 +437,17 @@ class ICT_Confluence_4h(StrategyBase):
             extras["kronos_direction"] = kronos_info["direction"]
             extras["kronos_pred_return"] = kronos_info["pred_return"]
             extras["kronos_cached"] = kronos_info.get("cached", False)
+
+        # ── Stage 2 council filter: OI-delta-increasing on trigger (+22% PF) ──
+        if ICT_OI_FILTER_ENABLED:
+            passes, oi_detail = edge_filters.oi_delta_increasing(
+                bus, coin,
+                lookback_n=ICT_OI_LOOKBACK_N,
+                min_pct_delta=ICT_OI_MIN_PCT_DELTA,
+            )
+            extras.update(oi_detail)
+            if not passes:
+                return None
 
         return Signal(
             coin=coin, side="B" if is_long else "A", is_long=is_long,

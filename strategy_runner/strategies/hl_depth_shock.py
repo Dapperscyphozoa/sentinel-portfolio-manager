@@ -21,6 +21,7 @@ import os
 import time
 from typing import Optional
 
+from common import edge_filters
 from strategy_runner.strategies._base import Signal, StrategyBase
 
 
@@ -95,6 +96,13 @@ class HLDepthShock(StrategyBase):
             return None
 
         if mid <= 0:
+            return None
+
+        # ── Stage 2 council filter: CVD alignment confirms direction ──
+        cvd_pass, cvd_detail = edge_filters.cvd_alignment(
+            bus, coin, is_long, window_ms=15_000, min_z=0.2, min_ratio=0.52,
+        )
+        if not cvd_pass:
             return None
 
         return Signal(

@@ -31,6 +31,7 @@ import os
 import time
 from typing import Optional
 
+from common import edge_filters
 from strategy_runner.strategies._base import Signal, StrategyBase
 
 
@@ -147,6 +148,11 @@ class HLWhaleFrontrun(StrategyBase):
             tp_px = close * (1 - WF_TP_PCT)
             reason = (f"whales_short={short_count} ntl=${short_total_ntl/1e6:.2f}M "
                       f"5m_red wallets={whales_short}")
+
+        # ── Stage 2 council filter: spread max (don't copy whales into thin book) ──
+        spread_pass, spread_detail = edge_filters.spread_max(bus, coin, max_bps=10.0)
+        if not spread_pass:
+            return None
 
         return Signal(
             coin=coin, side=side, is_long=is_long, ref_price=close,

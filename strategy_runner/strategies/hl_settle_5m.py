@@ -70,6 +70,9 @@ HL_SETTLE_MAX_HOLD_MIN = int(os.environ.get("HL_SETTLE_MAX_HOLD_MIN", "30"))
 # disguised as a market-neutral funding play. Ban longs until regime shifts
 # and the long book recovers a tradeable WR on n≥30.
 HL_SETTLE_SHORT_ONLY = os.environ.get("HL_SETTLE_SHORT_ONLY", "1") == "1"
+HL_SETTLE_CVD_FILTER_ENABLED = int(os.environ.get("HL_SETTLE_CVD_FILTER_ENABLED", "1"))
+HL_SETTLE_CVD_MIN_RATIO = float(os.environ.get("HL_SETTLE_CVD_MIN_RATIO", "0.55"))
+HL_SETTLE_CVD_MIN_Z = float(os.environ.get("HL_SETTLE_CVD_MIN_Z", "0.3"))
 # Council Q4 (2026-05-18): trend-regime invasion is the projected edge
 # degradation as n grows. Block mean-rev fires when 1h ADX > threshold.
 HL_SETTLE_ADX_THRESHOLD = float(os.environ.get("HL_SETTLE_ADX_THRESHOLD", "25.0"))
@@ -284,6 +287,18 @@ class HLSettle5m(StrategyBase):
         # 1m TF — max_hold expressed in bars
         max_hold_bars = HL_SETTLE_MAX_HOLD_MIN
 
+        # ── Stage 2 council filter: CVD alignment (+0.5% WR / +0.2 PF est) ──
+        cvd_detail = {}
+        if HL_SETTLE_CVD_FILTER_ENABLED:
+            passes, cvd_detail = edge_filters.cvd_alignment(
+                bus, coin, is_long,
+                window_ms=30_000,
+                min_z=HL_SETTLE_CVD_MIN_Z,
+                min_ratio=HL_SETTLE_CVD_MIN_RATIO,
+            )
+            if not passes:
+                return None
+
         return Signal(
             coin=coin,
             side="B" if is_long else "A",
@@ -300,5 +315,6 @@ class HLSettle5m(StrategyBase):
                 "since_last_settle_min": since_last,
                 "rate_now": rate_now,
                 "maker_only": HL_SETTLE_MAKER_ONLY,
+                **cvd_detail,
             },
         )

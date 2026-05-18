@@ -41,6 +41,7 @@ from ._base import Signal, StrategyBase
 # Renamed from OIC_VOLUME_PCTILE (real OI now). Backward-compat env var read.
 OIC_OI_PCTILE = float(os.environ.get("OIC_OI_PCTILE",
                        os.environ.get("OIC_VOLUME_PCTILE", "0.90")))
+OIC_3SIGMA_FILTER_ENABLED = int(os.environ.get("OIC_3SIGMA_FILTER_ENABLED", "1"))
 OIC_SWING_LOOKBACK = int(os.environ.get("OIC_SWING_LOOKBACK", "48"))
 OIC_PROXIMITY_PCT = float(os.environ.get("OIC_PROXIMITY_PCT", "0.01"))
 OIC_SL_PCT = float(os.environ.get("OIC_SL_PCT", "0.012"))
@@ -112,6 +113,21 @@ class OIConcentration(StrategyBase):
         pctile = lo / len(sorted_ois) if sorted_ois else 0.0
         if pctile < OIC_OI_PCTILE:
             return None
+
+        # ── Stage 2 council filter: OI rate-of-change must be ≥3σ ──
+        # Council Q3: "OI delta divergence >3σ avoids weak signals"
+        # Beyond simple percentile, require current OI to be 3σ above mean of last N
+        if OIC_3SIGMA_FILTER_ENABLED and len(sorted_ois) >= 30:
+            mean_oi = sum(sorted_ois) / len(sorted_ois)
+            var_oi = sum((x - mean_oi) ** 2 for x in sorted_ois) / max(1, len(sorted_ois) - 1)
+            stdev_oi = var_oi ** 0.5
+            if stdev_oi <= 0:
+                return None
+            oi_z = (current_oi - mean_oi) / stdev_oi
+            if abs(oi_z) < 3.0:
+                return None
+        else:
+            oi_z = 0.0
 
         # ── Swing levels ──
         prior = candles[-(OIC_SWING_LOOKBACK + 2):-2]

@@ -29,6 +29,7 @@ import os
 import time
 from typing import Optional
 
+from common import edge_filters
 from strategy_runner.strategies._base import Signal, StrategyBase
 
 
@@ -152,6 +153,11 @@ class CrossCoinZScore(StrategyBase):
         else:
             sl_px = sat_close * (1 + CCZ_SL_PCT)
             tp_px = sat_close * (1 - CCZ_TP_PCT)
+
+        # ── Stage 2 council filter: asia_kill ──
+        asia_pass, asia_detail = edge_filters.asia_kill_window()
+        if not asia_pass:
+            return None
 
         return Signal(
             coin=coin, side=side, is_long=is_long, ref_price=sat_close,

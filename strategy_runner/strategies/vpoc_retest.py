@@ -49,6 +49,8 @@ VPOC_RETEST_PCT = float(os.environ.get("VPOC_RETEST_PCT", "0.005"))       # with
 VPOC_NAKED_LOOKBACK_WEEKS = int(os.environ.get("VPOC_NAKED_LOOKBACK_WEEKS", "4"))
 VPOC_SL_PCT = float(os.environ.get("VPOC_SL_PCT", "0.015"))               # 1.5% SL
 VPOC_TP_PCT = float(os.environ.get("VPOC_TP_PCT", "0.025"))               # 2.5% TP (1:~1.7 RR)
+VPOC_OI_FILTER_ENABLED = int(os.environ.get("VPOC_OI_FILTER_ENABLED", "1"))
+VPOC_OI_MIN_PCT_DELTA = float(os.environ.get("VPOC_OI_MIN_PCT_DELTA", "0.002"))
 VPOC_MAX_HOLD_BARS = int(os.environ.get("VPOC_MAX_HOLD_BARS", "48"))      # 48h
 
 
@@ -192,6 +194,17 @@ class VPOCRetest(StrategyBase):
             sl_px = c * (1 + VPOC_SL_PCT)
             tp_px = c * (1 - VPOC_TP_PCT)
 
+        # ── Stage 2 council filter: OI-delta confirms participation (+0.4-22% WR) ──
+        oi_detail = {}
+        if VPOC_OI_FILTER_ENABLED:
+            passes, oi_detail = edge_filters.oi_delta_increasing(
+                bus, coin,
+                lookback_n=6,
+                min_pct_delta=VPOC_OI_MIN_PCT_DELTA,
+            )
+            if not passes:
+                return None
+
         return Signal(
             coin=coin,
             side="B" if is_long else "A",
@@ -207,5 +220,6 @@ class VPOCRetest(StrategyBase):
                 "distance_pct": round(dist_pct * 100, 3),
                 "naked_pocs_total": len(naked_pocs),
                 "weeks_lookback": VPOC_NAKED_LOOKBACK_WEEKS,
+                **oi_detail,
             },
         )

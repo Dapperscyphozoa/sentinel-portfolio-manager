@@ -23,6 +23,7 @@ import os
 import time
 from typing import Optional
 
+from common import edge_filters
 from strategy_runner.strategies._base import Signal, StrategyBase
 
 
@@ -125,6 +126,16 @@ class FundingTriangulation(StrategyBase):
         else:
             sl_px = close * (1 + FT_SL_PCT)
             tp_px = close * (1 - FT_TP_PCT)
+
+        # ── Stage 2 council filters: asia_kill + CVD alignment ──
+        asia_pass, asia_detail = edge_filters.asia_kill_window()
+        if not asia_pass:
+            return None
+        cvd_pass, cvd_detail = edge_filters.cvd_alignment(
+            bus, coin, is_long, window_ms=30_000, min_z=0.3, min_ratio=0.55,
+        )
+        if not cvd_pass:
+            return None
 
         return Signal(
             coin=coin, side=side, is_long=is_long, ref_price=close,
