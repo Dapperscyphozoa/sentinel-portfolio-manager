@@ -70,6 +70,10 @@ HL_SETTLE_MAX_HOLD_MIN = int(os.environ.get("HL_SETTLE_MAX_HOLD_MIN", "30"))
 # disguised as a market-neutral funding play. Ban longs until regime shifts
 # and the long book recovers a tradeable WR on n≥30.
 HL_SETTLE_SHORT_ONLY = os.environ.get("HL_SETTLE_SHORT_ONLY", "1") == "1"
+# Council Q4 (2026-05-18): trend-regime invasion is the projected edge
+# degradation as n grows. Block mean-rev fires when 1h ADX > threshold.
+HL_SETTLE_ADX_THRESHOLD = float(os.environ.get("HL_SETTLE_ADX_THRESHOLD", "25.0"))
+HL_SETTLE_ADX_PERIOD = int(os.environ.get("HL_SETTLE_ADX_PERIOD", "14"))
 
 
 # Live-validated universe (council audit 2026-05-18).
@@ -105,6 +109,62 @@ def _minutes_to_settle(now_ms: int) -> tuple[int, int]:
     return to_next, since_last
 
 
+
+def _compute_adx_1h(candles: list, period: int) -> Optional[float]:
+    """Wilder-smoothed ADX over `period` bars.
+    Returns ADX value or None if insufficient data.
+
+    Sentinel-flagged: guard against env mis-config (period <= 0)."""
+    if period <= 0 or len(candles) < period * 2 + 2:
+        return None
+    try:
+        highs = [float(b["high"]) for b in candles]
+        lows = [float(b["low"]) for b in candles]
+        closes = [float(b["close"]) for b in candles]
+    except (KeyError, ValueError, TypeError):
+        return None
+
+    n = len(candles)
+    tr = [0.0] * n
+    pdm = [0.0] * n
+    mdm = [0.0] * n
+    for i in range(1, n):
+        up = highs[i] - highs[i - 1]
+        dn = lows[i - 1] - lows[i]
+        pdm[i] = up if (up > dn and up > 0) else 0.0
+        mdm[i] = dn if (dn > up and dn > 0) else 0.0
+        tr[i] = max(highs[i] - lows[i],
+                    abs(highs[i] - closes[i - 1]),
+                    abs(lows[i] - closes[i - 1]))
+
+    # Wilder smoothing
+    atr = sum(tr[1:period + 1]) / period
+    pdi_sm = sum(pdm[1:period + 1]) / period
+    mdi_sm = sum(mdm[1:period + 1]) / period
+
+    dxs = []
+    for i in range(period + 1, n):
+        atr = (atr * (period - 1) + tr[i]) / period
+        pdi_sm = (pdi_sm * (period - 1) + pdm[i]) / period
+        mdi_sm = (mdi_sm * (period - 1) + mdm[i]) / period
+        if atr <= 0:
+            continue
+        pdi = 100.0 * pdi_sm / atr
+        mdi = 100.0 * mdi_sm / atr
+        denom = pdi + mdi
+        if denom <= 0:
+            continue
+        dx = 100.0 * abs(pdi - mdi) / denom
+        dxs.append(dx)
+
+    if len(dxs) < period:
+        return None
+    # Wilder ADX: smoothed DX
+    adx = sum(dxs[:period]) / period
+    for d in dxs[period:]:
+        adx = (adx * (period - 1) + d) / period
+    return adx
+
 class HLSettle5m(StrategyBase):
     NAME = "hl_settle_5m"
     CLOID_PREFIX = "hlst_"
@@ -117,6 +177,19 @@ class HLSettle5m(StrategyBase):
         # Coin denylist — bleeders from live audit
         if coin in HL_SETTLE_COIN_DENYLIST:
             return None
+
+        # ── ADX trend-regime filter (council Q4 2026-05-18) ──
+        # Mean-reversion at settle decays in strong-trend regimes (ADX > 25).
+        # Council unanimous: this is the projected edge-degradation risk as
+        # n grows. Filter at engine entry.
+        if HL_SETTLE_ADX_THRESHOLD > 0:
+            try:
+                adx_bars = bus.candles(coin, "1h", n=HL_SETTLE_ADX_PERIOD * 4)
+                adx = _compute_adx_1h(adx_bars, HL_SETTLE_ADX_PERIOD)
+                if adx is not None and adx > HL_SETTLE_ADX_THRESHOLD:
+                    return None
+            except Exception:
+                pass    # bus error or missing — fall through (do not block)
 
         # Latest funding rate (sign tells us who pays)
         try:
