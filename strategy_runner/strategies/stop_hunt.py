@@ -51,6 +51,8 @@ STOPH_WICK_RATIO = float(os.environ.get("STOPH_WICK_RATIO", "0.5"))          # w
 STOPH_MIN_BODY_PCT = float(os.environ.get("STOPH_MIN_BODY_PCT", "0.001"))   # bar body ≥10bps (not doji)
 STOPH_RR = float(os.environ.get("STOPH_RR", "2.0"))                          # TP = RR × SL distance
 STOPH_MAX_HOLD_BARS = int(os.environ.get("STOPH_MAX_HOLD_BARS", "12"))
+STOPH_NEWS_SPIKE_ATR_MULT = float(os.environ.get("STOPH_NEWS_SPIKE_ATR_MULT", "3.0"))
+STOPH_ATR_PERIOD = int(os.environ.get("STOPH_ATR_PERIOD", "14"))
 
 
 DEFAULT_UNIVERSE = [
@@ -100,6 +102,33 @@ class StopHunt(StrategyBase):
         bar_range = h - l
         if bar_range <= 0:
             return None
+
+        # ── News-spike filter (council Q5 2026-05-18) ──
+        # 5/6 council voters flagged news-spike wick-sweep false positives.
+        # Compute ATR over last STOPH_ATR_PERIOD closed bars (excluding sweep bar).
+        # If current bar_range > STOPH_NEWS_SPIKE_ATR_MULT × ATR, the move is too
+        # large to be a stop hunt — likely macro news (NFP/CPI/CME open) which
+        # does NOT reliably revert. Reject.
+        atr_bars = candles[-(STOPH_ATR_PERIOD + 2):-2]
+        if len(atr_bars) >= STOPH_ATR_PERIOD:
+            try:
+                trs = []
+                prev_close = None
+                for b in atr_bars:
+                    bh = float(b["high"])
+                    bl = float(b["low"])
+                    bc = float(b["close"])
+                    if prev_close is None:
+                        tr = bh - bl
+                    else:
+                        tr = max(bh - bl, abs(bh - prev_close), abs(bl - prev_close))
+                    trs.append(tr)
+                    prev_close = bc
+                atr = sum(trs) / len(trs)
+                if atr > 0 and bar_range > STOPH_NEWS_SPIKE_ATR_MULT * atr:
+                    return None      # news-spike, not stop hunt
+            except (KeyError, ValueError, TypeError):
+                pass  # missing data — don't block, fall through
 
         # ── LOW SWEEP (bullish setup) ──
         if l < swing_low * (1 - STOPH_SWEEP_BPS) and c > swing_low:

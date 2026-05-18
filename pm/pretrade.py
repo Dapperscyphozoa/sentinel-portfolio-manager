@@ -136,7 +136,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "e17_bb_fade_bt_1d":   {"affinity": ["high_vol", "range"],      "bt_pf":  1.21, "cap_frac": 0.01},
     "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.01, "cap_frac": 0.02},
     # Binance re-audit 2026-05-17: these 3 were OKX-false-positives.
-    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  0.5, "cap_frac": 0.04},  # OOS 1.85 — trimmed for oi_concentration funding
+    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  0.5, "cap_frac": 0.02},  # OOS 1.85 — further trimmed for stop_hunt
     "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.22, "cap_frac": 0.06},
     "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.20, "cap_frac": 0.02},
 
@@ -162,9 +162,12 @@ ENGINE_REGISTRY: dict[str, dict] = {
                              "bt_pf": 1.75, "cap_frac": 0.00},
     "hl_settle_5m":        {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
                              "bt_pf": 1.85, "cap_frac": 0.20},   # PROMOTED 2026-05-18 post short-only fix
-    # ─── Tier 1 #4: Stop Hunt Rejection (S/R wick-sweep + reversal) ───
+    # ─── Tier 1 #4: Stop Hunt Rejection ───
+    # ACTIVATED 2026-05-18 — council Q5 unblocked: news-spike ATR filter
+    # added (STOPH_NEWS_SPIKE_ATR_MULT=3.0). Bars with range >3×ATR_14
+    # are rejected (likely macro news, not stop hunt). 1/5 was YES pre-fix.
     "stop_hunt":           {"affinity": ["range", "chop", "high_vol"],
-                             "bt_pf": 3.00, "cap_frac": 0.00},
+                             "bt_pf": 3.00, "cap_frac": 0.02},
     # ─── Tier 1 #5: VPOC Retest (naked weekly POC magnet) ───
     # ACTIVATED 2026-05-18 — sentinel council 5/5 YES (unanimous activation vote)
     "vpoc_retest":         {"affinity": ["range", "chop", "trend_up", "trend_down"],
