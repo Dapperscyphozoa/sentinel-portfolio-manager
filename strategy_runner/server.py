@@ -283,9 +283,15 @@ class Handler(BaseHTTPRequestHandler):
                 coin = row["coin"]
                 size_coin = float(row["size_coin"])
                 try:
-                    # Get current mark for the close_px record
-                    px = BUS.markprice(coin)
-                    close_px = float(px) if px else float(row["open_px"])
+                    # Get current mark for the close_px record.
+                    # BUS.markprice returns a dict {hl_mid, binance_mid, ...}, NOT a scalar.
+                    # Pre-2026-05-18 this fell through to row["open_px"] which made every
+                    # force_closed PnL look like $0.00 — masked real losses on red-engine cull.
+                    px = BUS.markprice(coin) or {}
+                    if isinstance(px, dict):
+                        close_px = float(px.get("hl_mid") or px.get("binance_mid") or row["open_px"])
+                    else:
+                        close_px = float(px) if px else float(row["open_px"])
                 except Exception:
                     close_px = float(row["open_px"])
                 try:
@@ -315,12 +321,20 @@ class Handler(BaseHTTPRequestHandler):
                 # Mark closed in DB + record close in closures table if it exists
                 ts_now = time.time()
                 pnl = (close_px - float(row["open_px"])) * size_coin * (1 if row["is_long"] else -1)
+                # Fees: round-trip taker (entry already paid at open, exit is taker via market_close)
+                # Default HL taker fee 0.045% per side. We can only record exit-side here unless
+                # extras_json has entry_fee already; fall back to 2x taker as estimate.
+                FORCE_CLOSE_FEE_RATE = 0.00045
+                notional = float(row["open_px"]) * size_coin
+                fees_usd = notional * FORCE_CLOSE_FEE_RATE * 2  # entry + exit estimate
+                pnl_net = pnl - fees_usd  # subtract fees from gross
                 try:
                     extras = json.loads(row["extras_json"] or "{}")
                 except Exception:
                     extras = {}
                 extras["force_closed"] = {"reason": reason, "actor": actor, "ts": ts_now,
-                                          "close_px": close_px, "pnl_usd": pnl}
+                                          "close_px": close_px, "pnl_usd_gross": pnl,
+                                          "pnl_usd_net": pnl_net, "fees_usd": fees_usd}
                 CONN.execute(
                     "UPDATE trades SET status=?, extras_json=? WHERE cloid=?",
                     ("closed", json.dumps(extras, default=str), cloid)
@@ -331,13 +345,14 @@ class Handler(BaseHTTPRequestHandler):
                         "close_ts, open_px, close_px, size_coin, pnl_usd, fees_usd, close_reason, extras_json) "
                         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (cloid, row["strategy"], coin, row["is_long"], row["open_ts"], ts_now,
-                         row["open_px"], close_px, size_coin, pnl, 0.0,
+                         row["open_px"], close_px, size_coin, pnl_net, fees_usd,
                          f"force_close:{reason}", json.dumps(extras, default=str))
                     )
                 except Exception:
                     log.exception("closures insert failed for %s", cloid)
                 results.append({"cloid": cloid, "coin": coin, "ok": True,
-                                "close_px": close_px, "pnl_usd": round(pnl, 2)})
+                                "close_px": close_px, "pnl_usd": round(pnl_net, 4),
+                                "fees_usd": round(fees_usd, 4)})
             return _json(self, 200, {"ok": True, "n_processed": len(cloids), "results": results})
 
         if path == "/precog/webhook":

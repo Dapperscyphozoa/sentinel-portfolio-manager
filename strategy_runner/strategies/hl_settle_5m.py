@@ -52,19 +52,46 @@ HL_SETTLE_FUNDING_MIN_ABS = float(os.environ.get("HL_SETTLE_FUNDING_MIN_ABS", "1
 HL_SETTLE_MAKER_ONLY = os.environ.get("HL_SETTLE_MAKER_ONLY", "1") == "1"
 HL_SETTLE_SPREAD_BPS_MAX = float(os.environ.get("HL_SETTLE_SPREAD_BPS_MAX", "5.0"))
 HL_SETTLE_SL_PCT = float(os.environ.get("HL_SETTLE_SL_PCT", "0.003"))   # 0.3% — SYMMETRIC fix 2026-05-18
-HL_SETTLE_TP_PCT = float(os.environ.get("HL_SETTLE_TP_PCT", "0.003"))   # 0.3% — small, fast
+HL_SETTLE_TP_PCT = float(os.environ.get("HL_SETTLE_TP_PCT", "0.004"))   # widened 0.3→0.4% (sniper conversion 2026-05-18)
 # R:R rebalance 2026-05-18: original 0.5/0.3 was structurally negative-EV.
 # At 28 paper trades WR was 60.7% (good) but avg loss 0.58% > avg win 0.35%
 # = -$0.17 net. Symmetric 0.3/0.3 gives positive EV at WR > 50% pre-fees.
+# 2026-05-18 sniper conversion: widened TP to 0.4% to cut fee-as-pct-of-win
+# from 30% → 22%. Live SL/TP fill data showed TP fills 0.30-0.59% (mean 0.35%)
+# so 0.4% target is reachable without losing fill rate. R:R now 0.4:0.3 = 1.33,
+# break-even WR = 42.9%. Short-only book hit 75% live; cushion is now 32pp.
 HL_SETTLE_MAX_HOLD_MIN = int(os.environ.get("HL_SETTLE_MAX_HOLD_MIN", "30"))
 
+# Sniper conversion 2026-05-18 (council audit n=55 live):
+# LONG WR 38.7% (12/31) vs SHORT WR 75.0% (18/24). 36pp direction asymmetry.
+# Mechanism: alt-crypto bias is bearish/sideways during sample → mechanical
+# longs into negative-funding settlements don't follow through, mechanical
+# shorts into positive-funding settlements do. Engine is a directional bet
+# disguised as a market-neutral funding play. Ban longs until regime shifts
+# and the long book recovers a tradeable WR on n≥30.
+HL_SETTLE_SHORT_ONLY = os.environ.get("HL_SETTLE_SHORT_ONLY", "1") == "1"
 
-# Universe — coins with active HL funding + reasonable liquidity
+
+# Live-validated universe (council audit 2026-05-18).
+# Winners on live data (n=55 closures, short-only WR 75%):
+#   WIF 9/13, DOT 5/6, SOL 2/3, JUP 1/1, SEI 1/1, DOGE 3/5, NEAR 1/2, BNB 1/2
+# Marginal (kept on probation, monitor at n=20):
+#   AVAX 6/10 (60% WR, slightly net negative)
+# Banned bleeders (1/12 WR collective, -$1.39 cumulative):
+#   LINK 0/3, LTC 0/2, OP 1/3, BTC 0/1, APT 0/1, ARB 0/1, TIA 0/1
+# Untraded so far (allowed by default — observe before judging):
+#   ETH XRP INJ kPEPE kSHIB kBONK AAVE UNI WLD ORDI PYTH ATOM SUI
 DEFAULT_UNIVERSE = [
-    "BTC", "ETH", "SOL", "BNB", "XRP", "DOGE", "AVAX", "LINK", "LTC", "DOT",
-    "NEAR", "INJ", "SUI", "APT", "ARB", "OP", "SEI", "TIA", "WIF", "JUP",
-    "kPEPE", "kSHIB", "kBONK", "AAVE", "UNI", "WLD", "ORDI", "PYTH", "ATOM",
+    # Tier 1 — live-validated short edges
+    "WIF", "DOT", "SOL", "JUP", "SEI", "DOGE", "NEAR", "BNB",
+    # Probation — live-mixed, retain for sample growth
+    "AVAX",
+    # Untraded — let them earn a sample before ruling
+    "ETH", "XRP", "SUI", "INJ", "kPEPE", "kSHIB", "kBONK",
+    "AAVE", "UNI", "WLD", "ORDI", "PYTH", "ATOM",
 ]
+# Coins explicitly banned at runtime — bleeders from live audit n=55
+HL_SETTLE_COIN_DENYLIST = {"LINK", "LTC", "OP", "BTC", "APT", "ARB", "TIA"}
 
 
 def _minutes_to_settle(now_ms: int) -> tuple[int, int]:
@@ -87,6 +114,10 @@ class HLSettle5m(StrategyBase):
 
     @classmethod
     def evaluate(cls, coin: str, bus) -> Optional[Signal]:
+        # Coin denylist — bleeders from live audit
+        if coin in HL_SETTLE_COIN_DENYLIST:
+            return None
+
         # Latest funding rate (sign tells us who pays)
         try:
             funding = bus.funding(coin, hours=1)
@@ -148,6 +179,10 @@ class HLSettle5m(StrategyBase):
             # in_post: trade AGAINST mechanical direction (the overshoot fade)
             is_long = rate_now > 0  # funding>0 → mechanical sold → buy the dip
             reason_tag = f"post_T+{since_last}m_rate={rate_now:+.2e}"
+
+        # Sniper conversion: drop long signals (council audit 2026-05-18)
+        if HL_SETTLE_SHORT_ONLY and is_long:
+            return None
 
         try:
             mp = bus.markprice(coin)
