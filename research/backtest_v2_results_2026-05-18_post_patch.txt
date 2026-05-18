@@ -1,0 +1,138 @@
+====================================================================================================
+OOS engine backtest v2 — 2026-05-18 05:22:31 UTC
+Universe: up to 47 coins / TF
+Trade model: open close[t], walk forward, SL/TP/time exit
+             fees 0.0900% round-trip, notional $120/trade on $480
+====================================================================================================
+
+Pulling per-TF data ...
+  1d: 20 coins, bars min=187 med=201 max=201
+  4h: 20 coins, bars min=205 med=205 max=205
+  1h: 20 coins, bars min=220 med=220 max=220
+
+Backtesting engines ...
+  e01_zfade3s_tu_1d          tf= 1d  n=   8  (0.3s) 
+  e07_zfade2s_tu_1d          tf= 1d  n=  32  (0.3s) 
+  e08_dip3d10_td_1d          tf= 1d  n=  64  (0.2s) 
+  e09_pump3d10_td_1d         tf= 1d  n=  23  (0.2s) 
+  e16_bb_fade_hv_1d          tf= 1d  n=  37  (0.3s) 
+  e17_bb_fade_bt_1d          tf= 1d  n=  85  (0.4s) 
+  e01_zfade3s_tu_4h          tf= 4h  n=  19  (0.3s) 
+  e07_zfade2s_tu_4h          tf= 4h  n=  62  (0.3s) 
+  e08_dip3d7_td_4h           tf= 4h  n=  22  (0.2s) 
+  e16_bb_fade_hv_4h          tf= 4h  n=   0  (0.3s) 
+  e17_bb_fade_bt_4h          tf= 4h  n=  34  (0.3s) 
+  stop_hunt                  tf= 1h  n=   0  (0.0s) 
+  vpoc_retest                tf= 1h  n=   0  (0.0s) 
+  oi_concentration           tf= 1h  n=   0  (0.0s) 
+Kronos disabled: No module named 'model'
+  ict_confluence_4h          tf= 4h  n=  74  (0.5s) 
+  ict_confluence_1d          tf= 1d  n=  25  (0.5s) 
+  donchian                   tf= 1h  n=   3  (0.0s) 
+
+====================================================================================================
+SUMMARY (full-sample)
+====================================================================================================
+engine                     tf      n   WR     PF   E[R]  maxDD    net_$
+---------------------------------------------------------------------------
+e01_zfade3s_tu_1d          1d      8  50%   0.78  -0.11    4.0   -10.74
+e07_zfade2s_tu_1d          1d     32  56%   0.76  -0.09    4.0   -36.19
+e08_dip3d10_td_1d          1d     64  28%   0.30  -0.42   30.9  -324.45
+e09_pump3d10_td_1d         1d     23  78%   1.64  +0.14    1.8   +38.62
+e16_bb_fade_hv_1d          1d     37  62%   2.70  +0.25    1.0  +111.75
+e17_bb_fade_bt_1d          1d     85  60%   1.54  +0.11    1.8  +108.50
+e01_zfade3s_tu_4h          4h     19  42%   0.61  -0.11    2.7   -24.01
+e07_zfade2s_tu_4h          4h     62  53%   0.67  -0.07    6.5   -52.41
+e08_dip3d7_td_4h           4h     22  14%   0.09  -0.30    6.7   -78.04
+e16_bb_fade_hv_4h          4h   --- 0 trades ---
+e17_bb_fade_bt_4h          4h     34  47%   0.60  -0.06    3.8   -25.41
+stop_hunt                  1h   --- 0 trades ---
+vpoc_retest                1h   --- 0 trades ---
+oi_concentration           1h   --- 0 trades ---
+ict_confluence_4h          4h     74  54%   2.67  +0.82    9.6  +118.13
+ict_confluence_1d          1d     25  48%   2.10  +0.55    7.8  +129.77
+donchian                   1h      3  67%   3.65  +0.14    0.2    +0.42
+
+====================================================================================================
+WALK-FORWARD: first half vs second half (split at median entry_idx)
+====================================================================================================
+engine                     tf  | first  n  WR    PF   E[R]   net_$      | second n  WR    PF   E[R]   net_$     
+---------------------------------------------------------------------------------------------------------
+e01_zfade3s_tu_1d          1d  |    5   60%   1.07  +0.03    +1.59      |    3   33%   0.49  -0.34   -12.32     
+e07_zfade2s_tu_1d          1d  |   18   56%   0.59  -0.15   -32.73      |   14   57%   0.95  -0.02    -3.47     
+e08_dip3d10_td_1d          1d  |   42   10%   0.03  -0.80  -401.13      |   22   64%   2.50  +0.29   +76.68     
+e09_pump3d10_td_1d         1d  |   12   83%   2.05  +0.18   +25.50      |   11   73%   1.36  +0.10   +13.12     
+e16_bb_fade_hv_1d          1d  |   20   50%   1.38  +0.10   +23.59      |   17   76%  22.96  +0.43   +88.16     
+e17_bb_fade_bt_1d          1d  |   45   64%   1.94  +0.17   +92.08      |   40   55%   1.16  +0.03   +16.42     
+e01_zfade3s_tu_4h          4h  |   10   20%   0.22  -0.22   -26.41      |    9   67%   1.09  +0.02    +2.41     
+e07_zfade2s_tu_4h          4h  |   32   44%   0.32  -0.18   -69.08      |   30   63%   1.28  +0.05   +16.67     
+e08_dip3d7_td_4h           4h  |   12   25%   0.12  -0.38   -54.77      |   10    0%   0.00  -0.19   -23.27     
+e17_bb_fade_bt_4h          4h  |   19   53%   0.56  -0.07   -15.34      |   15   40%   0.64  -0.06   -10.07     
+ict_confluence_4h          4h  |   38   58%   3.08  +0.94   +54.48      |   36   50%   2.29  +0.69   +63.65     
+ict_confluence_1d          1d  |   13   62%   3.23  +0.88  +114.48      |   12   33%   1.32  +0.20   +15.30     
+donchian                   1h  |       —      —       —      —          |       —      —       —      —         
+
+====================================================================================================
+REGIME STRATIFICATION (top 6 engines by full-sample n)
+====================================================================================================
+
+e17_bb_fade_bt_1d (tf=1d, total n=85):
+  regime         n    WR     PF   E[R]    net_$
+  RANGE         50   58%   1.05  +0.01    +7.16
+  HIGH_VOL      35   63%   2.56  +0.24  +101.35
+
+ict_confluence_4h (tf=4h, total n=74):
+  regime         n    WR     PF   E[R]    net_$
+  LOW_VOL       34   50%   2.20  +0.66   +26.45
+  RANGE         16   56%   3.00  +0.92   +34.77
+  TREND_DOWN    13   77%   7.73  +1.65   +61.85
+  TREND_UP       9   44%   1.82  +0.48    -0.25
+  CHOP           2    0%   0.00  -1.05    -4.69
+
+e08_dip3d10_td_1d (tf=1d, total n=64):
+  regime         n    WR     PF   E[R]    net_$
+  TREND_DOWN    61   30%   0.31  -0.42  -307.79
+  HIGH_VOL       3    0%   0.00  -0.46   -16.66
+
+e07_zfade2s_tu_4h (tf=4h, total n=62):
+  regime         n    WR     PF   E[R]    net_$
+  TREND_UP      62   53%   0.67  -0.07   -52.41
+
+e16_bb_fade_hv_1d (tf=1d, total n=37):
+  regime         n    WR     PF   E[R]    net_$
+  HIGH_VOL      37   62%   2.70  +0.25  +111.75
+
+e17_bb_fade_bt_4h (tf=4h, total n=34):
+  regime         n    WR     PF   E[R]    net_$
+  RANGE         34   47%   0.60  -0.06   -25.41
+
+e07_zfade2s_tu_1d (tf=1d, total n=32):
+  regime         n    WR     PF   E[R]    net_$
+  TREND_UP      32   56%   0.76  -0.09   -36.19
+
+ict_confluence_1d (tf=1d, total n=25):
+  regime         n    WR     PF   E[R]    net_$
+  TREND_DOWN     9   44%   1.29  +0.17   +44.69
+  RANGE          6   17%   0.48  -0.44    -6.09
+  HIGH_VOL       5   80%   9.82  +1.78   +60.78
+  TREND_UP       5   60%   5.61  +1.22   +30.39
+
+====================================================================================================
+SKIPPED ENGINES (untestable — require data not currently captured)
+====================================================================================================
+  cascade_sniper_hl          needs liq stream + markprice history (liq feed dead)
+  hlp_fade                   needs HLP positioning history (only current snapshots cached)
+  hl_settle_5m               needs funding + markprice history (5m TF + multi-deps)
+  liq_cascade                needs liq stream (feed dead — DATA_VENUE=okx, subscribe failed)
+  cex_dex_arb                needs multi-venue funding + markprice history
+  fmom                       needs 48h funding history (only ~34h cached, REST backfill not impl)
+
+====================================================================================================
+CAVEATS
+====================================================================================================
+• In-sample over recent 200×1d (~6.6 mo), 205×4h (~34d), 220×1h (~9d).
+• Walk-forward is 2-window split on small samples; not a true OOS validation.
+• Single-engine isolation — no portfolio-level coin-lock contention modeled.
+• Conservative: SL hit before TP on tied bar; no slippage; flat 0.09% RT fee.
+• Universe coverage varies (~20 coins with full 1d, fewer with 4h/1h).
+• Donchian holds up to 480 bars on 1h — most signals can't resolve in 220-bar window.
