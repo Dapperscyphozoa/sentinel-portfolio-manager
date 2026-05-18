@@ -71,6 +71,44 @@ class CheckResult:
 #   YELLOW — honest PF 1.0-1.4 — paper mode (LIVE=0 env)
 #   RED    — honest PF < 1.0 — halted (ENABLED=0 env)
 #   UNTESTED — no honest backtest possible (needs custom harness)
+
+
+# ── Low-liquidity guard (sentinel-born 2026-05-18) ─────────────────────────
+# Council Q1 verdict (5/6 voters): 5 of 5 recent live losses (AVAX/INJ/WIF/
+# TIA/OP) shared "mid-cap alt during thin liquidity" pattern. Add a global
+# gate that rejects entries on coins below MIN_24H_VOL_USD (default $50M).
+# Fail-open: if signal-bus volume unreachable, do NOT block (avoid bus-down
+# being a trading halt).
+
+import functools
+import urllib.request as _urlreq
+_VOL_CACHE: dict[str, tuple[float, float]] = {}   # coin -> (vol_usd, fetched_ts)
+_VOL_TTL_SEC = 300
+
+def _fetch_24h_vol_usd(coin: str) -> Optional[float]:
+    """Compute 24h notional volume in USD from signal-bus 1h klines."""
+    now = time.time()
+    cached = _VOL_CACHE.get(coin)
+    if cached and (now - cached[1]) < _VOL_TTL_SEC:
+        return cached[0]
+    bus_url = os.environ.get("SIGNAL_BUS_URL", "").rstrip("/")
+    if not bus_url:
+        return None
+    try:
+        url = f"{bus_url}/candles/{coin}/1h?n=24"
+        with _urlreq.urlopen(url, timeout=3) as r:
+            import json as _j
+            bars = _j.loads(r.read())
+        if not bars or len(bars) < 12:
+            return None
+        # volume × close = USD notional
+        usd_vol = sum(float(b.get("volume", 0)) * float(b.get("close", 0)) for b in bars)
+        _VOL_CACHE[coin] = (usd_vol, now)
+        return usd_vol
+    except Exception as e:
+        log.debug("vol fetch failed for %s: %s", coin, e)
+        return None
+
 ENGINE_REGISTRY: dict[str, dict] = {
     # ─── GREEN: real edge (3 engines) ───
     # cap_frac REBALANCED 2026-05-18 per council promotion audit:
@@ -98,12 +136,12 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "e17_bb_fade_bt_1d":   {"affinity": ["high_vol", "range"],      "bt_pf":  1.21, "cap_frac": 0.01},
     "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.01, "cap_frac": 0.02},
     # Binance re-audit 2026-05-17: these 3 were OKX-false-positives.
-    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  0.5, "cap_frac": 0.07},  # OOS 1.85
+    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  0.5, "cap_frac": 0.06},  # OOS 1.85
     "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.22, "cap_frac": 0.06},
     "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.20, "cap_frac": 0.02},
 
     # ─── UNTESTED: low weight, monitor live (2 engines) ───
-    "liq_cascade":  {"affinity": ["trend_up", "trend_down"],         "bt_pf": 1.30, "cap_frac": 0.10},  # event-driven, sentinel-born
+    "liq_cascade":  {"affinity": ["trend_up", "trend_down"],         "bt_pf": 1.30, "cap_frac": 0.05},  # event-driven, sentinel-born
     "e16_bb_fade_hv_4h":   {"affinity": ["high_vol"],               "bt_pf":  1.50, "cap_frac": 0.02},  # n=1 BT only, low weight
 
     # ─── RED: honest PF < 1.0 — halted via STRATEGY_<NAME>_ENABLED=0 env ───
@@ -115,8 +153,10 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "cex_dex_arb":  {"affinity": ["range", "chop"],                  "bt_pf": 0.00, "cap_frac": 0.00},
     "cascade_sniper_hl":   {"affinity": ["high_vol", "trend_up", "trend_down", "range", "chop"], "bt_pf": 0.00, "cap_frac": 0.00},
     # ─── World-first: HLP Vault Fade (Council #1 pick, Tier 1 ship-first) ───
+    # ACTIVATED 2026-05-18 — sentinel council 3/5 YES; council caveat:
+    # validate /hlp poll latency < 1s before first live fire (operator action)
     "hlp_fade":            {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 2.50, "cap_frac": 0.00},
+                             "bt_pf": 2.50, "cap_frac": 0.03},
     # ─── Tier 1 #2: Funding Momentum (2nd-derivative funding signal) ───
     "fmom":                {"affinity": ["trend_up", "trend_down", "range", "chop"],
                              "bt_pf": 1.75, "cap_frac": 0.00},
@@ -126,8 +166,9 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "stop_hunt":           {"affinity": ["range", "chop", "high_vol"],
                              "bt_pf": 3.00, "cap_frac": 0.00},
     # ─── Tier 1 #5: VPOC Retest (naked weekly POC magnet) ───
+    # ACTIVATED 2026-05-18 — sentinel council 5/5 YES (unanimous activation vote)
     "vpoc_retest":         {"affinity": ["range", "chop", "trend_up", "trend_down"],
-                             "bt_pf": 1.90, "cap_frac": 0.00},
+                             "bt_pf": 1.90, "cap_frac": 0.03},
     # ─── Tier 1 #6: OI Concentration (pre-cascade detector, v1 vol-proxy) ───
     "oi_concentration":    {"affinity": ["high_vol", "range", "chop"],
                              "bt_pf": 2.75, "cap_frac": 0.00},
@@ -198,6 +239,15 @@ def check(conn, strategy: str, signal: dict, regime: dict,
     for p in open_positions:
         if p.get("coin", "").upper() == coin:
             return CheckResult(False, 0.0, "coin_locked")
+
+    # 1b) Low-liquidity guard (sentinel-born 2026-05-18, council Q1).
+    # Skip-on-missing: if SIGNAL_BUS unreachable, do NOT block. The filter is
+    # an edge improvement, not a safety gate — fail-open preserves uptime.
+    min_vol_usd = _f("MIN_24H_VOL_USD", 50_000_000.0)
+    if min_vol_usd > 0:
+        v = _fetch_24h_vol_usd(coin)
+        if v is not None and v < min_vol_usd:
+            return CheckResult(False, 0.0, f"low_liquidity:{v/1e6:.1f}M<{min_vol_usd/1e6:.0f}M")
 
     # 2) Global cap
     max_global = _i("MAX_OPEN_POSITIONS", 20)
