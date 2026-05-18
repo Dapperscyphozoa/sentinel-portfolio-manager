@@ -260,6 +260,23 @@ class ICT_Confluence_4h(StrategyBase):
     # persists past n≥30 live trades).
     import os as _os
     SHORT_ONLY: bool = _os.environ.get("ICT_4H_SHORT_ONLY", "0") == "1"
+    # Council Q2 funding-polarity gate (opt-in, default off). Mixed council
+    # vote on long-side asymmetry fix — operator can A/B test:
+    #   ICT_LONG_FUNDING_MAX   — if set, longs ONLY fire when funding < this
+    #                            (negative funding = shorts paying, supporting longs)
+    #   ICT_SHORT_FUNDING_MIN  — if set, shorts ONLY fire when funding > this
+    #                            (positive funding = longs paying, supporting shorts)
+    # Default unset (NaN) → no filter (current behaviour preserved).
+    # Safe env→float (malformed → NaN, filter disabled). Inlined because
+    # class-body cannot reference helper methods defined later.
+    try:
+        LONG_FUNDING_MAX: float = float(_os.environ.get("ICT_LONG_FUNDING_MAX", "nan"))
+    except (TypeError, ValueError):
+        LONG_FUNDING_MAX = float("nan")
+    try:
+        SHORT_FUNDING_MIN: float = float(_os.environ.get("ICT_SHORT_FUNDING_MIN", "nan"))
+    except (TypeError, ValueError):
+        SHORT_FUNDING_MIN = float("nan")
 
     # Council-set thresholds
     SWING_LB = 2
@@ -356,6 +373,23 @@ class ICT_Confluence_4h(StrategyBase):
         # Short-only gate (council promotion audit: OOS LONG WR 46.3% vs SHORT 59.5%)
         if cls.SHORT_ONLY and is_long:
             return None
+
+        # ── Council Q2 funding-polarity gate (opt-in 2026-05-18) ──
+        # Operator can enable via env. nan → disabled (default). Fail-soft:
+        # missing funding data → fall through (do not block).
+        import math as _math
+        if (not _math.isnan(cls.LONG_FUNDING_MAX) and is_long) or \
+           (not _math.isnan(cls.SHORT_FUNDING_MIN) and not is_long):
+            try:
+                f_hist = bus.funding(coin, hours=1)
+                if f_hist:
+                    rate_now = float(f_hist[-1].get("rate", 0))
+                    if is_long and rate_now >= cls.LONG_FUNDING_MAX:
+                        return None
+                    if (not is_long) and rate_now <= cls.SHORT_FUNDING_MIN:
+                        return None
+            except Exception:
+                pass    # fail-soft
 
         # SL: beyond the deepest zone edge + ATR buffer
         if is_long:
