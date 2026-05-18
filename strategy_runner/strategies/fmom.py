@@ -50,6 +50,11 @@ FMOM_MAX_HOLD_H = int(os.environ.get("FMOM_MAX_HOLD_H", "8"))
 # HistoricalBus forward-fills to hourly (24 per day). Threshold ensures the
 # z-score baseline can be computed regardless of cadence.
 FMOM_MIN_SAMPLES = int(os.environ.get("FMOM_MIN_SAMPLES", "30"))
+# Council Q3 (2026-05-18): unanimous on flat-funding whipsaw as residual
+# failure mode after the 3 over-firing bugs were fixed. Require minimum
+# 24h funding volatility (std of funding-rate samples) before allowing
+# signal — otherwise we are firing on noise in a regime with no edge.
+FMOM_MIN_FUNDING_VOL = float(os.environ.get("FMOM_MIN_FUNDING_VOL", "0.0005"))  # 5bps
 
 # 47-coin HL universe (those with active funding)
 DEFAULT_UNIVERSE = [
@@ -142,6 +147,20 @@ class FundingMomentum(StrategyBase):
 
         if abs(roc_z) < FMOM_ROC_Z_ENTER:
             return None
+
+        # ── Flat-funding whipsaw filter (council Q3 2026-05-18) ──
+        # Funding-rate std over the 24h window must exceed FMOM_MIN_FUNDING_VOL.
+        # In low-funding-vol regimes, the 2nd-derivative signal whipsaws on
+        # micro-fluctuations even when normalized by z-score. Add an absolute
+        # volatility floor (not just relative-to-self z-score) to bypass noise.
+        if FMOM_MIN_FUNDING_VOL > 0:
+            try:
+                funding_vol = (sum((r - sum(rate_list) / len(rate_list)) ** 2
+                                    for r in rate_list) / len(rate_list)) ** 0.5
+                if funding_vol < FMOM_MIN_FUNDING_VOL:
+                    return None
+            except (ZeroDivisionError, ValueError, TypeError):
+                pass  # malformed — fall through rather than block
 
         # Get price ROC over same window
         try:
