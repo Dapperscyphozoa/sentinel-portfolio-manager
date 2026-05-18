@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from common import config, persistence  # noqa: E402
 from monitor import spend  # noqa: E402
-from monitor.routines import health_check, daily_report, drawdown_check, lock_audit  # noqa: E402
+from monitor.routines import health_check, daily_report, drawdown_check, lock_audit, auto_demote  # noqa: E402
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -81,6 +81,8 @@ def main() -> None:
                      daemon=True, name="daily_loop").start()
     threading.Thread(target=_runner, args=("lock_audit", lock_audit.run, 300),
                      daemon=True, name="lock_audit_loop").start()
+    threading.Thread(target=_runner, args=("auto_demote", auto_demote.run, 3600),
+                     daemon=True, name="auto_demote_loop").start()
 
     port = config.get_int("HTTP_PORT", 10000)
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)

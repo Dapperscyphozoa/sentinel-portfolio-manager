@@ -255,6 +255,91 @@ class Handler(BaseHTTPRequestHandler):
                     results.append({"cloid": cloid, "ok": False, "error": f"unknown_action:{action}"})
             return _json(self, 200, {"ok": True, "action": action, "results": results})
 
+        if path == "/admin/force_close":
+            # OPERATOR-INITIATED close. Sends HL market_close on the listed
+            # cloids, then marks them closed in our DB. Auth via HALT_TOKEN
+            # (same as halt — only operator should have it). Body:
+            #   {"cloids": ["0x...", ...],     # specific positions
+            #    "reason": "string",            # logged in extras_json
+            #    "actor": "string"}
+            # Returns per-cloid result list.
+            if not halt.halt_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            cloids = body.get("cloids") or []
+            reason = body.get("reason", "operator_force_close")
+            actor = body.get("actor", "operator")
+            if not cloids:
+                return _json(self, 400, {"error": "no_cloids"})
+            from common.bus_client import BusClient as _BC
+            results = []
+            for cloid in cloids:
+                row = CONN.execute(
+                    "SELECT * FROM trades WHERE cloid=? AND status='open'",
+                    (cloid,)
+                ).fetchone()
+                if not row:
+                    results.append({"cloid": cloid, "ok": False, "error": "not_open_or_not_found"})
+                    continue
+                coin = row["coin"]
+                size_coin = float(row["size_coin"])
+                try:
+                    # Get current mark for the close_px record
+                    px = BUS.markprice(coin)
+                    close_px = float(px) if px else float(row["open_px"])
+                except Exception:
+                    close_px = float(row["open_px"])
+                try:
+                    res = TRADER.hl.market_close(coin=coin, size_coin=size_coin, cloid=cloid) if TRADER.hl else None
+                except Exception as e:
+                    log.exception("admin/force_close HL call failed cloid=%s", cloid)
+                    results.append({"cloid": cloid, "coin": coin, "ok": False, "error": f"hl_raised:{e}"})
+                    continue
+                if res is None or not res.ok:
+                    err = (res.error if res else "hl_disabled")
+                    log.error("force_close FAILED cloid=%s coin=%s err=%s", cloid, coin, err)
+                    results.append({"cloid": cloid, "coin": coin, "ok": False, "error": err})
+                    continue
+                # Cancel orphan brackets
+                try:
+                    extras = json.loads(row["extras_json"] or "{}")
+                    tp_orphan = extras.get("tp_cloid")
+                    sl_orphan = extras.get("sl_cloid")
+                    if tp_orphan and hasattr(TRADER.hl, "cancel_by_cloid"):
+                        try: TRADER.hl.cancel_by_cloid(coin, tp_orphan)
+                        except Exception: log.warning("orphan TP cancel failed")
+                    if sl_orphan and hasattr(TRADER.hl, "cancel_by_cloid"):
+                        try: TRADER.hl.cancel_by_cloid(coin, sl_orphan)
+                        except Exception: log.warning("orphan SL cancel failed")
+                except Exception:
+                    pass
+                # Mark closed in DB + record close in closures table if it exists
+                ts_now = time.time()
+                pnl = (close_px - float(row["open_px"])) * size_coin * (1 if row["is_long"] else -1)
+                try:
+                    extras = json.loads(row["extras_json"] or "{}")
+                except Exception:
+                    extras = {}
+                extras["force_closed"] = {"reason": reason, "actor": actor, "ts": ts_now,
+                                          "close_px": close_px, "pnl_usd": pnl}
+                CONN.execute(
+                    "UPDATE trades SET status=?, extras_json=? WHERE cloid=?",
+                    ("closed", json.dumps(extras, default=str), cloid)
+                )
+                try:
+                    CONN.execute(
+                        "INSERT OR IGNORE INTO closures(cloid, strategy, coin, is_long, open_ts, "
+                        "close_ts, open_px, close_px, size_coin, pnl_usd, fees_usd, close_reason, extras_json) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (cloid, row["strategy"], coin, row["is_long"], row["open_ts"], ts_now,
+                         row["open_px"], close_px, size_coin, pnl, 0.0,
+                         f"force_close:{reason}", json.dumps(extras, default=str))
+                    )
+                except Exception:
+                    log.exception("closures insert failed for %s", cloid)
+                results.append({"cloid": cloid, "coin": coin, "ok": True,
+                                "close_px": close_px, "pnl_usd": round(pnl, 2)})
+            return _json(self, 200, {"ok": True, "n_processed": len(cloids), "results": results})
+
         if path == "/precog/webhook":
             # HMAC verification of X-Precog-Sig (hex sha256 of body with PRECOG_WEBHOOK_SECRET)
             import hmac, hashlib
