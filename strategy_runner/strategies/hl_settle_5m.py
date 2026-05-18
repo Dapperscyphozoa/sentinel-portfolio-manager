@@ -95,7 +95,16 @@ DEFAULT_UNIVERSE = [
     "AAVE", "UNI", "WLD", "ORDI", "PYTH", "ATOM",
 ]
 # Coins explicitly banned at runtime — bleeders from live audit n=55
-HL_SETTLE_COIN_DENYLIST = {"LINK", "LTC", "OP", "BTC", "APT", "ARB", "TIA"}
+# sentinel grid sweep 2026-05-19 (n=81 live, OKX 1m replay): AVAX added.
+# AVAX was 2nd-biggest bleeder among non-denylisted coins (n=13, WR 50%,
+# net -$0.67) and removing it lifts replay PF 0.81→1.10 (+36% scaled to
+# live = 0.54→0.73, +35.8%). Reversible via HL_SETTLE_COIN_DENYLIST env.
+_DEFAULT_DENY = "LINK,LTC,OP,BTC,APT,ARB,TIA,AVAX"
+HL_SETTLE_COIN_DENYLIST = set(
+    c.strip().upper()
+    for c in os.environ.get("HL_SETTLE_COIN_DENYLIST", _DEFAULT_DENY).split(",")
+    if c.strip()
+)
 
 
 def _minutes_to_settle(now_ms: int) -> tuple[int, int]:
