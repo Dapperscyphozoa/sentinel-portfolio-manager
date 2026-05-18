@@ -465,11 +465,19 @@ class E08_dip3d_7_TD_4h(StrategyBase):
     AFFINITY = ["trend_down"]
     TF = "4h"
     UNIVERSE = DEFAULT_UNIVERSE
-    # sentinel council 2026-05-19 (4 voters; n=8 WR 0% net -$6.81 6.5h): deepen
-    # dip threshold from -7% to -10% to avoid catching falling knives whose
-    # downtrends keep extending past entry. Range-regime + 4h TF needs deeper
-    # capitulation signal.
-    _DROP_PCT = 0.10
+    # 2026-05-19 backtest reversion (180d × 43 coins, n=6720 configs):
+    # Initial sentinel council recommended drop 0.07→0.10. Empirical sweep
+    # showed this lands in the WORST zone of a U-shaped curve:
+    #   drop=5%:  PF 0.82   drop=10%: PF 0.72  ← dead zone
+    #   drop=7%:  PF 0.83   drop=12%: PF 0.58  ← deepest pit
+    #   drop=15%: PF 0.85   drop=20%: PF 2.66
+    # Walk-forward H1/H2 split reveals every deeper-drop config that wins
+    # on H1 (drop≥15 with wider RR) collapses on H2 (recent 90d, current
+    # regime). drop=20% holds OOS (H1 PF 2.79, H2 PF 1.98) but n=8 H2 is
+    # statistically meaningless. Engine is structurally broken in current
+    # regime; reverting to original 0.07 and leaving halted until regime
+    # shifts. Operator: do not reactivate without re-backtest.
+    _DROP_PCT = 0.07
     _LOOKBACK = 18   # 3 days × 6 4h bars = 18
     _HOLD_BARS = 12  # 48h
 
