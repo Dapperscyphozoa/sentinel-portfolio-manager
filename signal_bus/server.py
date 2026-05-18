@@ -174,9 +174,9 @@ class Handler(BaseHTTPRequestHandler):
                 z = compute_zscore(history, pos["net_usd"])
             return _json_resp(self, 200, {**pos, "zscore_7d": z, "history_n": len(history) if history else 0})
 
-        if path.startswith("/oi/"):
-            coin = parts[1] if len(parts) > 1 else ""
-            n = int(qs.get("n", ["60"])[0])
+        if len(parts) == 2 and parts[0] == "oi":
+            coin = parts[1].upper()
+            n = int(q.get("n", "60"))
             return _json_resp(self, 200, CACHE.get_oi(coin, n))
 
 
