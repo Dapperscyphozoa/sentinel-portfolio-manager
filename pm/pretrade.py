@@ -111,6 +111,13 @@ ENGINE_REGISTRY: dict[str, dict] = {
     # dead fsp (level-based) and fd1 (1st-derivative divergence).
     "fmom":                {"affinity": ["trend_up", "trend_down", "range", "chop"],
                              "bt_pf": 1.75, "cap_frac": 0.00},   # 1.75 midpoint of council 1.5-2.0
+    "hl_settle_5m":        {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
+                             "bt_pf": 1.85, "cap_frac": 0.00},   # 1.85 midpoint of council 1.5-2.2, MAKER ONLY
+    # ─── Tier 1 #4: Stop Hunt Rejection (S/R wick-sweep + reversal) ───
+    # Detects algorithmic stop sweeps at horizontal S/R with strict wick
+    # mechanics (≥50% bar, ≥20bps sweep, body >10bps). Expected WR 65-75%.
+    "stop_hunt":           {"affinity": ["range", "chop", "high_vol"],
+                             "bt_pf": 3.00, "cap_frac": 0.00},   # 3.0 midpoint of council 2.5-3.5
 }
 
 # CUT_ENGINES — hard-blocked from check() regardless of env. The 7 legacy

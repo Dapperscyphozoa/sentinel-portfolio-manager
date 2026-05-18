@@ -75,6 +75,22 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load fmom")
 
+    # 1.10) Stop Hunt Rejection (Tier 1 #4 — wick-reject at swept S/R)
+    try:
+        from .strategies.stop_hunt import StopHunt
+        register(StopHunt)
+        log.info("Loaded stop_hunt: %s", StopHunt.NAME)
+    except Exception:
+        log.exception("failed to load stop_hunt")
+
+    # 1.9) HL Hourly Funding Boundary (Tier 1 #3 — only HL has hourly funding)
+    try:
+        from .strategies.hl_settle_5m import HLSettle5m
+        register(HLSettle5m)
+        log.info("Loaded hl_settle_5m: %s", HLSettle5m.NAME)
+    except Exception:
+        log.exception("failed to load hl_settle_5m")
+
     # 2) Remaining keepers — liq_cascade (sentinel-born), cex_dex_arb (paper),
     #    donchian (post-sentinel build). The 7 legacy ports (fsp, vsq,
     #    range_fade, range_breakout, lh1, fd1, precog) live in _archived/
