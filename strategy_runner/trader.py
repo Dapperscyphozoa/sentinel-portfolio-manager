@@ -144,11 +144,40 @@ class Trader:
                         # Entry filled — place TP + SL brackets.
                         tp_cloid = make_cloid(strategy.CLOID_PREFIX + "tp_", sig.coin)
                         sl_cloid = make_cloid(strategy.CLOID_PREFIX + "sl_", sig.coin)
+                        # ── Liquidation-aware SL safety (operator 2026-05-18) ──
+                        # Discovered after orphan ETH position had its 10% SL placed
+                        # BELOW liq level on a 12x iso position — SL unreachable
+                        # because liq triggered first. Generic fix: ensure SL is
+                        # always at least LIQ_BUFFER_PCT above (long) / below
+                        # (short) the maintenance-margin liquidation price.
+                        # Liq formula for iso: liq_px = entry * (1 ± 1/(2L)).
+                        # Buffer 0.5% provides slack against funding drift,
+                        # mark-vs-trade px diff, and partial-fill rounding.
+                        fill_px = res.fill_px if (getattr(res, "fill_px", None)) else sig.ref_price
+                        lev = float(self.leverage) if self.leverage else 5.0
+                        try:
+                            mm_pct = 1.0 / (2.0 * lev)
+                            if sig.is_long:
+                                liq_px = fill_px * (1.0 - mm_pct)
+                                safe_sl = liq_px * 1.005   # 0.5% buffer above liq
+                                effective_sl = max(float(sig.sl_px), safe_sl)
+                            else:
+                                liq_px = fill_px * (1.0 + mm_pct)
+                                safe_sl = liq_px * 0.995   # 0.5% buffer below liq
+                                effective_sl = min(float(sig.sl_px), safe_sl)
+                            if abs(effective_sl - float(sig.sl_px)) > 1e-8:
+                                log.warning(
+                                    "SL override %s/%s: strategy_sl=%.4f below_liq=%.4f → safe_sl=%.4f (lev=%.0fx)",
+                                    strategy.NAME, sig.coin, float(sig.sl_px), liq_px, effective_sl, lev,
+                                )
+                        except Exception:
+                            log.exception("safe_sl computation failed; using strategy sl_px as-is")
+                            effective_sl = float(sig.sl_px)
                         try:
                             bracket = self.hl.place_brackets(
                                 coin=sig.coin, is_long=bool(sig.is_long),
                                 size_coin=res.size_coin or size_coin,
-                                tp_px=sig.tp_px, sl_px=sig.sl_px,
+                                tp_px=sig.tp_px, sl_px=effective_sl,
                                 ref_price=sig.ref_price,
                                 tp_cloid=tp_cloid, sl_cloid=sl_cloid,
                             )
@@ -167,6 +196,18 @@ class Trader:
                         except Exception as e:
                             log.exception("place_brackets crashed %s/%s", strategy.NAME, sig.coin)
                             bracket_status = {"error": str(e)}
+                        # Telemetry: if effective_sl diverged from strategy's sl_px,
+                        # persist effective value so position_loop monitors the
+                        # actually-active level (the strategy's intent stays in
+                        # signals table for audit).
+                        try:
+                            if 'effective_sl' in locals() and abs(effective_sl - float(sig.sl_px)) > 1e-8:
+                                self.conn.execute(
+                                    "UPDATE trades SET sl_px=? WHERE cloid=?",
+                                    (effective_sl, cloid),
+                                )
+                        except Exception:
+                            log.exception("trades.sl_px sync failed")
         except Exception as e:
             log.exception("hl.market_open raised %s/%s", strategy.NAME, sig.coin)
             err = f"hl_raised:{e}"
