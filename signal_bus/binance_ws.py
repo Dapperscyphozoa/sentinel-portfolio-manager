@@ -19,7 +19,12 @@ from .cache import Cache
 log = logging.getLogger("binance_ws")
 
 
-BINANCE_WS_BASE = "wss://fstream.binance.com/stream?streams="
+# Binance 2026 WS endpoint split (per docs/derivatives/.../Important-WebSocket-Change-Notice):
+# klines, markPrice, and !forceOrder@arr are all classified as /market streams.
+# Legacy `wss://fstream.binance.com/stream?streams=...` is being decommissioned;
+# liq (forceOrder) stopped delivering on the legacy URL ~2026-04 while klines
+# degraded gradually. Migrate to /market/stream?streams=... 2026-05-19.
+BINANCE_WS_BASE = "wss://fstream.binance.com/market/stream?streams="
 TIMEFRAMES = ("1m", "5m", "15m", "1h")
 
 
