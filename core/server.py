@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import socket
 import sys
 import threading
 import time
@@ -64,8 +65,6 @@ def _start_signal_bus():
 
 
 def _start_strategy_runner():
-    # Wait briefly for signal_bus to bind so first scan loop finds it
-    time.sleep(3.0)
     os.environ["HTTP_PORT"] = str(STRATEGY_PORT)
     try:
         from strategy_runner import server as sr_server
@@ -76,7 +75,6 @@ def _start_strategy_runner():
 
 
 def _start_pm():
-    time.sleep(1.5)
     os.environ["HTTP_PORT"] = str(PM_PORT)
     try:
         from pm import server as pm_server
@@ -87,7 +85,6 @@ def _start_pm():
 
 
 def _start_monitor():
-    time.sleep(4.5)
     os.environ["HTTP_PORT"] = str(MONITOR_PORT)
     try:
         from monitor import server as mon_server
@@ -95,6 +92,27 @@ def _start_monitor():
         mon_server.main()
     except Exception as e:
         log.exception("monitor crashed: %s", e)
+
+
+def _wait_for_port_bind(port: int, timeout: float = 30.0) -> bool:
+    """Block until localhost:port accepts a TCP connection or timeout elapses.
+
+    Used to serialize subsystem startup so that os.environ["HTTP_PORT"] (which
+    each subsystem reads inside its own main()) is not overwritten by the next
+    subsystem before the current one has read it. The previous time.sleep()
+    stagger was insufficient — signal_bus's main() does WS connects and a
+    SQLite cold-load BEFORE reading HTTP_PORT, by which point pm and
+    strategy_runner had already overwritten the env var, causing signal_bus
+    to bind the wrong port (or fail silently).
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=1.0):
+                return True
+        except OSError:
+            time.sleep(0.25)
+    return False
 
 
 # ─────────────────── Public proxy / aggregator ───────────────────
@@ -1014,14 +1032,24 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     log.info("core service starting — public port %d, internal %d/%d/%d/%d",
              PUBLIC_PORT, SIGNAL_BUS_PORT, STRATEGY_PORT, PM_PORT, MONITOR_PORT)
-    threads = []
-    for fn in (_start_signal_bus, _start_strategy_runner, _start_pm, _start_monitor):
+    # Serialize subsystem startup. Each subsystem's main() blocks on
+    # serve_forever, so we can't wait for the thread function to return —
+    # instead we wait for its TCP port to accept connections, then move on.
+    # This eliminates the os.environ["HTTP_PORT"] race that previously left
+    # signal_bus's HTTP listener silently unbound.
+    subsystems = [
+        ("signal_bus",      _start_signal_bus,      SIGNAL_BUS_PORT, 45.0),
+        ("pm",              _start_pm,              PM_PORT,         15.0),
+        ("strategy_runner", _start_strategy_runner, STRATEGY_PORT,   15.0),
+        ("monitor",         _start_monitor,         MONITOR_PORT,    15.0),
+    ]
+    for name, fn, port, timeout in subsystems:
         t = threading.Thread(target=fn, daemon=True, name=fn.__name__)
         t.start()
-        threads.append(t)
-    # Give subsystems time to bind
-    log.info("subsystems launching — waiting 8s for binds...")
-    time.sleep(8)
+        if _wait_for_port_bind(port, timeout=timeout):
+            log.info("%s bound :%d", name, port)
+        else:
+            log.error("%s failed to bind :%d within %.0fs — continuing", name, port, timeout)
     log.info("starting public HTTP on :%d", PUBLIC_PORT)
     srv = ThreadingHTTPServer(("0.0.0.0", PUBLIC_PORT), Handler)
     try:
