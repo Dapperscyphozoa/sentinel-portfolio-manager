@@ -308,12 +308,22 @@ class E16_bb_fade_HV_1d(StrategyBase):
 # ENGINE 6 (E17_1d) — bb_fade in BOTH_TRENDS, 1d
 # ============================================================
 class E17_bb_fade_BT_1d(StrategyBase):
-    """Bollinger band fade in TREND_UP or TREND_DOWN, daily.
-    Backtest PF: 1.41 (n=259). Trend-aware band reversion.
+    """Bollinger band fade — regime-gated to HIGH_VOL and RANGE only.
+
+    HISTORY: original spec gated to TREND_UP/TREND_DOWN. Backtest v2 (2026-05-18,
+    n=83 across 20 coins × 200 1d bars) showed:
+      TREND_DOWN  n=51  WR 35%  PF 0.59  net -$119
+      TREND_UP    n=28  WR 43%  PF 0.60  net  -$59
+      HIGH_VOL    n= 2  WR 50%  PF 3.00  net   +$8
+      RANGE       n= 2  WR  0%  PF 0.00  net  -$16
+    Trend regimes lost in 79/83 fires (95%). Walk-forward both halves <1.0 PF
+    (first 0.44, second 0.86). Trend-fade thesis is empirically wrong on this
+    sample. Re-gated to non-trend regimes to mirror E16's successful pattern
+    (E16 fires HIGH_VOL only, PF 2.70 n=37). E17 covers RANGE which E16 doesn't.
     """
     NAME = "e17_bb_fade_bt_1d"
     CLOID_PREFIX = "e17_"
-    AFFINITY = ["trend_up", "trend_down"]
+    AFFINITY = ["high_vol", "range"]
     TF = "1d"
     UNIVERSE = DEFAULT_UNIVERSE
     _BB_PERIOD = 20
@@ -329,7 +339,7 @@ class E17_bb_fade_BT_1d(StrategyBase):
         highs = [b["high"] for b in bars]
         lows = [b["low"] for b in bars]
         i = len(bars) - 1
-        if _regime(closes, highs, lows, i) not in ("TREND_UP", "TREND_DOWN"):
+        if _regime(closes, highs, lows, i) not in ("HIGH_VOL", "RANGE"):
             return None
         upper, _, lower = bollinger(closes, cls._BB_PERIOD, cls._BB_STD)
         if upper[-1] is None:
@@ -345,7 +355,7 @@ class E17_bb_fade_BT_1d(StrategyBase):
             fire_ts=float(bars[-1]["open_ts"]),
             fire_reason="bb_break_lo" if is_long else "bb_break_hi",
             extras={"bb_lower": lower[-1], "bb_upper": upper[-1],
-                    "regime_gate": "BOTH_TRENDS", "tf": cls.TF},
+                    "regime_gate": "HIGH_VOL_OR_RANGE", "tf": cls.TF},
         )
 
 
@@ -516,10 +526,21 @@ class E16_bb_fade_HV_4h(StrategyBase):
 # ENGINE 11 (E17_4h) — bb_fade in BOTH_TRENDS, 4h (n=550, $+5.48)
 # ============================================================
 class E17_bb_fade_BT_4h(StrategyBase):
-    """Second-biggest contributor by trade count (550 trades over 90d)."""
+    """Bollinger band fade — regime-gated to HIGH_VOL and RANGE only, 4h.
+
+    HISTORY: original spec gated to TREND_UP/TREND_DOWN. Backtest v2 (2026-05-18,
+    n=70 across 20 coins × 205 4h bars) showed:
+      TREND_UP    n=52  WR 50%  PF 0.50  net -$80
+      TREND_DOWN  n=17  WR 53%  PF 0.64  net  -$9
+      LOW_VOL     n= 1  WR 100% PF inf   net  +$6
+    Walk-forward both halves <1.0 PF (first 0.30, second 0.95). Same pattern
+    as E17_1d — trend-fade thesis empirically broken. Re-gated to mirror E16.
+    Will resume signalling under the new gate; cap_frac stays 0.00 (RED in
+    registry) until 30+ trades accumulate under the corrected gate.
+    """
     NAME = "e17_bb_fade_bt_4h"
     CLOID_PREFIX = "e17h_"
-    AFFINITY = ["trend_up", "trend_down"]
+    AFFINITY = ["high_vol", "range"]
     TF = "4h"
     UNIVERSE = DEFAULT_UNIVERSE
     _BB_PERIOD = 20
@@ -534,7 +555,7 @@ class E17_bb_fade_BT_4h(StrategyBase):
         closes = [b["close"] for b in bars]
         highs = [b["high"] for b in bars]
         lows = [b["low"] for b in bars]
-        if _regime(closes, highs, lows, len(bars) - 1) not in ("TREND_UP", "TREND_DOWN"):
+        if _regime(closes, highs, lows, len(bars) - 1) not in ("HIGH_VOL", "RANGE"):
             return None
         upper, _, lower = bollinger(closes, cls._BB_PERIOD, cls._BB_STD)
         if upper[-1] is None:
@@ -550,7 +571,7 @@ class E17_bb_fade_BT_4h(StrategyBase):
             fire_ts=float(bars[-1]["open_ts"]),
             fire_reason="bb_break_lo" if is_long else "bb_break_hi",
             extras={"bb_lower": lower[-1], "bb_upper": upper[-1],
-                    "regime_gate": "BOTH_TRENDS", "tf": cls.TF},
+                    "regime_gate": "HIGH_VOL_OR_RANGE", "tf": cls.TF},
         )
 
 

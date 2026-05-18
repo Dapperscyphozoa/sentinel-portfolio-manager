@@ -80,11 +80,11 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  2.2, "cap_frac": 0.41},  # WR 81% — strongest non-ICT
 
     # ─── WATCH: green by PF but suspect IS/OOS or undersize n (2 engines) ───
-    "e16_bb_fade_hv_1d":   {"affinity": ["high_vol"],               "bt_pf":  5.35, "cap_frac": 0.18},  # IS 0.24 / OOS 2.97 — possibly regime-fitted
-    "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.29, "cap_frac": 0.17},  # n=20 undersize
+    "e16_bb_fade_hv_1d":   {"affinity": ["high_vol"],               "bt_pf":  5.35, "cap_frac": 0.30},  # PROMOTED 2026-05-18: backtest_v2 confirms PF 2.70 n=37, walk-forward 1.38→22.96
+    "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.29, "cap_frac": 0.05},  # DEMOTED 2026-05-18: backtest_v2 n=8 WR 50% PF 0.78; walk-forward 1.07→0.49
 
     # ─── YELLOW: marginal — paper mode only (LIVE=0 env, 5 engines) ───
-    "e17_bb_fade_bt_1d":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.21, "cap_frac": 0.02},
+    "e17_bb_fade_bt_1d":   {"affinity": ["high_vol", "range"],      "bt_pf":  1.21, "cap_frac": 0.02},  # regime gate inverted 2026-05-18 per backtest_v2
     "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.01, "cap_frac": 0.02},
     # Binance re-audit 2026-05-17: these 3 were OKX-false-positives. Paper-mode pending live evidence.
     "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  0.5, "cap_frac": 0.02},  # OKX 0.58 → Binance 1.61 (OOS 0.96)
@@ -97,7 +97,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
 
     # ─── RED: honest PF < 1.0 — halted via STRATEGY_<NAME>_ENABLED=0 env ───
     "e08_dip3d7_td_4h":    {"affinity": ["trend_down"],             "bt_pf":  0.93, "cap_frac": 0.00},  # Binance audit 0.93 (OOS 2.01 — recent strength)
-    "e17_bb_fade_bt_4h":   {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.86, "cap_frac": 0.00},  # confirmed RED both venues
+    "e17_bb_fade_bt_4h":   {"affinity": ["high_vol", "range"],      "bt_pf":  0.86, "cap_frac": 0.00},  # regime gate inverted 2026-05-18; cap stays 0 pending 30+ trades under new gate
     "donchian":            {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.01, "cap_frac": 0.00},  # confirmed: WR 4% Binance, WR 6.8% OKX
     "cex_dex_arb":  {"affinity": ["range", "chop"],                  "bt_pf": 0.00, "cap_frac": 0.00},  # halted: bt_pf=0, lookahead history
     "cascade_sniper_hl":   {"affinity": ["high_vol", "trend_up", "trend_down", "range", "chop"], "bt_pf": 0.00, "cap_frac": 0.00},  # halted: bt_pf=0, untested
