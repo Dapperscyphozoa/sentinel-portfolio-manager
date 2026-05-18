@@ -182,6 +182,16 @@ def check(conn, strategy: str, signal: dict, regime: dict,
     if strategy in CUT_ENGINES:
         return CheckResult(False, 0.0, "engine_cut_by_audit")
 
+    # 0b) Operator-controlled coin blocklist — env var BLOCKED_COINS=BTC,INJ,OP,...
+    # Used to halt bleeders mid-run without code changes or per-strategy halts.
+    # Comma-separated; case-insensitive; whitespace-tolerant.
+    # Empty / unset → no coins blocked.
+    blocked_raw = os.environ.get("BLOCKED_COINS", "")
+    if blocked_raw:
+        blocked = {c.strip().upper() for c in blocked_raw.split(",") if c.strip()}
+        if coin in blocked:
+            return CheckResult(False, 0.0, "coin_blocked_operator")
+
     # 1) 1_GLOBAL COIN LOCK — 1 position per coin across all engines
     for p in open_positions:
         if p.get("coin", "").upper() == coin:
