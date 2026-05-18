@@ -352,12 +352,34 @@ class Trader:
                     log.exception("cancel SL orphan failed")
 
         # PAPER (or live success): mark closed and write closure row
-        pnl = (close_px - open_px) * size_coin * (1 if is_long else -1)
+        # ─── Fee accounting (matches LIVE economics in paper mode) ───
+        # HL standard taker fee: 0.045% per side. Maker: 0.015% per side.
+        # If extras.maker_only_recommended is True, charge maker on entry, taker on exit
+        # (since exits are unconditional market closes).
+        TAKER_FEE_RATE = 0.00045
+        MAKER_FEE_RATE = 0.00015
+        try:
+            extras_dict = json.loads(trade_row["extras_json"] or "{}") if trade_row["extras_json"] else {}
+            inner_extras = extras_dict.get("extras", {}) if isinstance(extras_dict, dict) else {}
+            maker_entry = bool(inner_extras.get("maker_only_recommended"))
+        except (json.JSONDecodeError, KeyError, TypeError):
+            maker_entry = False
+        entry_fee_rate = MAKER_FEE_RATE if maker_entry else TAKER_FEE_RATE
+        exit_fee_rate = TAKER_FEE_RATE   # closes are always market (TP/SL/timeout)
+        entry_fee = abs(open_px * size_coin * entry_fee_rate)
+        exit_fee = abs(close_px * size_coin * exit_fee_rate)
+        total_fees = entry_fee + exit_fee
+        gross_pnl = (close_px - open_px) * size_coin * (1 if is_long else -1)
+        pnl = gross_pnl - total_fees
         self.conn.execute("UPDATE trades SET status='closed' WHERE cloid=?", (cloid,))
         self.conn.execute(
             "INSERT INTO closures(cloid,strategy,coin,is_long,open_ts,close_ts,open_px,close_px,size_coin,"
             "pnl_usd,fees_usd,close_reason,extras_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (cloid, strategy, coin, int(is_long), float(trade_row["open_ts"]), ts,
-             open_px, close_px, size_coin, pnl, 0.0, reason, "{}"),
+             open_px, close_px, size_coin, pnl, total_fees, reason,
+             json.dumps({"gross_pnl": round(gross_pnl, 4),
+                          "entry_fee_rate": entry_fee_rate,
+                          "maker_entry": maker_entry})),
         )
-        log.info("closed %s/%s %s pnl=%.2f", strategy, coin, reason, pnl)
+        log.info("closed %s/%s %s pnl=%.4f gross=%.4f fees=%.4f maker_entry=%s",
+                 strategy, coin, reason, pnl, gross_pnl, total_fees, maker_entry)

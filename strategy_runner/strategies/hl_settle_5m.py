@@ -51,8 +51,11 @@ HL_SETTLE_POST_END_MIN = int(os.environ.get("HL_SETTLE_POST_END_MIN", "30"))  # 
 HL_SETTLE_FUNDING_MIN_ABS = float(os.environ.get("HL_SETTLE_FUNDING_MIN_ABS", "1e-5"))
 HL_SETTLE_MAKER_ONLY = os.environ.get("HL_SETTLE_MAKER_ONLY", "1") == "1"
 HL_SETTLE_SPREAD_BPS_MAX = float(os.environ.get("HL_SETTLE_SPREAD_BPS_MAX", "5.0"))
-HL_SETTLE_SL_PCT = float(os.environ.get("HL_SETTLE_SL_PCT", "0.005"))   # 0.5%
+HL_SETTLE_SL_PCT = float(os.environ.get("HL_SETTLE_SL_PCT", "0.003"))   # 0.3% — SYMMETRIC fix 2026-05-18
 HL_SETTLE_TP_PCT = float(os.environ.get("HL_SETTLE_TP_PCT", "0.003"))   # 0.3% — small, fast
+# R:R rebalance 2026-05-18: original 0.5/0.3 was structurally negative-EV.
+# At 28 paper trades WR was 60.7% (good) but avg loss 0.58% > avg win 0.35%
+# = -$0.17 net. Symmetric 0.3/0.3 gives positive EV at WR > 50% pre-fees.
 HL_SETTLE_MAX_HOLD_MIN = int(os.environ.get("HL_SETTLE_MAX_HOLD_MIN", "30"))
 
 
