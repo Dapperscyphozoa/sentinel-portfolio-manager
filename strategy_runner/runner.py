@@ -204,6 +204,23 @@ def _load_registered() -> None:
         log.info("Loaded %d legacy strategies: %s", len(legacy_loaded), legacy_loaded)
     log.info("REGISTRY total: %d strategies (first-fire order)", len(REGISTRY))
 
+    # ── Boot-time enabled-vs-registered sanity check (council 2026-05-18) ──
+    # Caught a 48h silent outage where 29/30 engines were disabled because
+    # their STRATEGY_<NAME>_ENABLED env vars never got set. Defaulting to False
+    # silently swallowed the misconfiguration. This check makes it loud.
+    if REGISTRY:
+        enabled_engines = [s.NAME for s in REGISTRY if config.strategy_enabled(s.NAME)]
+        disabled_engines = [s.NAME for s in REGISTRY if not config.strategy_enabled(s.NAME)]
+        log.info("BOOT_GATE registered=%d enabled=%d disabled=%d",
+                 len(REGISTRY), len(enabled_engines), len(disabled_engines))
+        if len(enabled_engines) == 0:
+            log.critical(
+                "BOOT_GATE CRITICAL: 0 engines enabled. Set STRATEGY_<NAME>_ENABLED=1 "
+                "for at least one of: %s", [s.NAME for s in REGISTRY[:8]] + ["..."])
+        elif len(disabled_engines) > 0:
+            log.warning("BOOT_GATE %d engines registered but DISABLED via env: %s",
+                        len(disabled_engines), disabled_engines)
+
 
 def scan_once(bus: BusClient, pm: PMClient, on_signal, trader=None) -> int:
     """One pass through every enabled strategy × its universe.
