@@ -255,11 +255,15 @@ class Trader:
         ).fetchall()
         if not stale:
             return 0
-        # Query HL once; index by uppercased coin → size
+        # Query HL once; index by uppercased coin → size.
+        # NB: signal_bus returns position records with 'szi' (HL native field),
+        # NOT 'size_coin'. Reading the wrong field always returns 0, which
+        # silently filtered EVERY position out of live_coins for the entire
+        # session. Bug introduced in commit 0eea125 (sentinel H2 fix).
         try:
             hl_pos = self.bus.hl_positions() or []
             hl_by_coin = {
-                (p.get("coin") or "").upper(): float(p.get("size_coin", 0) or 0)
+                (p.get("coin") or "").upper(): float(p.get("szi", 0) or 0)
                 for p in hl_pos
             }
             hl_available = True
@@ -335,7 +339,7 @@ class Trader:
         live_coins = {
             (p.get("coin") or "").upper()
             for p in (hl_pos or [])
-            if (p.get("coin") and float(p.get("size_coin", 0) or 0) != 0)
+            if (p.get("coin") and float(p.get("szi", 0) or 0) != 0)
         }
         local_open = self.conn.execute(
             "SELECT id, coin, strategy, open_ts FROM trades WHERE status='open'"
@@ -536,6 +540,67 @@ class Trader:
         )
         return total_pnl - fees_usd
 
+    def unreconcile_active_hl_positions(self) -> dict:
+        """Repair helper for the szi/size_coin reconcile bug (commit
+        0eea125 → fixed 2026-05-19 ~19:55 UTC).
+
+        Scan all rows marked 'reconciled_off_book' WITHOUT a closures row
+        booked. For each, check if HL CURRENTLY has a matching open position
+        on the same coin and same direction (long/short). If so, the
+        reconcile was a false positive — flip the row back to 'open' and
+        clear the reconcile extras so position_loop resumes SL/TP monitoring.
+
+        Returns dict {scanned, restored, false_positive_left_alone}.
+        """
+        try:
+            hl_pos = self.bus.hl_positions() or []
+        except Exception:
+            log.exception("unreconcile_active_hl_positions: bus.hl_positions failed")
+            return {"scanned": 0, "restored": 0, "error": "bus_unavailable"}
+        # Index HL by coin: {coin: (szi_signed, is_long)}
+        hl_idx = {}
+        for p in hl_pos:
+            coin = (p.get("coin") or "").upper()
+            szi = float(p.get("szi", 0) or 0)
+            if not coin or szi == 0:
+                continue
+            hl_idx[coin] = (szi, szi > 0)  # is_long if szi > 0
+        # Scan reconciled rows without closures
+        rows = self.conn.execute(
+            "SELECT t.id, t.coin, t.is_long, t.strategy FROM trades t "
+            "LEFT JOIN closures c ON c.cloid = t.cloid "
+            "WHERE t.status='reconciled_off_book' AND c.id IS NULL"
+        ).fetchall()
+        scanned = len(rows)
+        restored = 0
+        left = 0
+        for r in rows:
+            coin = (r["coin"] or "").upper()
+            local_is_long = bool(r["is_long"])
+            hl_match = hl_idx.get(coin)
+            if hl_match is None:
+                left += 1
+                continue
+            _, hl_is_long = hl_match
+            if hl_is_long != local_is_long:
+                # Direction mismatch — not the same position; leave it
+                left += 1
+                continue
+            # Match: restore to 'open' so position_loop resumes monitoring
+            self.conn.execute(
+                "UPDATE trades SET status='open', "
+                "extras_json=json_set(COALESCE(extras_json,'{}'),"
+                "  '$.reconcile_unreconciled_ts',?,"
+                "  '$.reconcile_unreconcile_reason','szi_field_bug_repair') "
+                "WHERE id=?",
+                (time.time(), r["id"]),
+            )
+            restored += 1
+            log.warning("unreconcile: %s/%s id=%d → status=open (HL has matching position)",
+                        r["strategy"], coin, r["id"])
+        return {"scanned": scanned, "restored": restored,
+                "false_positive_left_alone": left}
+
     def backfill_reconciled_closures(self, since_ts: float = 0.0) -> dict:
         """One-shot retroactive: for every row in trades with status in
         ('reconciled_off_book','force_closed_unverified','closed') that has
@@ -592,12 +657,14 @@ class Trader:
         ).fetchall()
         now = time.time()
         n = 0
-        # One HL position snapshot per call (cheap) for the HL check
+        # One HL position snapshot per call (cheap) for the HL check.
+        # NB: signal_bus returns 'szi' (HL native field). 'size_coin' is our
+        # internal name on trades rows; do NOT use it here.
         try:
             hl_pos = self.bus.hl_positions()
             hl_by_coin = {
                 (p.get("coin") or "").upper(): p for p in (hl_pos or [])
-                if (p.get("coin") and float(p.get("size_coin", 0) or 0) != 0)
+                if (p.get("coin") and float(p.get("szi", 0) or 0) != 0)
             }
             hl_reachable = True
         except Exception:

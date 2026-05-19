@@ -614,6 +614,23 @@ class Handler(BaseHTTPRequestHandler):
                 "applied": (not dry_run) and total > 0,
             })
 
+        if path == "/admin/unreconcile_active_hl":
+            # REPAIR endpoint for the szi/size_coin field-name bug.
+            # Reconcile incorrectly marked actively-open HL positions as
+            # 'reconciled_off_book' because the filter was checking the
+            # wrong field name on bus.hl_positions() output. After deploying
+            # the field-name fix, run this endpoint to flip those rows back
+            # to 'open' so position_loop resumes SL/TP monitoring.
+            # Idempotent: only restores rows that actually match HL right now.
+            if not halt.halt_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            try:
+                result = TRADER.unreconcile_active_hl_positions()
+            except Exception as e:
+                log.exception("unreconcile_active_hl failed")
+                return _json(self, 500, {"error": str(e)})
+            return _json(self, 200, result)
+
         if path == "/admin/backfill_reconciled_pnl":
             # OPERATOR-INITIATED retroactive closure booking. For every trade
             # row currently in ('reconciled_off_book','force_closed_unverified',
