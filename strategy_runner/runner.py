@@ -181,6 +181,24 @@ def _load_registered() -> None:
     else:
         log.info("uzt skipped (PROVISIONAL — set STRATEGY_UZT_ENABLED=1 to load)")
 
+    # 1.14) UZT_REV — v3 ship config (REVERSAL-only, single 5R TP, Asia
+    # filter, 16-coin tier-1 universe). Backtest 120d × 30 top-30: n=41,
+    # WR 68.3%, PF 6.92, +1.707R/trade, +69.97R total. Consistency across
+    # 90d×20 / 120d×20 / 120d×30 samples (PF 5.18 → 5.69 → 6.92).
+    # Deploy paper-first: STRATEGY_UZT_REV_ENABLED=1, STRATEGY_UZT_REV_LIVE=0.
+    if _os.environ.get("STRATEGY_UZT_REV_ENABLED", "0") == "1":
+        try:
+            from .strategies.uzt_rev import UZT_REV
+            register(UZT_REV)
+            log.warning("Loaded uzt_rev v3 (PROVISIONAL, "
+                        "STRATEGY_UZT_REV_ENABLED=1, "
+                        "live=%s)",
+                        _os.environ.get("STRATEGY_UZT_REV_LIVE", "0"))
+        except Exception:
+            log.exception("failed to load uzt_rev")
+    else:
+        log.info("uzt_rev skipped (set STRATEGY_UZT_REV_ENABLED=1 to load)")
+
     # 2) Remaining keepers — liq_cascade (sentinel-born), cex_dex_arb (paper),
     #    donchian (post-sentinel build). The 7 legacy ports (fsp, vsq,
     #    range_fade, range_breakout, lh1, fd1, precog) live in _archived/
