@@ -114,6 +114,28 @@ def run(conn: sqlite3.Connection) -> dict:
             engines_seen[eng]["n_attempts"] = n
     _save_coverage(conn, cov)
 
+    # Filter audit-reported engines to (a) currently-registered engines and
+    # (b) dead-engine skiplist from env var. Historical attempts by killed
+    # engines (e.g. cross_coin_zscore, archived per SPEC §4) should not appear
+    # in audit output — they pollute the dashboard and create false signals
+    # that a dead engine is still active.
+    dead_engines = set(
+        e.strip() for e in os.environ.get(
+            "AUDIT_DEAD_ENGINES",
+            "cross_coin_zscore,UZT_REV,donchian,cascade_sniper_hl,e17_bb_fade_bt_4h,fd1"
+        ).split(",") if e.strip()
+    )
+    # Only include engines with recent activity (last 24h) AND not in dead list
+    recent_engines: set = set()
+    cutoff = now - 86400
+    for t in trades:
+        eng = t.get("strategy")
+        if not eng or eng in dead_engines:
+            continue
+        if t.get("open_ts", 0) >= cutoff:
+            recent_engines.add(eng)
+    filtered_counter = {eng: n for eng, n in counter.items() if eng in recent_engines}
+
     # Severity
     if duplicates:
         severity = "CRITICAL"
@@ -133,7 +155,7 @@ def run(conn: sqlite3.Connection) -> dict:
         "duplicate_coin_opens": duplicates,
         "stale_pending_rows": stale_pending,
         "cooldown_violations": cooldown_violations,
-        "engines_with_attempts": dict(counter),
+        "engines_with_attempts": filtered_counter,
         "halted_action": None,
     }
 
