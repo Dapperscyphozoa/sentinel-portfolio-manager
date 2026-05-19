@@ -44,11 +44,7 @@ def build_streams(symbols: Iterable[str]) -> list[str]:
         for tf in TIMEFRAMES:
             streams.append(f"{s}@kline_{tf}")
         streams.append(f"{s}@markPrice@1s")
-    # NOTE: !forceOrder@arr is intentionally NOT included here. When appended to
-    # a large combined-stream URL it lands in the smaller trailing chunk which
-    # silently fails to deliver forceOrder events (deployed 2026-05-19: 0 liqs
-    # in 1h vs sandbox-isolated 2 liqs in 25s on the same URL). Isolated onto a
-    # dedicated single-stream WS via _consume_liq() in _runner() below.
+    streams.append("!forceOrder@arr")
     return streams
 
 
@@ -140,60 +136,6 @@ def _on_mark(cache: Cache, data: dict) -> None:
             pass
 
 
-async def _consume_liq(cache: Cache) -> None:
-    """Dedicated WS for !forceOrder@arr. Isolated from the main combined-stream
-    chunks because liq events were silently dropped when appended to a large
-    multi-stream URL (see build_streams note).
-
-    Empirical (2026-05-19): the path-based single-stream URL
-    `/ws/!forceOrder@arr` accepts the connection but delivers ZERO events.
-    Only the combined-stream URL `/market/stream?streams=!forceOrder@arr`
-    works, so we use that with a single stream. Envelope is the standard
-    combined-stream `{"stream": "!forceOrder@arr", "data": {...}}` wrapper."""
-    # DEBUG BEACON 2026-05-19 — push a synthetic event so we can confirm
-    # this coroutine actually runs on the deployed container. Remove once
-    # liq stream is verified live. usd=0.0 makes the beacon obvious.
-    import time as _t
-    beacon = {
-        "ts": int(_t.time() * 1000),
-        "coin": "BEACON",
-        "side": "BEACON",
-        "qty": 0.0,
-        "price": 0.0,
-        "usd": 0.0,
-    }
-    try:
-        cache.push_liq(beacon)
-        log.warning("liq ws beacon pushed (debug)")
-    except Exception:
-        log.exception("liq ws beacon push FAILED")
-
-    url = "wss://fstream.binance.com/market/stream?streams=!forceOrder@arr"
-    backoff = 1.0
-    while True:
-        try:
-            async with websockets.connect(url, ping_interval=20, ping_timeout=20, max_size=2**22) as ws:
-                log.warning("binance liq ws connected: %s", url)
-                backoff = 1.0
-                async for raw in ws:
-                    try:
-                        msg = json.loads(raw)
-                    except Exception:
-                        continue
-                    # Combined-stream envelope: {"stream":"!forceOrder@arr","data":{"e":"forceOrder","o":{...}}}
-                    data = msg.get("data") if isinstance(msg, dict) else None
-                    if not data:
-                        continue
-                    try:
-                        _on_liq(cache, data)
-                    except Exception:
-                        log.exception("liq ws _on_liq raised; event dropped")
-        except Exception as e:
-            log.warning("binance liq ws disconnect: %s; reconnect in %.1fs", e, backoff)
-            await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 60.0)
-
-
 async def _runner(symbols: list[str], cache: Cache) -> None:
     streams = build_streams(symbols)
     # Binance recommends ≤200 streams per conn; chunk if needed
@@ -214,11 +156,7 @@ async def _runner(symbols: list[str], cache: Cache) -> None:
             else:
                 backoff = 1.0
 
-    # Run klines/markPrice chunks AND dedicated liq stream in parallel
-    await asyncio.gather(
-        *[one(c) for c in chunks],
-        _consume_liq(cache),
-    )
+    await asyncio.gather(*[one(c) for c in chunks])
 
 
 def run_in_thread(symbols: list[str], cache: Cache) -> None:

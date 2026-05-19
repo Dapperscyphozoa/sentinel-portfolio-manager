@@ -363,6 +363,17 @@ def main() -> None:
         except Exception:
             log.warning("whale_poller not started", exc_info=True)
 
+    # OKX liquidations REST poller — WS channel rejected by OKX (error 60018);
+    # REST is the only reliable path (2026-05-19 decision). Pushes into the
+    # same cache.push_liq() sink as the (dead) WS path so /liq is unaffected.
+    if config.get_bool("OKX_LIQ_POLLER_ENABLED", default=True):
+        try:
+            from signal_bus import okx_liq_poller  # noqa: E402
+            okx_liq_poller.run_in_thread(CACHE)
+            log.info("okx_liq poller started")
+        except Exception:
+            log.warning("okx_liq_poller not started", exc_info=True)
+
     port = config.get_int("HTTP_PORT", 10000)
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     log.info("signal-bus listening on :%d", port)
