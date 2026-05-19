@@ -22,7 +22,6 @@ n=75 @ rolling-PF≥2.0 → 0.05 · n=150 @ rolling-PF≥1.8 sustained → full 
 
 | Engine | Cat | bt_n | bt_PF | OOS_PF | paper_n | rolling_PF | Status |
 |---|---|---|---|---|---|---|---|
-| **cross_coin_zscore** | A | 223 | **0.99** | — | 0 | — | 🔴 **RED — PF below 1.0 over 90d** |
 | hl_cvd_aggressor | B | — | — | — | 0 | — | PENDING — needs live paper accumulation |
 | hl_depth_shock | B | — | — | — | 0 | — | PENDING — needs live paper accumulation |
 | hl_whale_frontrun | C | — | — | — | 0 | — | NEEDS_DATA (n=0/50) |
@@ -30,13 +29,11 @@ n=75 @ rolling-PF≥2.0 → 0.05 · n=150 @ rolling-PF≥1.8 sustained → full 
 | liq_cluster_hunt | C | — | — | — | 0 | — | NEEDS_DATA (n=0/40) — reclassified, no liq archive |
 | funding_triangulation | C | — | — | — | 0 | — | NEEDS_DATA (n=0/30) — reclassified, no funding archive |
 
-## First gate findings (2026-05-18)
+## Archived (killed, see SPEC §4)
 
-### 🔴 cross_coin_zscore — RED
-**90d honest backtest:** n=223, WR 45.3%, PF **0.99** (basically break-even).
-- 30d in-sample showed PF 1.37 (looked promising)
-- Decayed to PF 0.99 over 90d — classic overfit-to-recent-regime
-- **Action:** do NOT promote. Keep at cap_frac=0. Either parameter-sweep or archive.
+- **cross_coin_zscore** — KILLED 2026-05-19. Honest backtest n=223 PF 0.99. Sentinel CRITICAL unanimous (thesis broken — pair ratios not cointegrated at 5m). Removed from runtime registry, scripts, and audit routines. Do NOT re-introduce.
+
+## First gate findings (2026-05-18)
 
 ### funding_triangulation + liq_cluster_hunt — RECLASSIFIED to Category C
 - HistoricalBus cannot replay HL hourly funding (no archive)
@@ -50,10 +47,9 @@ n=75 @ rolling-PF≥2.0 → 0.05 · n=150 @ rolling-PF≥1.8 sustained → full 
 
 ## Action items
 
-1. **Halt cross_coin_zscore in registry** (still cap_frac=0 so no live capital risk, but stop firing to save compute)
-2. **Wait 14 days** for HL-only engines to accumulate paper closures
-3. **Daily re-run** of `scripts/honest_backtest_stage1.py` updates this gate
-4. **Auto-promote** any engine that hits the gate criteria via monitor routine
+1. **Wait 14 days** for HL-only engines to accumulate paper closures
+2. **Daily re-run** of `scripts/honest_backtest_stage1.py` updates this gate
+3. **Auto-promote** any engine that hits the gate criteria via monitor routine
 
 ## Critical findings
 

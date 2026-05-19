@@ -118,6 +118,7 @@ In addition to v1.0 §4 dead engines, add:
 | `cascade_sniper_hl` (v1) | Replaced by `sniper` service Variant B (separate deploy). v1 fictional PF, dead. |
 | `e17_bb_fade_bt_4h` | Honest PF 0.86 |
 | `fd1` | Honest PF 0.85, OOS 0.78 (already RED per STRATEGY_GATES.md but reaffirmed here) |
+| `cross_coin_zscore` | KILLED 2026-05-19. Honest PF 0.99 over 90d × 10 pairs (n=223). Sentinel council CRITICAL unanimous (4/4 valid voters, 100% confidence): thesis broken — crypto perp pair ratios are not cointegrated at 5m timescale; alts-vs-alts pairs (ARB/ETH, SUI/SOL, etc.) follow BTC beta and don't mean-revert. Even maximal-salvage estimate (2 cointegrated pairs, 1h TF, ADF gate, z-cross exit) projected PF ≤1.6, worst engine in green tier. Archived per operator directive. Do NOT re-register. |
 
 Do not re-port any of these.
 

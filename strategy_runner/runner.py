@@ -119,13 +119,8 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load funding_triangulation")
 
-    # 1.15) Cross-Coin Z-Score (Stage 1 #3 — pair ratio mean-revert)
-    try:
-        from .strategies.cross_coin_zscore import CrossCoinZScore
-        register(CrossCoinZScore)
-        log.info("Loaded cross_coin_zscore: %s", CrossCoinZScore.NAME)
-    except Exception:
-        log.exception("failed to load cross_coin_zscore")
+    # 1.15) Cross-Coin Z-Score — KILLED 2026-05-19 (sentinel CRITICAL unanimous,
+    #       honest backtest PF 0.99 over 90d × 10 pairs, thesis broken, see SPEC §4)
 
     # 1.16) Liq Cluster Hunt (Stage 1 #4 — predict sweep path from stacked clusters)
     try:

@@ -183,16 +183,6 @@ ENGINE_REGISTRY: dict[str, dict] = {
         "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
         "notes": "HL funding vs Binance/OKX consensus. Single-leg HL execution.",
     },
-    "cross_coin_zscore": {
-        "class": "pair_ratio_mean_reversion",
-        "affinity": ["range", "chop", "trend_up", "trend_down"],
-        "capital_fraction": 0.00,
-        "bt_pf": 1.80,
-        "bt_n": 0,
-        "min_n_for_gate": 30,
-        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
-        "notes": "ETH/BTC + 9 other pairs ratio z-score mean reversion.",
-    },
     "liq_cluster_hunt": {
         "class": "liq_cluster_predictive",
         "affinity": ["range", "chop", "high_vol", "trend_up", "trend_down"],

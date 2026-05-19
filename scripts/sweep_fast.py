@@ -19,14 +19,8 @@ SWEEPS = [
         ("INVERT+SL=1",       {"DC_INVERT": "1", "DC_SL_ATR_MULT": "1.0"},     None),
         ("INVERT+TP=ATR3",    {"DC_INVERT": "1", "DC_TP_ATR_MULT": "3.0"},     None),
     ]),
-    # cross_coin_zscore — 30d to fit time budget; smaller universe
-    ("cross_coin_zscore", 30, "ETH,SOL,BNB,AVAX,LINK,DOGE", [
-        ("baseline",          {},                                              None),
-        ("Z=1.5",             {"CCZ_Z_THRESHOLD": "1.5"},                      None),
-        ("Z=2.5",             {"CCZ_Z_THRESHOLD": "2.5"},                      None),
-        ("Z=3.0_LB=120",      {"CCZ_Z_THRESHOLD": "3.0", "CCZ_LOOKBACK_BARS": "120"}, None),
-        ("RR=3:1",            {"CCZ_TP_PCT": "0.024"},                         None),
-    ]),
+    # cross_coin_zscore — KILLED 2026-05-19, see SPEC §4
+
     # e08_dip3d7_td_4h — focus on drop threshold (the known sweet spot)
     ("e08_dip3d7_td_4h", 90, "BTC,ETH,SOL,AVAX,LINK,DOGE,ARB,APT,DOT,SUI", [
         ("baseline_drop=0.07", {},                                             {"_DROP_PCT": 0.07}),

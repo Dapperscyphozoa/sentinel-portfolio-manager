@@ -32,7 +32,7 @@ def run_backtest(strategy: str, days: int = 90, env: dict | None = None,
         # re-execs backtest_harness as if called directly.
         preload = ["import sys", f"sys.path.insert(0, {repr(str(ROOT))})"]
         # Find which module the strategy lives in
-        # All oos engines live in oos_engines; donchian, cross_coin_zscore in own files; uzt_rev separate.
+        # All oos engines live in oos_engines; donchian in its own file; uzt_rev separate.
         try:
             from strategy_runner import runner as _r
             _r._load_registered()
@@ -136,14 +136,7 @@ GRIDS = {
         ("INVERT+EMA=0", {"DC_INVERT": "1", "DC_EMA_FILTER": "0"}, None),
         ("N_ENTRY=40", {"DC_N_ENTRY": "40", "DC_N_EXIT": "20"}, None),
     ],
-    "cross_coin_zscore": [
-        ("baseline", {}, None),
-        ("Z=1.5", {"CCZ_Z_THRESHOLD": "1.5"}, None),
-        ("Z=1.0 LB=30", {"CCZ_Z_THRESHOLD": "1.0", "CCZ_LOOKBACK_BARS": "30"}, None),
-        ("Z=2.5 LB=120", {"CCZ_Z_THRESHOLD": "2.5", "CCZ_LOOKBACK_BARS": "120"}, None),
-        ("RR=1:1", {"CCZ_TP_PCT": "0.008"}, None),
-        ("RR=3:1", {"CCZ_TP_PCT": "0.024"}, None),
-    ],
+    # cross_coin_zscore — KILLED 2026-05-19, see SPEC §4
     "e17_bb_fade_bt_4h": [
         ("baseline", {}, None),
         ("BB_PERIOD=14", None, {"_BB_PERIOD": 14}),

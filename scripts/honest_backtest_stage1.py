@@ -3,9 +3,7 @@
 Three categories of Stage 1 engines, three distinct gating paths:
 
   CATEGORY A — historical data fully available (council Q2):
-    - liq_cluster_hunt        (Binance forceOrder 90d available)
-    - funding_triangulation   (multi-venue funding 90d available)
-    - cross_coin_zscore       (Binance kline 90d available)
+    - (none active — cross_coin_zscore killed 2026-05-19, see SPEC §4)
     GATE: 90d walk-forward (60/30 split), n ≥ 150 trades,
           bt_PF ≥ 1.4 AND OOS PF ≥ 1.0 → GREEN, eligible for canary
 
@@ -52,7 +50,8 @@ os.makedirs(BACKTESTS_DIR, exist_ok=True)
 
 CATEGORY_A = {     # historical backtest only — engines whose required data
                    # is replayable in HistoricalBus (klines + funding)
-    "cross_coin_zscore":     {"days": 90, "min_n": 150, "gate_pf": 1.4, "gate_oos": 1.0},
+    # cross_coin_zscore was the only Cat A entry; KILLED 2026-05-19 (SPEC §4).
+    # Category A now empty until a new historical-backtestable engine is added.
 }
 # REASSIGNED (2026-05-18): liq_cluster_hunt + funding_triangulation moved to Category C.
 # Reason: HistoricalBus does not have historical liq feed (Binance forceOrder archive
