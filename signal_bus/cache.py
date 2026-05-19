@@ -116,10 +116,10 @@ class Cache:
         # HL state
         self.hl_account: dict = {"value": 0.0, "margin_used": 0.0, "positions": []}
         self.hl_positions: list[dict] = []
-        self.hl_fills: Deque[dict] = deque(maxlen=10000)
+        self.hl_fills: Deque[dict] = deque(maxlen=3000)  # was 10000
         # HL public trades per-coin for CVD aggregator (council priority — world-first edge)
         # maxlen=6000: ~10min of trades on a busy coin like BTC
-        self.hl_trades: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=6000))
+        self.hl_trades: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=1500))  # was 6000
         # Whale tracker (Stage 1 #5 — world-first edge per Qwen3 235B +3.2%/mo)
         # whale_events: detected new opens; consumed by hl_whale_frontrun engine
         self.whale_events: Deque[dict] = deque(maxlen=2000)
@@ -127,7 +127,7 @@ class Cache:
         # L2 order book per coin (Stage 1 #6 — depth shock detection)
         # Each: {ts, bids: [{px,sz,n}, ...20], asks: [{px,sz,n}, ...20]}
         self.l2book_latest: dict[str, dict] = {}
-        self.l2book_history: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=300))
+        self.l2book_history: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=60))  # was 300
         self.last_update: dict[str, float] = {
             "binance_ws": 0.0, "hl_ws": 0.0, "binance_flush": 0.0, "liq_flush": 0.0,
             "okx_ws": 0.0, "bybit_ws": 0.0, "oi_poll": 0.0, "whale_poll": 0.0,
@@ -135,7 +135,7 @@ class Cache:
         self.ws_alive: dict[str, bool] = {"binance": False, "hl": False, "okx": False, "bybit": False}
         # OI state (HL openInterest via metaAndAssetCtxs, 60s poll)
         self.oi_latest: dict[str, dict] = {}
-        self.oi_history: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=8640))
+        self.oi_history: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=2880))  # was 8640
         self._lock = threading.RLock()
         # Sentinel fix: flush cursor for liq events. Without this, each flush
         # re-wrote every event in the ring buffer (50k×12/hour duplicates).
@@ -485,7 +485,7 @@ class Cache:
         """Rehydrate hlp_history deque from SQLite on boot. Returns total rows loaded."""
         if not hasattr(self, "hlp_history"):
             from collections import defaultdict, deque as _dq
-            self.hlp_history = defaultdict(lambda: _dq(maxlen=8640))
+            self.hlp_history = defaultdict(lambda: _dq(maxlen=2880))  # was 8640
         since = int((time.time() - 30 * 86400) * 1000)
         rows = self.db.execute(
             "SELECT coin, ts, net_usd FROM hlp_history WHERE ts >= ? ORDER BY ts ASC",
