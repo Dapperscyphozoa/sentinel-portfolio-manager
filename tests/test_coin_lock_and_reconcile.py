@@ -206,3 +206,75 @@ def test_force_close_stale_leaves_recent_rows():
     assert trader.force_close_stale() == 0
     row = conn.execute("SELECT status FROM trades WHERE cloid='fresh'").fetchone()
     assert row["status"] == "open"
+
+
+# ─── sweep_stale_pending phantom-position fix ────────────────────────────
+def test_sweep_pending_promotes_when_hl_has_position():
+    """Process crashed between INSERT 'pending' and UPDATE 'open' AFTER the
+    HL order succeeded. Sweep must recognize HL position and promote, not
+    demote (demoting releases the lock → next scan opens a duplicate).
+    """
+    _, conn = _fresh_db()
+    _insert_trade(conn, cloid="crashed", coin="APT", status="pending",
+                  open_ts=time.time() - 600)  # 10min old
+    bus = _MockBus(hl_positions=[{"coin": "APT", "size_coin": -0.5}])
+    trader = _make_trader_with_bus(conn, bus)
+    n = trader.sweep_stale_pending()
+    assert n == 1
+    row = conn.execute(
+        "SELECT status, extras_json FROM trades WHERE cloid='crashed'"
+    ).fetchone()
+    assert row["status"] == "open"
+    import json
+    ex = json.loads(row["extras_json"])
+    assert ex["recovered"] == "sweep_promoted_from_pending"
+    assert ex["hl_size_at_recover"] == -0.5
+
+
+def test_sweep_pending_demotes_when_hl_has_no_position():
+    """Order never reached HL (or was rejected) — pending row should be
+    demoted to open_failed so the lock releases."""
+    _, conn = _fresh_db()
+    _insert_trade(conn, cloid="failed", coin="APT", status="pending",
+                  open_ts=time.time() - 600)
+    bus = _MockBus(hl_positions=[])
+    trader = _make_trader_with_bus(conn, bus)
+    n = trader.sweep_stale_pending()
+    assert n == 1
+    row = conn.execute(
+        "SELECT status FROM trades WHERE cloid='failed'"
+    ).fetchone()
+    assert row["status"] == "open_failed"
+
+
+def test_sweep_pending_keeps_pending_when_bus_unavailable():
+    """Cannot query HL → safest default is leave 'pending' for next pass.
+    Demoting blindly risks the phantom-position duplicate-open bug."""
+    _, conn = _fresh_db()
+    _insert_trade(conn, cloid="unknown", coin="APT", status="pending",
+                  open_ts=time.time() - 600)
+    class _BrokenBus:
+        def hl_positions(self): raise RuntimeError("bus down")
+        def markprice(self, coin): raise RuntimeError("bus down")
+    trader = _make_trader_with_bus(conn, _BrokenBus())
+    n = trader.sweep_stale_pending()
+    assert n == 0
+    row = conn.execute(
+        "SELECT status FROM trades WHERE cloid='unknown'"
+    ).fetchone()
+    assert row["status"] == "pending"
+
+
+def test_sweep_pending_leaves_fresh_rows():
+    """Pending rows younger than max_age_s are still in-flight; don't touch."""
+    _, conn = _fresh_db()
+    _insert_trade(conn, cloid="fresh", coin="APT", status="pending",
+                  open_ts=time.time() - 30)
+    bus = _MockBus(hl_positions=[])
+    trader = _make_trader_with_bus(conn, bus)
+    n = trader.sweep_stale_pending()
+    assert n == 0
+    row = conn.execute(
+        "SELECT status FROM trades WHERE cloid='fresh'"
+    ).fetchone()
+    assert row["status"] == "pending"

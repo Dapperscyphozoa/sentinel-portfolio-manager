@@ -233,23 +233,74 @@ class Trader:
         return OpenResult(ok=(err is None), cloid=cloid, error=err)
 
     def sweep_stale_pending(self, max_age_s: int = 300) -> int:
-        """Demote any 'pending' rows older than max_age_s seconds to
-        'open_failed'. A pending row only exists transiently inside open();
-        anything older than a few minutes is from a process crash mid-call or
-        a stuck exception path. Frees the coin lock so trading can resume.
+        """Demote any 'pending' rows older than max_age_s seconds. A pending
+        row only exists transiently inside open(); anything older is from a
+        process crash mid-call or a stuck exception path.
+
+        IMPORTANT: before demoting to 'open_failed' (which releases the coin
+        lock), cross-check against HL. If HL has a position in this coin, the
+        order DID succeed before the crash — promote to 'open' (we own it)
+        rather than 'open_failed' (we don't). The latter would let a new fire
+        through and open a second position, which is the exact failure mode
+        that produced 10 duplicate APT shorts on 2026-05-17.
+
+        Failure to query HL → safe default: leave as 'pending' for next pass
+        rather than risk releasing the lock on an actually-open position.
         """
         cutoff = time.time() - max_age_s
-        cur = self.conn.execute(
-            "UPDATE trades SET status='open_failed', "
-            "extras_json=json_set(COALESCE(extras_json,'{}'), '$.open_error', 'stale_pending_swept') "
+        stale = self.conn.execute(
+            "SELECT id, cloid, coin, strategy, open_ts FROM trades "
             "WHERE status='pending' AND open_ts < ?",
             (cutoff,),
-        )
-        n = cur.rowcount if cur.rowcount is not None else 0
-        if n > 0:
-            log.warning("sweep_stale_pending: demoted %d stale 'pending' rows (>%ds old)",
-                        n, max_age_s)
-        return n
+        ).fetchall()
+        if not stale:
+            return 0
+        # Query HL once; index by uppercased coin → size
+        try:
+            hl_pos = self.bus.hl_positions() or []
+            hl_by_coin = {
+                (p.get("coin") or "").upper(): float(p.get("size_coin", 0) or 0)
+                for p in hl_pos
+            }
+            hl_available = True
+        except Exception:
+            log.exception("sweep_stale_pending: bus.hl_positions failed; "
+                          "leaving %d pending rows untouched this pass", len(stale))
+            return 0
+        demoted = 0
+        promoted = 0
+        for r in stale:
+            coin = (r["coin"] or "").upper()
+            size = hl_by_coin.get(coin, 0.0)
+            if abs(size) > 0:
+                # HL has a position — order succeeded, we crashed before
+                # marking 'open'. Recover the row.
+                self.conn.execute(
+                    "UPDATE trades SET status='open', "
+                    "extras_json=json_set(COALESCE(extras_json,'{}'),"
+                    "  '$.recovered','sweep_promoted_from_pending',"
+                    "  '$.hl_size_at_recover',?) "
+                    "WHERE id=?",
+                    (size, r["id"]),
+                )
+                promoted += 1
+                log.error("sweep_stale_pending: %s/%s cloid=%s RECOVERED — "
+                          "HL has size=%g; promoted 'pending' → 'open'",
+                          r["strategy"], coin, r["cloid"], size)
+            else:
+                self.conn.execute(
+                    "UPDATE trades SET status='open_failed', "
+                    "extras_json=json_set(COALESCE(extras_json,'{}'),"
+                    "  '$.open_error','stale_pending_swept') "
+                    "WHERE id=?",
+                    (r["id"],),
+                )
+                demoted += 1
+        if demoted or promoted:
+            log.warning("sweep_stale_pending: demoted=%d promoted=%d "
+                        "(stale=%d, hl_available=%s)",
+                        demoted, promoted, len(stale), hl_available)
+        return demoted + promoted
 
     def reconcile_with_hl(self) -> int:
         """Cross-check every local 'open' row against HL's actual position

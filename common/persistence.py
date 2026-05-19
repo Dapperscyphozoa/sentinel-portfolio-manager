@@ -127,22 +127,34 @@ def init_db(db_path: str) -> sqlite3.Connection:
     # Pre-schema migration: if older DB had duplicate (coin) where status IN
     # ('open','pending'), the unique index creation in SCHEMA would fail.
     # Demote excess rows to 'reconciled_off_book' so the lock can install.
+    #
+    # Wrapped in BEGIN IMMEDIATE / COMMIT so the SELECT + UPDATEs run as a
+    # single atomic unit. Without it, another connection could insert a new
+    # 'open' row between our SELECT-dupes and our UPDATE-demote, and the
+    # newly-inserted row would survive to violate the index that's about to
+    # be created. Audit finding 2026-05-19 (Mistral Large).
     try:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(trades)").fetchall()}
         if cols:  # trades table exists from prior boot
-            dupes = conn.execute(
-                "SELECT coin, COUNT(*) AS n FROM trades "
-                "WHERE status IN ('open','pending') GROUP BY coin HAVING n > 1"
-            ).fetchall()
-            for r in dupes:
-                # Keep the most recent open row; demote older ones.
-                conn.execute(
-                    "UPDATE trades SET status='reconciled_off_book' "
-                    "WHERE coin=? AND status IN ('open','pending') "
-                    "AND id NOT IN (SELECT id FROM trades WHERE coin=? "
-                    "  AND status IN ('open','pending') ORDER BY open_ts DESC LIMIT 1)",
-                    (r["coin"], r["coin"]),
-                )
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                dupes = conn.execute(
+                    "SELECT coin, COUNT(*) AS n FROM trades "
+                    "WHERE status IN ('open','pending') GROUP BY coin HAVING n > 1"
+                ).fetchall()
+                for r in dupes:
+                    # Keep the most recent open row; demote older ones.
+                    conn.execute(
+                        "UPDATE trades SET status='reconciled_off_book' "
+                        "WHERE coin=? AND status IN ('open','pending') "
+                        "AND id NOT IN (SELECT id FROM trades WHERE coin=? "
+                        "  AND status IN ('open','pending') ORDER BY open_ts DESC LIMIT 1)",
+                        (r["coin"], r["coin"]),
+                    )
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
     except sqlite3.OperationalError:
         pass  # fresh DB — no trades table yet
     conn.executescript(SCHEMA)
