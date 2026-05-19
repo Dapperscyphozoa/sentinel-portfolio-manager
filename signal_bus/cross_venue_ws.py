@@ -21,6 +21,7 @@ log = logging.getLogger("cross_venue_ws")
 
 
 OKX_WS_PUBLIC = "wss://ws.okx.com:8443/ws/v5/public"
+OKX_WS_BUSINESS = "wss://ws.okx.com:8443/ws/v5/business"
 BYBIT_WS_PUBLIC = "wss://stream.bybit.com/v5/public/linear"
 
 
@@ -68,7 +69,10 @@ async def _consume_okx_liq(cache: Cache) -> None:
     (2026-05-19 verified: 0 events in 12s on both /stream and /market/stream).
     OKX SWAP liquidation feed is the replacement for liq_cascade engine."""
     sub = {"op": "subscribe", "args": [{"channel": "liquidation-orders", "instType": "SWAP"}]}
-    async with websockets.connect(OKX_WS_PUBLIC, ping_interval=20, ping_timeout=20) as ws:
+    # NOTE: liquidation-orders is a BUSINESS-endpoint channel. Subscribing on
+    # /ws/v5/public returns OKX error 60018 "Wrong URL or channel". Verified
+    # 2026-05-19 against Render logs and confirmed against OKX docs.
+    async with websockets.connect(OKX_WS_BUSINESS, ping_interval=20, ping_timeout=20) as ws:
         await ws.send(json.dumps(sub))
         log.info("okx liquidation-orders subscribed (instType=SWAP)")
         async for raw in ws:
