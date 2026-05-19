@@ -330,6 +330,178 @@ def test_force_close_stale_leaves_recent_rows():
     assert row["status"] == "open"
 
 
+# ─── back-fill closures from HL fills (PnL attribution recovery) ──────────
+class _MockBusWithFills(_MockBus):
+    def __init__(self, hl_positions=None, markprice=None, fills=None):
+        super().__init__(hl_positions, markprice)
+        self._fills = fills or []
+
+    def hl_fills(self, since_ms=None):
+        if since_ms is None:
+            return self._fills
+        return [f for f in self._fills if float(f.get("ts", 0)) >= since_ms]
+
+
+def test_book_closure_from_fills_inserts_closure():
+    """A reconciled short trade that HL fills show as Open+Close → closure row
+    with HL's exact closedPnl appears in closures table."""
+    _, conn = _fresh_db()
+    open_cloid = "0x6362540734925e55a61f189f22cccafd"
+    close_cloid = "0xfae9eaca759dadd75639d9653eb877ca"
+    _insert_trade(conn, cloid=open_cloid, coin="SOL", status="reconciled_off_book",
+                  open_ts=1779115027.0, max_hold_bars=8, strategy="ict_confluence_4h",
+                  open_px=83.915, size_coin=0.16)
+    fills = [
+        # Open Short
+        {"ts": 1779115032498, "coin": "SOL", "side": "A", "qty": 0.16, "price": 83.915,
+         "cloid": open_cloid,
+         "raw": {"sz": "0.16", "px": "83.915", "dir": "Open Short",
+                  "closedPnl": "0.0", "fee": "0.0058"}},
+        # Close Short by bracket (different cloid)
+        {"ts": 1779116642186, "coin": "SOL", "side": "B", "qty": 0.16, "price": 83.612,
+         "cloid": close_cloid,
+         "raw": {"sz": "0.16", "px": "83.612", "dir": "Close Short",
+                  "closedPnl": "0.04848", "fee": "0.005779"}},
+    ]
+    bus = _MockBusWithFills(fills=fills)
+    trader = _make_trader_with_bus(conn, bus)
+    trade_row = conn.execute("SELECT * FROM trades WHERE cloid=?", (open_cloid,)).fetchone()
+    pnl = trader.book_closure_from_fills(trade_row, reason="test")
+    assert pnl is not None
+    # Net = closedPnl - fees = 0.04848 - (0.0058 + 0.005779) = 0.036901
+    assert abs(pnl - 0.036901) < 1e-5, f"got {pnl}"
+    row = conn.execute("SELECT * FROM closures WHERE cloid=?", (open_cloid,)).fetchone()
+    assert row is not None
+    assert row["coin"] == "SOL"
+    assert abs(row["pnl_usd"] - 0.04848) < 1e-5
+    assert abs(row["fees_usd"] - 0.011579) < 1e-5
+    assert abs(row["close_px"] - 83.612) < 1e-5
+    assert row["close_reason"] == "test"
+
+
+def test_book_closure_idempotent():
+    """Calling book_closure_from_fills twice doesn't insert duplicate rows."""
+    _, conn = _fresh_db()
+    open_cloid = "0xa1"
+    _insert_trade(conn, cloid=open_cloid, coin="SOL", status="reconciled_off_book",
+                  open_ts=1779115027.0, max_hold_bars=8, open_px=83.0, size_coin=0.1)
+    fills = [
+        {"ts": 1779115030000, "coin": "SOL", "side": "A", "qty": 0.1, "price": 83.0,
+         "cloid": open_cloid,
+         "raw": {"sz": "0.1", "px": "83.0", "dir": "Open Short",
+                  "closedPnl": "0.0", "fee": "0.005"}},
+        {"ts": 1779116000000, "coin": "SOL", "side": "B", "qty": 0.1, "price": 82.0,
+         "cloid": "0xb2",
+         "raw": {"sz": "0.1", "px": "82.0", "dir": "Close Short",
+                  "closedPnl": "0.10", "fee": "0.005"}},
+    ]
+    bus = _MockBusWithFills(fills=fills)
+    trader = _make_trader_with_bus(conn, bus)
+    row = conn.execute("SELECT * FROM trades WHERE cloid=?", (open_cloid,)).fetchone()
+    p1 = trader.book_closure_from_fills(row)
+    p2 = trader.book_closure_from_fills(row)
+    assert p1 is not None
+    assert p2 is None  # second call short-circuits
+    n = conn.execute("SELECT COUNT(*) AS n FROM closures WHERE cloid=?", (open_cloid,)).fetchone()["n"]
+    assert n == 1
+
+
+def test_book_closure_returns_none_when_no_close_fill():
+    """Open fill exists but no Close fill — return None, no closure row."""
+    _, conn = _fresh_db()
+    open_cloid = "0xc1"
+    _insert_trade(conn, cloid=open_cloid, coin="SOL", status="open",
+                  open_ts=1779115027.0, max_hold_bars=8, open_px=83.0, size_coin=0.1)
+    fills = [
+        {"ts": 1779115030000, "coin": "SOL", "side": "A", "qty": 0.1, "price": 83.0,
+         "cloid": open_cloid,
+         "raw": {"sz": "0.1", "px": "83.0", "dir": "Open Short",
+                  "closedPnl": "0.0", "fee": "0.005"}},
+        # No close fill
+    ]
+    bus = _MockBusWithFills(fills=fills)
+    trader = _make_trader_with_bus(conn, bus)
+    row = conn.execute("SELECT * FROM trades WHERE cloid=?", (open_cloid,)).fetchone()
+    assert trader.book_closure_from_fills(row) is None
+    n = conn.execute("SELECT COUNT(*) AS n FROM closures WHERE cloid=?", (open_cloid,)).fetchone()["n"]
+    assert n == 0
+
+
+def test_book_closure_matches_long_position_correctly():
+    """Long position close (dir='Close Long') must be matched for is_long=1."""
+    _, conn = _fresh_db()
+    open_cloid = "0xd1"
+    _insert_trade(conn, cloid=open_cloid, coin="ETH", status="reconciled_off_book",
+                  open_ts=1779115027.0, max_hold_bars=8, open_px=2000.0, size_coin=0.05)
+    # Mark trade as long
+    conn.execute("UPDATE trades SET is_long=1 WHERE cloid=?", (open_cloid,))
+    fills = [
+        {"ts": 1779115030000, "coin": "ETH", "side": "B", "qty": 0.05, "price": 2000.0,
+         "cloid": open_cloid,
+         "raw": {"sz": "0.05", "px": "2000.0", "dir": "Open Long",
+                  "closedPnl": "0.0", "fee": "0.5"}},
+        # Distractor: a SHORT close for ETH — must be ignored
+        {"ts": 1779115500000, "coin": "ETH", "side": "B", "qty": 0.05, "price": 1990.0,
+         "cloid": "0xdistractor",
+         "raw": {"sz": "0.05", "px": "1990.0", "dir": "Close Short",
+                  "closedPnl": "99.0", "fee": "0.5"}},
+        # The real Close Long
+        {"ts": 1779116000000, "coin": "ETH", "side": "A", "qty": 0.05, "price": 2050.0,
+         "cloid": "0xclose_long",
+         "raw": {"sz": "0.05", "px": "2050.0", "dir": "Close Long",
+                  "closedPnl": "2.50", "fee": "0.5"}},
+    ]
+    bus = _MockBusWithFills(fills=fills)
+    trader = _make_trader_with_bus(conn, bus)
+    row = conn.execute("SELECT * FROM trades WHERE cloid=?", (open_cloid,)).fetchone()
+    pnl = trader.book_closure_from_fills(row)
+    # Net = 2.50 - (0.5 + 0.5) = 1.50  (distractor NOT counted)
+    assert pnl is not None
+    assert abs(pnl - 1.50) < 1e-5, f"distractor leaked: got {pnl}"
+    c = conn.execute("SELECT * FROM closures WHERE cloid=?", (open_cloid,)).fetchone()
+    assert abs(c["pnl_usd"] - 2.50) < 1e-5
+    assert abs(c["close_px"] - 2050.0) < 1e-5
+
+
+def test_backfill_reconciled_closures_scans_only_unbooked():
+    """Trades with existing closures are skipped; reconciled rows are processed."""
+    _, conn = _fresh_db()
+    # Trade #1: reconciled, no closure yet → should be backfilled
+    _insert_trade(conn, cloid="0xa", coin="SOL", status="reconciled_off_book",
+                  open_ts=1779115027.0, open_px=83.0, size_coin=0.1)
+    # Trade #2: reconciled, already has closure (e.g. force_close path) → skip
+    _insert_trade(conn, cloid="0xb", coin="ETH", status="reconciled_off_book",
+                  open_ts=1779115100.0, open_px=2000.0, size_coin=0.05)
+    conn.execute(
+        "INSERT INTO closures(cloid,strategy,coin,is_long,open_ts,close_ts,"
+        "open_px,close_px,size_coin,pnl_usd,fees_usd,close_reason) "
+        "VALUES('0xb','test','ETH',1,1779115100.0,1779116000.0,2000.0,2010.0,0.05,0.5,0.01,'manual')"
+    )
+    # Trade #3: still 'open' — should NOT be processed (status filter excludes 'open')
+    _insert_trade(conn, cloid="0xc", coin="DOT", status="open",
+                  open_ts=1779115200.0, open_px=1.2, size_coin=10)
+    fills = [
+        {"ts": 1779115030000, "coin": "SOL", "side": "A", "qty": 0.1, "price": 83.0,
+         "cloid": "0xa",
+         "raw": {"sz": "0.1", "px": "83.0", "dir": "Open Short",
+                  "closedPnl": "0.0", "fee": "0.005"}},
+        {"ts": 1779116000000, "coin": "SOL", "side": "B", "qty": 0.1, "price": 82.0,
+         "cloid": "0xclose",
+         "raw": {"sz": "0.1", "px": "82.0", "dir": "Close Short",
+                  "closedPnl": "0.10", "fee": "0.005"}},
+    ]
+    bus = _MockBusWithFills(fills=fills)
+    trader = _make_trader_with_bus(conn, bus)
+    result = trader.backfill_reconciled_closures(since_ts=0)
+    assert result["scanned"] == 1, f"only Trade #1 should be scanned: {result}"
+    assert result["booked"] == 1
+    assert result["no_fills"] == 0
+    # Trade #1 now has closure
+    c = conn.execute("SELECT * FROM closures WHERE cloid='0xa'").fetchone()
+    assert c is not None
+    assert c["close_reason"] == "backfill"
+
+
 # ─── sweep_stale_pending phantom-position fix ────────────────────────────
 def test_sweep_pending_promotes_when_hl_has_position():
     """Process crashed between INSERT 'pending' and UPDATE 'open' AFTER the

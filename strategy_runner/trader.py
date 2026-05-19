@@ -394,6 +394,19 @@ class Trader:
             log.error("reconcile_with_hl: %s/%s id=%d → reconciled_off_book "
                       "(absent on HL for %ds — confirmed off-book)",
                       r["strategy"], coin, r["id"], int(now - first_seen_ts))
+            # Attempt to back-fill closure from HL fills so attribution sees the
+            # PnL. If we can't (no matching fills found), the trade is still
+            # reconciled; just no closure row. Logged either way.
+            try:
+                trade_row = self.conn.execute(
+                    "SELECT * FROM trades WHERE id=?", (r["id"],)
+                ).fetchone()
+                booked = self.book_closure_from_fills(trade_row, reason="reconciled_off_book")
+                if booked:
+                    log.warning("reconcile_with_hl: %s/%s booked closure pnl=$%+.4f from HL fills",
+                                r["strategy"], coin, booked)
+            except Exception:
+                log.exception("book_closure_from_fills failed for id=%d", r["id"])
         # Garbage-collect kv_state entries for coins whose local 'open' rows
         # are gone (closed/reconciled/etc) so they don't re-trigger spuriously.
         for k_row in self.conn.execute(
@@ -403,6 +416,159 @@ class Trader:
             if coin_k not in all_local_coins:
                 self.conn.execute("DELETE FROM kv_state WHERE k=?", (k_row["k"],))
         return n
+
+    def book_closure_from_fills(self, trade_row, reason: str = "from_fills") -> Optional[float]:
+        """Reconstruct a closures row by matching HL fills to this trade.
+
+        Method:
+          1. Pull HL fills for this coin since open_ts (via signal-bus).
+          2. Find the OPEN fill matching this trade's cloid (records true fill px).
+          3. Find subsequent CLOSE fill(s) — opposite side, same coin, between
+             open_ts and (close_ts hint OR now). Use HL's own closedPnl field
+             which is exact.
+          4. Insert closures row with summed close_px (qty-weighted), summed
+             closedPnl, summed fees.
+
+        Returns the booked net PnL (closedPnl - fees) if a closure row was
+        inserted, else None. Idempotent: refuses to insert if closures already
+        has a row with this cloid.
+        """
+        if trade_row is None:
+            return None
+        cloid = trade_row["cloid"]
+        # Idempotency guard
+        existing = self.conn.execute(
+            "SELECT 1 FROM closures WHERE cloid=? LIMIT 1", (cloid,)
+        ).fetchone()
+        if existing:
+            return None
+        coin = (trade_row["coin"] or "").upper()
+        open_ts = float(trade_row["open_ts"])
+        is_long = bool(trade_row["is_long"])
+        # HL fills since open_ts (with a 30s pad to catch the open fill itself)
+        since_ms = int((open_ts - 30) * 1000)
+        try:
+            fills = self.bus.hl_fills(since_ms=since_ms) or []
+        except Exception:
+            log.exception("book_closure_from_fills: bus.hl_fills failed")
+            return None
+        # Match open fill by cloid; HL stores cloid in lowercase 0x hex
+        cloid_norm = (cloid or "").lower()
+        # On HL, side='A' = ask = SELL; side='B' = bid = BUY.
+        # Open of a long position is side=B; open of a short is side=A.
+        # Close fills are the opposite side AND have dir 'Close ...'.
+        open_fill = None
+        close_fills = []
+        for f in fills:
+            if (f.get("coin") or "").upper() != coin:
+                continue
+            f_cloid = (f.get("cloid") or "").lower()
+            raw = f.get("raw") or {}
+            direction = raw.get("dir") or ""
+            if f_cloid == cloid_norm:
+                open_fill = f
+                continue
+            # Subsequent close: must be after open_ts AND a Close direction
+            f_ts = float(f.get("ts", 0)) / 1000.0
+            if f_ts < open_ts:
+                continue
+            if not direction.startswith("Close"):
+                continue
+            # Match position direction: long open → close has dir 'Close Long', etc.
+            if is_long and "Long" not in direction:
+                continue
+            if (not is_long) and "Short" not in direction:
+                continue
+            close_fills.append(f)
+        if not close_fills:
+            return None  # not closed yet on HL, or no fills visible
+        # Compute closed_pnl + fees using HL's authoritative numbers
+        total_pnl = 0.0
+        total_fee = 0.0
+        total_qty = 0.0
+        weighted_px = 0.0
+        last_close_ts = 0.0
+        for f in close_fills:
+            raw = f.get("raw") or {}
+            try:
+                total_pnl += float(raw.get("closedPnl") or 0)
+                total_fee += float(raw.get("fee") or 0)
+                qty = float(raw.get("sz") or f.get("qty") or 0)
+                px = float(raw.get("px") or f.get("price") or 0)
+                total_qty += qty
+                weighted_px += qty * px
+                f_ts = float(f.get("ts", 0)) / 1000.0
+                if f_ts > last_close_ts:
+                    last_close_ts = f_ts
+            except (TypeError, ValueError):
+                continue
+        if total_qty <= 0 or last_close_ts <= 0:
+            return None
+        close_px = weighted_px / total_qty
+        # Open fee — best-effort from open_fill if matched
+        open_fee = 0.0
+        open_px = float(trade_row["open_px"] or 0)
+        if open_fill is not None:
+            raw_o = open_fill.get("raw") or {}
+            try:
+                open_fee = float(raw_o.get("fee") or 0)
+                # Prefer HL's actual fill px over our ref_price
+                hp = float(raw_o.get("px") or 0)
+                if hp > 0:
+                    open_px = hp
+            except (TypeError, ValueError):
+                pass
+        fees_usd = open_fee + total_fee
+        # Insert closures row. status='closed' is still set in trades for clarity;
+        # reconciled_off_book stays as the canonical lifecycle terminus but the
+        # closure is booked for attribution.
+        self.conn.execute(
+            "INSERT INTO closures(cloid,strategy,coin,is_long,open_ts,close_ts,"
+            "open_px,close_px,size_coin,pnl_usd,fees_usd,close_reason,extras_json) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                cloid, trade_row["strategy"], coin, int(is_long),
+                open_ts, last_close_ts, open_px, close_px,
+                total_qty, total_pnl, fees_usd, reason,
+                json.dumps({"booked_from_fills": True,
+                            "n_close_fills": len(close_fills)}),
+            ),
+        )
+        return total_pnl - fees_usd
+
+    def backfill_reconciled_closures(self, since_ts: float = 0.0) -> dict:
+        """One-shot retroactive: for every row in trades with status in
+        ('reconciled_off_book','force_closed_unverified','closed') that has
+        NO matching closures row and open_ts >= since_ts, attempt to book
+        a closure from HL fills.
+
+        Returns {'scanned': N, 'booked': K, 'no_fills': M, 'errors': E}.
+        """
+        rows = self.conn.execute(
+            "SELECT t.* FROM trades t "
+            "LEFT JOIN closures c ON c.cloid = t.cloid "
+            "WHERE t.status IN ('reconciled_off_book','force_closed_unverified','closed') "
+            "  AND c.id IS NULL "
+            "  AND t.open_ts >= ?",
+            (since_ts,),
+        ).fetchall()
+        scanned = booked = no_fills = errors = 0
+        for r in rows:
+            scanned += 1
+            try:
+                pnl = self.book_closure_from_fills(r, reason="backfill")
+                if pnl is not None:
+                    booked += 1
+                    log.warning("backfill: %s/%s booked pnl=$%+.4f from HL fills",
+                                r["strategy"], r["coin"], pnl)
+                else:
+                    no_fills += 1
+            except Exception:
+                errors += 1
+                log.exception("backfill failed cloid=%s", r["cloid"])
+        log.warning("backfill_reconciled_closures: scanned=%d booked=%d no_fills=%d errors=%d",
+                    scanned, booked, no_fills, errors)
+        return {"scanned": scanned, "booked": booked, "no_fills": no_fills, "errors": errors}
 
     def force_close_stale(self, age_multiplier: float = 3.0) -> int:
         """Local-only force-close for trades stuck 'open' way past their

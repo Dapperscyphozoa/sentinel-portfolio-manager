@@ -604,6 +604,44 @@ class Handler(BaseHTTPRequestHandler):
                 "applied": (not dry_run) and total > 0,
             })
 
+        if path == "/admin/backfill_reconciled_pnl":
+            # OPERATOR-INITIATED retroactive closure booking. For every trade
+            # row currently in ('reconciled_off_book','force_closed_unverified',
+            # 'closed') without a closures match, look up HL fills by cloid +
+            # close-fills by coin/time, compute realized PnL, insert closures
+            # row. Idempotent. Auth via HALT_TOKEN.
+            #
+            # Body: {"since_ts": float (epoch seconds, default 0 = all time),
+            #        "actor": "...",
+            #        "dry_run": bool (default false)}
+            if not halt.halt_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            since_ts = float(body.get("since_ts", 0))
+            actor = body.get("actor", "operator")
+            dry_run = bool(body.get("dry_run", False))
+            if dry_run:
+                # Just count candidates without inserting
+                rows = CONN.execute(
+                    "SELECT COUNT(*) AS n FROM trades t "
+                    "LEFT JOIN closures c ON c.cloid = t.cloid "
+                    "WHERE t.status IN ('reconciled_off_book','force_closed_unverified','closed') "
+                    "  AND c.id IS NULL "
+                    "  AND t.open_ts >= ?",
+                    (since_ts,),
+                ).fetchone()
+                return _json(self, 200, {
+                    "ok": True, "dry_run": True, "actor": actor,
+                    "candidates_to_backfill": int(rows["n"]),
+                })
+            try:
+                result = TRADER.backfill_reconciled_closures(since_ts=since_ts)
+            except Exception as e:
+                log.exception("backfill_reconciled_pnl failed")
+                return _json(self, 500, {"error": str(e)})
+            result["actor"] = actor
+            result["since_ts"] = since_ts
+            return _json(self, 200, result)
+
         if path == "/precog/webhook":
             # HMAC verification of X-Precog-Sig (hex sha256 of body with PRECOG_WEBHOOK_SECRET)
             import hmac, hashlib
