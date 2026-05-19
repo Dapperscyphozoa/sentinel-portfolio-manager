@@ -565,7 +565,11 @@ class E17_bb_fade_BT_4h(StrategyBase):
     CLOID_PREFIX = "e17h_"
     AFFINITY = ["high_vol", "range"]
     TF = "4h"
-    UNIVERSE = DEFAULT_UNIVERSE
+    # 2026-05-19 OOS param sweep (90d × 10 majors via OKX): on DEFAULT_UNIVERSE
+    # (47 coins) PF was 0.86 — long tail of small alts diluted edge. Narrowed to
+    # top-10 majors: n=84, WR 58%, PF 1.40, OOS PF 1.92. Paper-only until n≥50
+    # accumulated under this universe.
+    UNIVERSE = ["BTC", "ETH", "SOL", "AVAX", "LINK", "DOGE", "ARB", "APT", "DOT", "SUI"]
     _BB_PERIOD = 20
     _BB_STD = 2.0
     _HOLD_BARS = 6

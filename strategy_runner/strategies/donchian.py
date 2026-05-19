@@ -43,19 +43,24 @@ DC_N_EXIT = _envi("DC_N_EXIT", 40)
 DC_EMA_FILTER = _envi("DC_EMA_FILTER", 200)
 DC_ATR_N = _envi("DC_ATR_N", 14)
 DC_SL_ATR_MULT = _envf("DC_SL_ATR_MULT", 2.0)
-DC_TP_ATR_MULT = _envf("DC_TP_ATR_MULT", 20.0)
+# 2026-05-19 OOS sweep (60d × 6 / 180d × 10 majors via OKX): canonical Turtle
+# TP=20×ATR effectively never fires on 1h crypto — engine bled with PF 0.01.
+# Sweep showed DC_INVERT=1 + DC_TP_ATR_MULT=3.0 = PF 1.96, OOS PF 1.78 (n=152
+# / 103 OOS). Defaults flipped to those values. Paper-only until n≥50 live.
+DC_TP_ATR_MULT = _envf("DC_TP_ATR_MULT", 3.0)
 DC_MAX_HOLD_BARS = _envi("DC_MAX_HOLD_BARS", 480)
 DC_VOL_FILTER = _envb("DC_VOL_FILTER", False)
 
 # INVERT_SIGNAL: on short timeframes (1h, 4h) in crypto, Donchian breakouts
 # overwhelmingly FADE (mean-revert) rather than trend. Backtest on 1h
 # BTC/ETH/SOL: original 9.5% WR with 1:1 R:R → INVERTED = 90.5% WR same R:R.
+# OOS sweep 2026-05-19 confirmed: PF 1.96 inverted vs 0.25 canonical.
 # The signal carries clean information; it's pointed backwards.
 # When INVERT_SIGNAL=1:
 #   - Entry side flips (breakout up → SHORT instead of LONG)
 #   - SL and TP swap directions to match new side
 #   - should_close exits on FAVORABLE channel break (taking profit on the fade)
-DC_INVERT = _envb("DC_INVERT", False)
+DC_INVERT = _envb("DC_INVERT", True)
 
 
 class Donchian(StrategyBase):
