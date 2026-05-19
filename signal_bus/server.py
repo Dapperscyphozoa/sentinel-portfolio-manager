@@ -49,11 +49,14 @@ CACHE: Cache | None = None
 
 def _json_resp(handler: BaseHTTPRequestHandler, status: int, body) -> None:
     payload = json.dumps(body, separators=(",", ":")).encode()
-    handler.send_response(status)
-    handler.send_header("content-type", "application/json")
-    handler.send_header("content-length", str(len(payload)))
-    handler.end_headers()
-    handler.wfile.write(payload)
+    try:
+        handler.send_response(status)
+        handler.send_header("content-type", "application/json")
+        handler.send_header("content-length", str(len(payload)))
+        handler.end_headers()
+        handler.wfile.write(payload)
+    except (BrokenPipeError, ConnectionResetError):
+        pass
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -292,15 +295,20 @@ def main() -> None:
         threading.Thread(target=okx_data_ws.run_in_thread, args=(coins, CACHE),
                          daemon=True, name="okx_data_ws").start()
 
-        # Warm-start: REST backfill ~200 bars per (coin, tf) so strategies and
-        # PM regime detector have history at first tick instead of waiting days.
+        # Warm-start: REST backfill N bars per (coin, tf) so strategies and PM
+        # regime detector have history at first tick instead of waiting days.
+        # Default 1000 = the KLINE_CAP in cache.py, which saturates the ring
+        # buffer and unblocks uzt_rev's 500-bar gate on 15m immediately.
+        # Tunable via OKX_REST_BACKFILL_BARS.
         if config.get_bool("BACKFILL_ON_BOOT", default=True):
             from signal_bus import okx_rest_backfill  # noqa: E402
+            backfill_bars = int(config.get("OKX_REST_BACKFILL_BARS", "1000") or "1000")
 
             def _do_backfill():
                 try:
-                    n = okx_rest_backfill.backfill_all(coins, CACHE)
-                    log.info("REST backfill complete: %d bars total", n)
+                    n = okx_rest_backfill.backfill_all(coins, CACHE, bars=backfill_bars)
+                    log.info("REST backfill complete: %d bars total (target=%d/coin/tf)",
+                             n, backfill_bars)
                 except Exception:
                     log.exception("REST backfill failed")
             threading.Thread(target=_do_backfill, daemon=True, name="rest_backfill").start()

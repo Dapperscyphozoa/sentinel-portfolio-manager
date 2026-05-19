@@ -116,13 +116,13 @@ class Cache:
         # HL state
         self.hl_account: dict = {"value": 0.0, "margin_used": 0.0, "positions": []}
         self.hl_positions: list[dict] = []
-        self.hl_fills: Deque[dict] = deque(maxlen=3000)  # was 10000
+        self.hl_fills: Deque[dict] = deque(maxlen=2000)  # was 3000 — OOM mitigation
         # HL public trades per-coin for CVD aggregator (council priority — world-first edge)
-        # maxlen=6000: ~10min of trades on a busy coin like BTC
-        self.hl_trades: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=1500))  # was 6000
+        # maxlen=600: ~4min of trades on a busy coin like BTC. Trimmed for OOM.
+        self.hl_trades: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=600))  # was 1500
         # Whale tracker (Stage 1 #5 — world-first edge per Qwen3 235B +3.2%/mo)
         # whale_events: detected new opens; consumed by hl_whale_frontrun engine
-        self.whale_events: Deque[dict] = deque(maxlen=2000)
+        self.whale_events: Deque[dict] = deque(maxlen=800)  # was 2000 — OOM mitigation
         self.whale_stats: dict = {"ts": 0, "n_whales": 0, "new_events": 0}
         # L2 order book per coin (Stage 1 #6 — depth shock detection)
         # Each: {ts, bids: [{px,sz,n}, ...20], asks: [{px,sz,n}, ...20]}
@@ -135,7 +135,7 @@ class Cache:
         self.ws_alive: dict[str, bool] = {"binance": False, "hl": False, "okx": False, "bybit": False}
         # OI state (HL openInterest via metaAndAssetCtxs, 60s poll)
         self.oi_latest: dict[str, dict] = {}
-        self.oi_history: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=2880))  # was 8640
+        self.oi_history: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=720))  # was 2880 — 12h @ 60s, OOM mitigation
         self._lock = threading.RLock()
         # Sentinel fix: flush cursor for liq events. Without this, each flush
         # re-wrote every event in the ring buffer (50k×12/hour duplicates).

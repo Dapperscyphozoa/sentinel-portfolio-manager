@@ -185,11 +185,14 @@ def _aggregate_health() -> dict:
 
 class Handler(BaseHTTPRequestHandler):
     def _json(self, code: int, body: dict) -> None:
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(json.dumps(body, default=str).encode())
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(json.dumps(body, default=str).encode())
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     # ─── Landing page support ───
     def _serve_landing(self) -> None:

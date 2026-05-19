@@ -33,11 +33,16 @@ TRADER = None
 
 def _json(handler: BaseHTTPRequestHandler, status: int, body) -> None:
     payload = json.dumps(body, separators=(",", ":"), default=str).encode()
-    handler.send_response(status)
-    handler.send_header("content-type", "application/json")
-    handler.send_header("content-length", str(len(payload)))
-    handler.end_headers()
-    handler.wfile.write(payload)
+    try:
+        handler.send_response(status)
+        handler.send_header("content-type", "application/json")
+        handler.send_header("content-length", str(len(payload)))
+        handler.end_headers()
+        handler.wfile.write(payload)
+    except (BrokenPipeError, ConnectionResetError):
+        # Client hung up mid-response (browser tab close, curl --max-time, etc).
+        # Not actionable; suppress to keep logs readable.
+        pass
 
 
 class Handler(BaseHTTPRequestHandler):
