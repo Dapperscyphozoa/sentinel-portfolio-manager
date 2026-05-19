@@ -53,15 +53,17 @@ DEFAULT_WHALE_SEEDS = [
 
 
 def _fetch_leaderboard() -> list[str]:
-    """Fetch top wallets by 7d PnL from HL leaderboard.
+    """Fetch top wallets by 7d PnL from HL stats-data leaderboard.
 
-    Returns list of addresses ranked by absolute PnL (largest first).
-    Empty list on failure — poller falls back to existing whale list.
+    The public /info endpoint does NOT expose leaderboard (returns 422).
+    HL publishes it via stats-data GET endpoint instead.
+
+    Returns list of addresses ranked by 7d absolute PnL (largest first).
+    Empty list on failure — poller continues with existing whale list.
     """
     try:
-        r = httpx.post(HL_INFO_URL,
-                       json={"type": "leaderboard"},
-                       timeout=20.0)
+        r = httpx.get("https://stats-data.hyperliquid.xyz/Mainnet/leaderboard",
+                      timeout=20.0)
         if r.status_code != 200:
             log.warning("leaderboard fetch HTTP %d", r.status_code)
             return []

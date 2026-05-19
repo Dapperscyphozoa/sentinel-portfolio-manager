@@ -63,6 +63,78 @@ class Handler(BaseHTTPRequestHandler):
                 return _json(self, 500, {"error": str(e)[:200],
                                           "regime": "unknown", "confidence": 0.0})
 
+        # /engines — registry list with cap_frac + audit_status
+        if path == "/engines":
+            try:
+                from pm.pretrade import ENGINE_REGISTRY
+                out = []
+                for name, info in ENGINE_REGISTRY.items():
+                    cap = info.get("capital_fraction", info.get("cap_frac", 0.0))
+                    out.append({
+                        "name": name,
+                        "capital_fraction": cap,
+                        "bt_pf": info.get("bt_pf", 0),
+                        "bt_n": info.get("bt_n", 0),
+                        "affinity": info.get("affinity", []),
+                        "audit_status": info.get("audit_status", ""),
+                        "stage": "live" if cap > 0 else "paper",
+                    })
+                return _json(self, 200, {"engines": out, "n": len(out)})
+            except Exception as e:
+                return _json(self, 500, {"error": str(e)[:200], "engines": []})
+
+        # /equity — current wallet value + recent history for 24h pulse chart
+        if path == "/equity":
+            try:
+                bus = BusClient()
+                acct = bus.hl_account()
+                value = float(acct.get("value", 0))
+                # Simple history: just current point + zero placeholder for 24h
+                return _json(self, 200, {
+                    "ts": int(time.time() * 1000),
+                    "value": value,
+                    "withdrawable": float(acct.get("withdrawable", 0)),
+                    "history": [],   # placeholder; monitor routine could populate
+                    "delta_24h": 0.0,
+                })
+            except Exception as e:
+                return _json(self, 500, {"error": str(e)[:200], "value": 0.0})
+
+        # /regime — global regime classification (dashboard expects /regime/{coin} but
+        # we serve same data for any coin since regime is BTC-driven)
+        if path.startswith("/regime"):
+            try:
+                bus = BusClient()
+                candles = bus.candles("BTC", "1h", n=60)
+                closes = [float(b["close"]) for b in candles]
+                highs = [float(b["high"]) for b in candles]
+                lows = [float(b["low"]) for b in candles]
+                return _json(self, 200, pm_regime.classify(closes, highs, lows))
+            except Exception as e:
+                return _json(self, 500, {"error": str(e)[:200],
+                                          "regime": "unknown", "confidence": 0.0})
+
+        # /risk and /risk/events — risk panel state
+        if path == "/risk":
+            try:
+                bus = BusClient()
+                acct = bus.hl_account()
+                value = float(acct.get("value", 0))
+                margin_used = float(acct.get("margin_used", 0))
+                # Approx daily drawdown — not persisted yet, return zeros
+                return _json(self, 200, {
+                    "account_value": value,
+                    "margin_used": margin_used,
+                    "drawdown_pct_24h": 0.0,
+                    "drawdown_halt_threshold_pct": 5.0,
+                    "halt_active": False,
+                })
+            except Exception as e:
+                return _json(self, 500, {"error": str(e)[:200], "account_value": 0})
+
+        if path == "/risk/events":
+            return _json(self, 200, {"events": [], "n": 0})
+
         if path == "/health":
             return _json(self, 200, {"ok": True, "ts": time.time(), "registry": runner.registry_info(),
                                      "halted": list(halt.active_halts())})

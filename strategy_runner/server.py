@@ -151,9 +151,12 @@ class Handler(BaseHTTPRequestHandler):
             # Open trades summary
             open_summary = []
             for ot in open_trades:
+                is_long_val = bool(ot["is_long"])
                 open_summary.append({
                     "strategy": ot["strategy"], "coin": ot["coin"],
-                    "is_long": bool(ot["is_long"]), "open_px": ot["open_px"],
+                    "is_long": is_long_val,
+                    "side": "LONG" if is_long_val else "SHORT",
+                    "open_px": ot["open_px"],
                     "size_coin": ot["size_coin"], "open_ts": ot["open_ts"],
                     "sl_px": ot["sl_px"], "tp_px": ot["tp_px"],
                 })
