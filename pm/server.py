@@ -257,11 +257,9 @@ class Handler(BaseHTTPRequestHandler):
         # /check — PM pre-trade gate (operator 2026-05-18: re-wire after silent break)
         if path == "/check":
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                body = self.rfile.read(length).decode() if length else "{}"
-                payload = json.loads(body)
-                strategy = str(payload.get("strategy", ""))
-                signal = payload.get("signal", {})
+                # body already read + parsed at top of do_POST (line ~211)
+                strategy = str(body.get("strategy", ""))
+                signal = body.get("signal", {})
                 if not strategy or not isinstance(signal, dict):
                     return _json(self, 400, {"error": "bad_payload"})
                 # Pull account state + regime
@@ -297,10 +295,7 @@ class Handler(BaseHTTPRequestHandler):
         # /register_cloid — record HL order id for attribution
         if path == "/register_cloid":
             try:
-                length = int(self.headers.get("Content-Length", 0))
-                body = self.rfile.read(length).decode() if length else "{}"
-                p = json.loads(body)
-                return _json(self, 200, {"ok": True, "stored": p})
+                return _json(self, 200, {"ok": True, "stored": body})
             except Exception as e:
                 return _json(self, 500, {"error": str(e)[:200]})
 
