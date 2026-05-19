@@ -60,13 +60,15 @@ class HLVaultPredict(StrategyBase):
 
     @classmethod
     def evaluate(cls, coin: str, bus) -> Optional[Signal]:
-        # 1. HLP position (already exposed by hlp_poller)
+        # 1. HLP position (already exposed by hlp_poller). Use the public
+        # BusClient method — earlier draft reached into bus._client/base_url/
+        # timeout, which broke when BusClient was refactored. Public method
+        # returns the same JSON shape including {net_usd, unrealized_pnl}.
         try:
-            hlp = bus._client.get(f"{bus.base_url}/hlp_position/{coin}", timeout=bus.timeout)
-            if hlp.status_code != 200:
-                return None
-            hlp_data = hlp.json()
+            hlp_data = bus.hlp_position(coin)
         except Exception:
+            return None
+        if not hlp_data:
             return None
 
         net_usd = float(hlp_data.get("net_usd", 0) or 0)
@@ -89,16 +91,19 @@ class HLVaultPredict(StrategyBase):
         if any(c <= 0 for c in closes):
             return None
 
-        # 3. NAV divergence proxy: |unrealized_pnl / abs(net_usd)|
-        # If hlp_data exposes unrealized_pnl, use it; else proxy via avg entry vs current mark
+        # 3. NAV divergence: prefer the real unrealized_pnl from the hlp endpoint.
+        # FALLBACK (15min-lookback price-proxy) is intentionally DISABLED — it
+        # assumes the HLP entered exactly 15min ago, which is almost never true
+        # for vaults that hold positions for hours/days. Firing on the proxy
+        # produced spurious signals. Skip the engine for the coin until the
+        # endpoint exposes unrealized_pnl.
         unrl_pnl = float(hlp_data.get("unrealized_pnl", 0) or 0)
-        if unrl_pnl == 0:
-            # Proxy: assume entry was 15min ago at closes[0]; current at closes[-1]
-            mark_pct = (closes[-1] - closes[0]) / closes[0]
-            # If HLP is long, gain = mark_pct (positive); short, gain = -mark_pct
-            unrl_pct = mark_pct if hlp_long else -mark_pct
-        else:
-            unrl_pct = unrl_pnl / abs(net_usd) if abs(net_usd) > 0 else 0
+        if unrl_pnl == 0 and abs(net_usd) > 0:
+            # No real PnL data available — bail out rather than fire on a
+            # broken proxy. When hlp_poller exposes unrealized_pnl, this gate
+            # removes itself automatically.
+            return None
+        unrl_pct = unrl_pnl / abs(net_usd) if abs(net_usd) > 0 else 0
 
         # 4. Divergence rate = unrl_pct per minute over 15min
         divergence_rate = unrl_pct / 15.0   # pct per minute

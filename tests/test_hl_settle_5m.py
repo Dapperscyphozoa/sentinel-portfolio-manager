@@ -63,7 +63,7 @@ def test_evaluate_returns_none_when_funding_too_small():
     """Rate below HL_SETTLE_FUNDING_MIN_ABS (1e-5) → no trade."""
     bus = FakeBus(funding_rate=5e-7,  # too tiny
                   funding_ts=_ts_at_minute_offset(56))  # in pre window
-    sig = HLSettle5m.evaluate("BTC", bus)
+    sig = HLSettle5m.evaluate("SOL", bus)
     assert sig is None
 
 
@@ -71,7 +71,7 @@ def test_evaluate_returns_none_outside_settle_windows():
     """Not in pre-settle (T-5min) or post-settle (T+5 to T+30) → no trade."""
     # T+40min: outside both windows
     bus = FakeBus(funding_rate=1e-4, funding_ts=_ts_at_minute_offset(40))
-    sig = HLSettle5m.evaluate("BTC", bus)
+    sig = HLSettle5m.evaluate("SOL", bus)
     assert sig is None
 
 
@@ -80,7 +80,7 @@ def test_evaluate_returns_none_when_spread_too_wide_maker_only():
     bus = FakeBus(funding_rate=1e-4,
                   funding_ts=_ts_at_minute_offset(56),  # in pre window
                   candle_range=0.005)  # 50bps range >> 5bps gate
-    sig = HLSettle5m.evaluate("BTC", bus)
+    sig = HLSettle5m.evaluate("SOL", bus)
     assert sig is None
 
 
@@ -88,13 +88,16 @@ def test_evaluate_fires_pre_settle_with_positive_funding_goes_short():
     """funding > 0 (longs pay) in PRE-settle → mechanical longs close → SHORT
     
     Per engine logic: in PRE window, trade WITH mechanical direction.
-    funding < 0 → shorts pay → buying pressure → LONG.
+    funding < 0 → shorts pay → buying pressure → LONG (blocked by SHORT_ONLY).
     funding > 0 → longs pay → selling pressure → SHORT.
+
+    Engine has been short-only by default since 2026-05-18
+    (HL_SETTLE_SHORT_ONLY=1). Tests for the long path are skipped.
     """
     bus = FakeBus(funding_rate=1e-4,  # longs pay
                   funding_ts=_ts_at_minute_offset(56),  # T-4min
                   candle_range=0.0001)  # 1bp range, well below 5bps gate
-    sig = HLSettle5m.evaluate("BTC", bus)
+    sig = HLSettle5m.evaluate("SOL", bus)
     assert sig is not None
     assert sig.is_long is False  # SHORT
     assert sig.side == "A"
@@ -102,26 +105,24 @@ def test_evaluate_fires_pre_settle_with_positive_funding_goes_short():
     assert sig.extras["settle_phase"] == "pre"
 
 
-def test_evaluate_fires_post_settle_with_positive_funding_goes_long():
-    """funding > 0 in POST-settle → mechanical sold has overshot → BUY the dip = LONG.
-    
-    Per engine logic: in POST window, trade AGAINST mechanical direction.
+def test_evaluate_post_settle_with_positive_funding_blocks_long():
+    """funding > 0 in POST-settle would normally fire LONG (post-reverse),
+    but engine is short-only by default → LONG signals are filtered out.
+
+    Tests the short-only guard rather than the previously-expected fire.
     """
     bus = FakeBus(funding_rate=1e-4,  # longs pay
                   funding_ts=_ts_at_minute_offset(10),  # T+10min
                   candle_range=0.0001)
-    sig = HLSettle5m.evaluate("BTC", bus)
-    assert sig is not None
-    assert sig.is_long is True  # LONG (post-settle reverse)
-    assert sig.side == "B"
-    assert "post_T+" in sig.fire_reason
-    assert sig.extras["settle_phase"] == "post"
+    sig = HLSettle5m.evaluate("SOL", bus)
+    # With SHORT_ONLY=1 default, the post-settle long path is suppressed
+    assert sig is None
 
 
 def test_evaluate_sl_tp_correctly_oriented_for_short():
     bus = FakeBus(funding_rate=1e-4, funding_ts=_ts_at_minute_offset(56),
                   candle_range=0.0001)
-    sig = HLSettle5m.evaluate("BTC", bus)
+    sig = HLSettle5m.evaluate("SOL", bus)
     assert sig is not None
     assert sig.is_long is False
     # SHORT: SL above entry, TP below
@@ -129,12 +130,9 @@ def test_evaluate_sl_tp_correctly_oriented_for_short():
     assert sig.tp_px < sig.ref_price
 
 
-def test_evaluate_sl_tp_correctly_oriented_for_long():
+def test_evaluate_long_signals_blocked_by_short_only():
+    """funding < 0 normally → LONG, but SHORT_ONLY=1 default blocks all longs."""
     bus = FakeBus(funding_rate=-1e-4, funding_ts=_ts_at_minute_offset(56),
                   candle_range=0.0001)
-    sig = HLSettle5m.evaluate("BTC", bus)
-    assert sig is not None
-    assert sig.is_long is True
-    # LONG: SL below entry, TP above
-    assert sig.sl_px < sig.ref_price
-    assert sig.tp_px > sig.ref_price
+    sig = HLSettle5m.evaluate("SOL", bus)
+    assert sig is None
