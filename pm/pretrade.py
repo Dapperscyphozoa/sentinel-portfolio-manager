@@ -166,7 +166,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "fmom":                {"affinity": ["trend_up", "trend_down", "range", "chop"],
                              "bt_pf": 1.75, "cap_frac": 0.00},
     "hl_settle_5m":        {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 1.85, "cap_frac": 0.20},
+                             "bt_pf": 1.85, "cap_frac": 0.18},
     # Stage 1 NEW ENGINE — paper-only pending honest backtest gate (council priority)
     "hl_cvd_aggressor": {
         "class": "cvd_aggressor_flow",
