@@ -668,9 +668,9 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
 <script>
 (function(){
     if (!document.body.matches('[data-view="macro"]')) return;
-    var PM_URL = (window.location.hostname.indexOf('localhost') !== -1) ?
-                 'http://localhost:10000' :
-                 'https://portfolio-manager-7df2.onrender.com';
+    // MER + blackout are served by core itself (same origin) — see core/mer.py.
+    // Relative URLs work both in local dev and in prod, no env coupling.
+    var PM_URL = '';
     function timeAgo(ms){
         if (!ms) return '';
         var diff = (Date.now() - ms) / 1000;

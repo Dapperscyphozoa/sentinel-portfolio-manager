@@ -630,6 +630,59 @@ class Handler(BaseHTTPRequestHandler):
         # Could plug into a news API later. Empty for now.
         self._json(200, {"items": [], "ts": int(time.time() * 1000)})
 
+    # ────────────────── Macro Economic Report (MER) ──────────────────
+    def _serve_mer_today(self) -> None:
+        """GET /mer or /mer/today — landing /macro fetches this."""
+        try:
+            from core import mer
+            snap = mer.get_today_snapshot()
+            self._json(200, snap)
+        except Exception as e:
+            log.exception("mer/today")
+            self._json(500, {"error": "mer_failed", "detail": str(e)[:200]})
+
+    def _serve_mer_refresh(self) -> None:
+        """GET /mer/refresh — force a synchronous pull + snapshot rebuild."""
+        try:
+            from core import mer
+            stats = mer.pull_all()
+            snap = mer.build_snapshot()
+            self._json(200, {"stats": stats, "snapshot_day": snap["day"]})
+        except Exception as e:
+            log.exception("mer/refresh")
+            self._json(500, {"error": "mer_refresh_failed", "detail": str(e)[:200]})
+
+    def _serve_mer_raw(self, query: str) -> None:
+        """GET /mer/raw?limit=&category= — debug accessor for ingested items."""
+        try:
+            from urllib.parse import parse_qs
+            from core import mer
+            q = {k: v[0] for k, v in parse_qs(query).items()}
+            limit = int(q.get("limit", "50"))
+            cat = q.get("category") or None
+            self._json(200, {"items": mer.get_recent_raw(limit=limit, category=cat)})
+        except Exception as e:
+            log.exception("mer/raw")
+            self._json(500, {"error": "mer_raw_failed", "detail": str(e)[:200]})
+
+    def _serve_mer_day(self, day_iso: str) -> None:
+        """GET /mer/<YYYY-MM-DD> — historical snapshot lookup."""
+        try:
+            from core import mer
+            self._json(200, mer.get_snapshot(day_iso))
+        except Exception as e:
+            log.exception("mer/day")
+            self._json(500, {"error": "mer_day_failed", "detail": str(e)[:200]})
+
+    def _serve_macro_blackout(self) -> None:
+        """GET /macro_blackout — current tier-1 blackout state for landing."""
+        try:
+            from core import mer
+            self._json(200, mer.get_blackout_status())
+        except Exception as e:
+            log.exception("macro_blackout")
+            self._json(500, {"error": "blackout_failed", "detail": str(e)[:200]})
+
     def _serve_audit_deep(self) -> None:
         """Landing's /audit/deep — per-coin attribution + per-hour fills/PnL series.
         Pulls from strategy_runner /closures (24h window) and aggregates two ways:
@@ -824,6 +877,21 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/orderbook/"):
             coin = path.split("/")[-1]
             return self._serve_orderbook(coin)
+        # Macro Economic Report — ported from legacy portfolio-manager.
+        # Self-contained (own sqlite /var/data/mer.sqlite). Powers /macro
+        # subpage on landing (mer-internal, mer-national, mer-global cards).
+        if path == "/mer" or path == "/mer/today":
+            return self._serve_mer_today()
+        if path == "/mer/refresh":
+            return self._serve_mer_refresh()
+        if path.startswith("/mer/raw"):
+            return self._serve_mer_raw(parsed.query)
+        if path.startswith("/mer/"):
+            # historical day: /mer/2026-05-19
+            day = path[len("/mer/"):].rstrip("/")
+            return self._serve_mer_day(day)
+        if path == "/macro_blackout" or path == "/blackout":
+            return self._serve_macro_blackout()
         # Sentinel: JSON data at /sentinel.json (fetched by the panel),
         #           styled landing at /sentinel (browser navigation),
         #           deep job polling at /sentinel/deep/{job_id} (background pattern),
@@ -1083,6 +1151,13 @@ def main():
             log.info("%s bound :%d", name, port)
         else:
             log.error("%s failed to bind :%d within %.0fs — continuing", name, port, timeout)
+    # MER (Macro Economic Report) — hourly RSS + Forex Factory poll.
+    # Self-contained, owns /var/data/mer.sqlite. Powers landing /macro page.
+    try:
+        from core import mer
+        mer.start_poller()
+    except Exception as e:
+        log.exception("mer poller failed to start: %s", e)
     log.info("starting public HTTP on :%d", PUBLIC_PORT)
     srv = ThreadingHTTPServer(("0.0.0.0", PUBLIC_PORT), Handler)
     try:
