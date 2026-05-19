@@ -222,12 +222,20 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/attribution":
             # Per-engine attribution: n, wr, pf, expectancy, gross_pnl, fees, net_pnl
             # Plus per-coin breakdown within each engine.
+            #
+            # ?clean_only=1 → exclude operator-driven / bug-recovery closes from
+            # the aggregates. Same semantics as strategy_runner/server.py so the
+            # local fallback returns equivalent results when the proxy fails.
             since = float(q.get("since", "0"))
+            clean_only = q.get("clean_only", "").lower() in ("1", "true", "yes")
             rows = CONN.execute(
                 "SELECT strategy, coin, pnl_usd, fees_usd, close_reason, "
                 "(close_ts - open_ts) AS hold_s "
                 "FROM closures WHERE close_ts>=?", (since,)
             ).fetchall()
+            if clean_only:
+                from common.closures import is_clean_closure
+                rows = [r for r in rows if is_clean_closure(r["close_reason"])]
             # Also include open trades — unrealized PnL contributes to view of where we stand
             open_trades = CONN.execute(
                 "SELECT strategy, coin, open_px, size_coin, is_long, open_ts, sl_px, tp_px, extras_json "
@@ -322,6 +330,7 @@ class Handler(BaseHTTPRequestHandler):
             return _json(self, 200, {
                 "ts": int(time.time() * 1000),
                 "since": since,
+                "clean_only": clean_only,
                 "engines": out_engines,
                 "open": open_summary,
                 "total": total,

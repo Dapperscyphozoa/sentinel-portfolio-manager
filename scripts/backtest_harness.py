@@ -21,7 +21,7 @@ import json
 import os
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
@@ -336,6 +336,13 @@ class Trade:
     close_ts: int = 0
     close_px: float = 0.0
     close_reason: str = ""
+    # ── Telemetry for counterfactual analysis (ADJUSTMENTS_REPORT.md #4/#9) ──
+    # Persisted into the JSONL so scripts/counterfactual.py can evaluate
+    # fire_reason pruning and tiered liquidity floors against historical fires.
+    # Empty/zero when the strategy or kline data didn't supply the value.
+    fire_reason: str = ""
+    extras: dict = field(default_factory=dict)
+    vol_24h_usd: float = 0.0
 
     @property
     def pnl_pct(self) -> float:
@@ -394,10 +401,22 @@ def simulate(strat_cls: type[StrategyBase], coins: list[str], tf: str,
                 continue
             if sig is None:
                 continue
+            # 24h volume in USD at fire time. Sum last 24h of klines * close px.
+            vol_24h_usd = 0.0
+            coin_klines = klines_by_coin.get(coin, [])
+            if coin_klines:
+                cutoff = ts - 86_400_000
+                for b in coin_klines:
+                    bts = int(b.get("open_ts", 0))
+                    if cutoff <= bts <= ts:
+                        vol_24h_usd += float(b.get("volume", 0)) * float(b.get("close", 0))
             open_trades.append(Trade(
                 coin=coin, is_long=sig.is_long, open_ts=ts, open_px=sig.ref_price,
                 sl_px=sig.sl_px, tp_px=sig.tp_px, max_hold_bars=sig.max_hold_bars,
                 strategy=strat_cls.NAME,
+                fire_reason=sig.fire_reason or "",
+                extras=dict(sig.extras or {}),
+                vol_24h_usd=vol_24h_usd,
             ))
         ts += step_s * 1000
 
@@ -553,6 +572,9 @@ def main():
                 "open_px": t.open_px, "close_ts": t.close_ts, "close_px": t.close_px,
                 "sl_px": t.sl_px, "tp_px": t.tp_px, "pnl_pct": t.pnl_pct,
                 "close_reason": t.close_reason,
+                "fire_reason": t.fire_reason,
+                "extras": t.extras,
+                "vol_24h_usd": t.vol_24h_usd,
             }) + "\n")
 
     print(json.dumps({"all": m_all, "is": m_is, "oos": m_oos, "report": md_path}, indent=2))

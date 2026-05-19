@@ -589,7 +589,7 @@ def _build_internal_section() -> list:
 
     # ─── 4. 24h realized PnL (paper) ───────────────────────────
     since_24h = time.time() - 86400
-    attr = _get(f"http://localhost:{sr_port}/attribution?since={since_24h}", timeout=5.0) or {}
+    attr = _get(f"http://localhost:{sr_port}/attribution?since={since_24h}&clean_only=1", timeout=5.0) or {}
     if attr and attr.get("engines"):
         engines_24h = attr["engines"]
         net_pnl = sum(float(e.get("net_pnl", 0) or 0) for e in engines_24h)

@@ -90,6 +90,110 @@ def test_pretrade_coin_concentration_blocks(monkeypatch):
         assert "concentration" in r.reason
 
 
+# -------- ADJUSTMENTS_REPORT.md #3: by-coin pruning gate --------
+
+def _seed_closures(conn, strategy: str, coin: str, wins: int, losses: int,
+                   win_pnl: float = 5.0, loss_pnl: float = 10.0,
+                   close_reason: str = "tp_hit") -> None:
+    """Insert synthetic closure rows for testing the by-coin prune gate.
+
+    wins fires of +win_pnl and losses fires of -loss_pnl. close_reason
+    controls clean-vs-noisy classification.
+    """
+    import time as _t
+    base_ts = _t.time() - 100
+    for i in range(wins + losses):
+        pnl = win_pnl if i < wins else -loss_pnl
+        conn.execute(
+            "INSERT INTO closures(cloid,strategy,coin,is_long,open_ts,close_ts,"
+            "open_px,close_px,size_coin,pnl_usd,fees_usd,close_reason) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            (f"c_{strategy}_{coin}_{i}", strategy, coin, 1, base_ts, base_ts + 1,
+             100, 101, 1.0, pnl, 0.0, close_reason),
+        )
+
+
+def test_by_coin_prune_default_off(monkeypatch):
+    """Default OFF: even with a dead history, the gate must not reject."""
+    monkeypatch.delenv("ENABLE_BY_COIN_PRUNE", raising=False)
+    monkeypatch.setenv("STRATEGY_FSP_ENABLED", "1")
+    with tempfile.TemporaryDirectory() as d:
+        conn = persistence.init_db(os.path.join(d, "t.db"))
+        _seed_closures(conn, "fsp", "BTC", wins=2, losses=20)  # PF 1/20 = 0.05
+        r = pretrade.check(conn, "fsp", _sig("BTC"), {"regime": "range", "confidence": 0.6},
+                           500.0, [])
+        assert r.allow is True
+
+
+def test_by_coin_prune_blocks_dead_pair(monkeypatch):
+    """Enabled + dead pair (n>=15, PF<1.0) → reject with by_coin_prune reason."""
+    monkeypatch.setenv("ENABLE_BY_COIN_PRUNE", "1")
+    monkeypatch.setenv("STRATEGY_FSP_ENABLED", "1")
+    with tempfile.TemporaryDirectory() as d:
+        conn = persistence.init_db(os.path.join(d, "t.db"))
+        _seed_closures(conn, "fsp", "BTC", wins=2, losses=20)  # PF = 10/200 = 0.05
+        r = pretrade.check(conn, "fsp", _sig("BTC"), {"regime": "range", "confidence": 0.6},
+                           500.0, [])
+        assert r.allow is False
+        assert r.reason.startswith("by_coin_prune:")
+
+
+def test_by_coin_prune_allows_below_min_n(monkeypatch):
+    """Below sample-size floor (n<15) — must not prune yet."""
+    monkeypatch.setenv("ENABLE_BY_COIN_PRUNE", "1")
+    monkeypatch.setenv("STRATEGY_FSP_ENABLED", "1")
+    with tempfile.TemporaryDirectory() as d:
+        conn = persistence.init_db(os.path.join(d, "t.db"))
+        _seed_closures(conn, "fsp", "BTC", wins=0, losses=10)  # PF 0 but n=10
+        r = pretrade.check(conn, "fsp", _sig("BTC"), {"regime": "range", "confidence": 0.6},
+                           500.0, [])
+        assert r.allow is True
+
+
+def test_by_coin_prune_allows_pf_above_threshold(monkeypatch):
+    """Engine/coin pair with PF>1.0 — must not prune."""
+    monkeypatch.setenv("ENABLE_BY_COIN_PRUNE", "1")
+    monkeypatch.setenv("STRATEGY_FSP_ENABLED", "1")
+    with tempfile.TemporaryDirectory() as d:
+        conn = persistence.init_db(os.path.join(d, "t.db"))
+        _seed_closures(conn, "fsp", "BTC", wins=15, losses=2)  # PF = 75/20 = 3.75
+        r = pretrade.check(conn, "fsp", _sig("BTC"), {"regime": "range", "confidence": 0.6},
+                           500.0, [])
+        assert r.allow is True
+
+
+def test_by_coin_prune_ignores_noisy_closures(monkeypatch):
+    """Noisy closures (force_close*) must not count toward the dead-pair test —
+    otherwise an operator force-close binge can poison an otherwise-healthy pair.
+    """
+    monkeypatch.setenv("ENABLE_BY_COIN_PRUNE", "1")
+    monkeypatch.setenv("STRATEGY_FSP_ENABLED", "1")
+    with tempfile.TemporaryDirectory() as d:
+        conn = persistence.init_db(os.path.join(d, "t.db"))
+        # 20 noisy losses — should be ignored. Only 5 clean wins counted.
+        _seed_closures(conn, "fsp", "BTC", wins=0, losses=20,
+                       close_reason="force_close:audit_red")
+        _seed_closures(conn, "fsp", "BTC", wins=5, losses=0,
+                       close_reason="tp_hit")
+        r = pretrade.check(conn, "fsp", _sig("BTC"), {"regime": "range", "confidence": 0.6},
+                           500.0, [])
+        # n=5 (below min_n 15) AND no losses → allow
+        assert r.allow is True
+
+
+def test_by_coin_prune_engine_allowlist(monkeypatch):
+    """BY_COIN_PRUNE_ENGINES allowlist restricts the rule to named engines."""
+    monkeypatch.setenv("ENABLE_BY_COIN_PRUNE", "1")
+    monkeypatch.setenv("BY_COIN_PRUNE_ENGINES", "vsq,lh1")  # fsp not in list
+    monkeypatch.setenv("STRATEGY_FSP_ENABLED", "1")
+    with tempfile.TemporaryDirectory() as d:
+        conn = persistence.init_db(os.path.join(d, "t.db"))
+        _seed_closures(conn, "fsp", "BTC", wins=2, losses=20)  # dead pair
+        r = pretrade.check(conn, "fsp", _sig("BTC"), {"regime": "range", "confidence": 0.6},
+                           500.0, [])
+        assert r.allow is True  # fsp not in allowlist → bypassed
+
+
 # -------- regime --------
 
 def test_regime_unknown_with_few_bars():

@@ -286,6 +286,69 @@ _cooldown: Optional[object] = None
 _cooldown_lock = threading.Lock()
 
 
+def _by_coin_prune_check(conn, strategy: str, coin: str) -> Optional[str]:
+    """ADJUSTMENTS_REPORT.md #3 — drop (engine, coin) pairs with sustained
+    negative-PF live history.
+
+    Returns None to allow the fire, or a reason string to reject it.
+
+    Disabled by default. Operator opts in per-engine via env:
+        ENABLE_BY_COIN_PRUNE=1                       (global toggle)
+        BY_COIN_PRUNE_MIN_N=15                       (sample-size floor)
+        BY_COIN_PRUNE_MAX_PF=1.0                     (drop below this PF)
+        BY_COIN_PRUNE_ENGINES=hl_settle_5m,fd1,...   (optional allowlist)
+
+    Walk-forward validation (n>=15) showed +223.8% OOS net-pct on the
+    backtest corpus. n>=10 failed OOS (-43%). Stricter is safer.
+
+    Closures are clean-filtered (force_close/backfill/reconciled exits ignored)
+    to match the verdict in ADJUSTMENTS_REPORT.md #6.
+    """
+    if os.environ.get("ENABLE_BY_COIN_PRUNE", "0") not in ("1", "true", "yes"):
+        return None
+    allowlist_raw = os.environ.get("BY_COIN_PRUNE_ENGINES", "").strip()
+    if allowlist_raw:
+        allow = {e.strip() for e in allowlist_raw.split(",") if e.strip()}
+        if strategy not in allow:
+            return None
+    min_n = _i("BY_COIN_PRUNE_MIN_N", 15)
+    max_pf = _f("BY_COIN_PRUNE_MAX_PF", 1.0)
+    try:
+        rows = conn.execute(
+            "SELECT pnl_usd, fees_usd, close_reason FROM closures "
+            "WHERE strategy=? AND coin=?",
+            (strategy, coin.upper()),
+        ).fetchall()
+    except Exception as e:
+        log.warning("by_coin_prune query failed strategy=%s coin=%s err=%s",
+                    strategy, coin, e)
+        return None
+    try:
+        from common.closures import is_clean_closure
+    except Exception:
+        return None
+    win_sum = 0.0
+    loss_sum = 0.0  # positive magnitude
+    n = 0
+    for r in rows:
+        if not is_clean_closure(r["close_reason"]):
+            continue
+        net = float(r["pnl_usd"] or 0) - float(r["fees_usd"] or 0)
+        n += 1
+        if net > 0:
+            win_sum += net
+        elif net < 0:
+            loss_sum += -net
+    if n < min_n:
+        return None
+    if loss_sum == 0.0:
+        return None  # no losses; not a dead pair
+    pf = win_sum / loss_sum
+    if pf < max_pf:
+        return f"by_coin_prune:n={n},pf={pf:.2f}<{max_pf:.2f}"
+    return None
+
+
 def _get_cooldown():
     global _cooldown
     # Fast path: already initialized
@@ -361,6 +424,11 @@ def check(conn, strategy: str, signal: dict, regime: dict,
         conf = float(regime.get("confidence", 0.0))
         if reg_name not in affinity and conf > 0.7:
             return CheckResult(False, 0.0, f"regime_mismatch:{reg_name}")
+
+    # 4b) By-coin pruning (ADJUSTMENTS_REPORT.md #3, env-gated, default OFF)
+    prune_reason = _by_coin_prune_check(conn, strategy, coin)
+    if prune_reason:
+        return CheckResult(False, 0.0, prune_reason)
 
     # 5) Cooldown checks
     cd = _get_cooldown()

@@ -43,7 +43,29 @@ def strategy_for(conn: sqlite3.Connection, cloid: str) -> Optional[str]:
     return row["strategy"] if row else None
 
 
-def by_strategy(conn: sqlite3.Connection, since_ms: int = 0) -> list[dict]:
+def by_strategy(conn: sqlite3.Connection, since_ms: int = 0, *,
+                clean_only: bool = True) -> list[dict]:
+    """Aggregate closures by strategy.
+
+    clean_only=True (default) excludes operator-driven / bug-recovery closes
+    (force_close*, backfill, reconciled_off_book, manual). Callers that need
+    the raw view for audit pass clean_only=False.
+    """
+    if clean_only:
+        from common.closures import is_clean_closure
+        rows = conn.execute(
+            "SELECT strategy, pnl_usd, close_reason "
+            "FROM closures WHERE close_ts >= ?",
+            (since_ms / 1000.0,),
+        ).fetchall()
+        agg: dict[str, dict] = {}
+        for r in rows:
+            if not is_clean_closure(r["close_reason"]):
+                continue
+            a = agg.setdefault(r["strategy"], {"strategy": r["strategy"], "n": 0, "pnl_usd": 0.0})
+            a["n"] += 1
+            a["pnl_usd"] += float(r["pnl_usd"] or 0)
+        return sorted(agg.values(), key=lambda r: r["pnl_usd"], reverse=True)
     rows = conn.execute(
         "SELECT strategy, COUNT(*) AS n, SUM(pnl_usd) AS pnl_usd "
         "FROM closures WHERE close_ts >= ? GROUP BY strategy ORDER BY pnl_usd DESC",

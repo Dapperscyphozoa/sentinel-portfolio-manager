@@ -39,6 +39,10 @@ class Fire:
     close_ts: int         # ms
     pnl_pct: float        # gross price-move %, no fees
     close_reason: str
+    # Optional fields — present only in JSONLs produced by the harness AFTER
+    # the #4/#9 instrumentation patch landed. Empty / 0 for legacy JSONLs.
+    fire_reason: str = ""
+    vol_24h_usd: float = 0.0
 
 
 def _engine_name_from_file(fname: str) -> str:
@@ -76,6 +80,8 @@ def load_fires() -> list[Fire]:
                     close_ts=int(d["close_ts"]),
                     pnl_pct=float(d["pnl_pct"]),
                     close_reason=str(d.get("close_reason", "unknown")),
+                    fire_reason=str(d.get("fire_reason", "") or ""),
+                    vol_24h_usd=float(d.get("vol_24h_usd", 0.0) or 0.0),
                 ))
     return fires
 
@@ -289,6 +295,87 @@ def adj8_utc_hour_blackout(fires: list[Fire], min_n_per_hour: int = 5) -> dict:
     }
 
 
+def adj4_fire_reason_pruning(fires: list[Fire], min_n: int = 15, max_pf: float = 1.0) -> dict:
+    """#4 — Drop (engine, fire_reason) pairs with n >= min_n and PF < max_pf.
+
+    Same walk-forward shape as #3, but partitioned by fire_reason. Requires
+    JSONLs produced by the instrumented harness; older files report
+    'no_data_yet'.
+    """
+    tagged = [f for f in fires if f.fire_reason]
+    if not tagged:
+        return {
+            "name": f"By fire_reason pruning (n>={min_n}, PF<{max_pf})",
+            "status": "no_data_yet",
+            "note": "No fires in backtests/*.jsonl carry fire_reason. Re-run honest_backtest.py "
+                    "with the instrumented harness, then re-run this analysis.",
+        }
+    is_fires, oos_fires = _split_by_time(tagged, frac=0.5)
+    pair_groups_train: dict[tuple[str, str], list[Fire]] = defaultdict(list)
+    for f in is_fires:
+        pair_groups_train[(f.engine, f.fire_reason)].append(f)
+    dead = set()
+    dead_detail = []
+    for (eng, fr), fs in pair_groups_train.items():
+        s = stats(fs, RT_TAKER)
+        if s["n"] >= min_n and s["pf"] < max_pf:
+            dead.add((eng, fr))
+            dead_detail.append({"engine": eng, "fire_reason": fr,
+                                "is_n": s["n"], "is_pf": s["pf"],
+                                "is_net_pct": s["net_sum"] * 100})
+    kept = [f for f in oos_fires if (f.engine, f.fire_reason) not in dead]
+    base = stats(oos_fires, RT_TAKER)
+    after = stats(kept, RT_TAKER)
+    return {
+        "name": f"By fire_reason pruning (n>={min_n}, PF<{max_pf})",
+        "dead_pairs_in_train": len(dead),
+        "oos_fires_total": len(oos_fires),
+        "oos_fires_dropped": len(oos_fires) - len(kept),
+        "oos_baseline_net_pct": base["net_sum"] * 100,
+        "oos_proposed_net_pct": after["net_sum"] * 100,
+        "oos_delta_net_pct": (after["net_sum"] - base["net_sum"]) * 100,
+        "oos_baseline_pf": base["pf"],
+        "oos_proposed_pf": after["pf"],
+        "dead_pairs_detail": sorted(dead_detail, key=lambda r: r["is_net_pct"])[:15],
+    }
+
+
+def adj9_liquidity_floor(fires: list[Fire], floors_usd: tuple[float, ...] = (50e6, 200e6, 500e6)) -> dict:
+    """#9 — Tiered liquidity floor.
+
+    For each floor, drop fires below the threshold and compute aggregate
+    delta. Requires JSONLs produced by the instrumented harness.
+    """
+    tagged = [f for f in fires if f.vol_24h_usd > 0]
+    if not tagged:
+        return {
+            "name": "Tiered liquidity floor",
+            "status": "no_data_yet",
+            "note": "No fires in backtests/*.jsonl carry vol_24h_usd. Re-run honest_backtest.py "
+                    "with the instrumented harness, then re-run this analysis.",
+        }
+    base = stats(tagged, RT_TAKER)
+    rows = []
+    for floor in floors_usd:
+        kept = [f for f in tagged if f.vol_24h_usd >= floor]
+        s = stats(kept, RT_TAKER)
+        rows.append({
+            "floor_usd": floor,
+            "n_kept": s["n"],
+            "n_dropped": base["n"] - s["n"],
+            "net_pct": s["net_sum"] * 100,
+            "pf": s["pf"],
+            "delta_net_pct_vs_baseline": (s["net_sum"] - base["net_sum"]) * 100,
+        })
+    return {
+        "name": "Tiered liquidity floor",
+        "n_with_volume_data": len(tagged),
+        "baseline_net_pct": base["net_sum"] * 100,
+        "baseline_pf": base["pf"],
+        "tiers": rows,
+    }
+
+
 # ─────────────────────────── Untestable items ───────────────────────────
 
 
@@ -297,10 +384,6 @@ UNTESTABLE = {
         "blocker": "Requires live closures + the demote-event history kept in monitor.db. No offline source.",
         "next_step": "Export /attribution snapshots over 30+ days and replay the 0.74x rule at varying thresholds (0.85x, 0.90x) and n_floors (22, 30, 50).",
     },
-    "#4 — fire_reason variant pruning": {
-        "blocker": "Backtest JSONLs don't emit extras_json.fire_reason. Engines do tag it at runtime (see strategies/*.py) but the historical replay strips it.",
-        "next_step": "Patch backtest_harness.py to persist extras_json per fire, re-run honest_backtest.py, then re-test offline.",
-    },
     "#5 — Regime affinity confidence threshold tune": {
         "blocker": "No regime classification timeline in backtest data. Regime is computed live by pm/regime.py.",
         "next_step": "Snapshot /regime endpoint every 5min for 7+ days, then overlay on per-fire timestamps to compute per-confidence-bucket PF.",
@@ -308,10 +391,6 @@ UNTESTABLE = {
     "#7 — Funding inclusion in net P&L": {
         "blocker": "No HL funding history archive (per BACKTEST_QUEUE.md infrastructure follow-up §2). signal_bus persistence is accumulating from 2026-05-19; usable in ~14 days.",
         "next_step": "Wait for signal_bus funding archive, then recompute closures.pnl_usd += funding_paid/received per hour held.",
-    },
-    "#9 — Tiered liquidity floor": {
-        "blocker": "Backtest JSONLs don't carry 24h volume per coin at fire time. Volume is in Binance klines but the harness drops it.",
-        "next_step": "Augment backtest_harness.py to record 24h_vol_usd per fire, then test floor tiers (50M / 200M / 500M) per engine grade.",
     },
     "#10 — Kronos gate on UNTESTED tier": {
         "blocker": "Kronos is a transformer ML gate; runs on live signal stream. test_kronos_gate.py exists but no historical inference output to overlay.",
@@ -331,8 +410,10 @@ def main() -> None:
             "1_maker_entry": adj1_maker_entry(fires),
             "3_by_coin_pruning_n10_pf1": adj3_by_coin_pruning(fires, min_n=10, max_pf=1.0),
             "3b_by_coin_pruning_n15_pf1": adj3_by_coin_pruning(fires, min_n=15, max_pf=1.0),
+            "4_fire_reason_pruning": adj4_fire_reason_pruning(fires, min_n=15, max_pf=1.0),
             "6_clean_only": adj6_clean_only(fires),
             "8_utc_hour_blackout": adj8_utc_hour_blackout(fires),
+            "9_liquidity_floor": adj9_liquidity_floor(fires),
         },
         "untestable_offline": UNTESTABLE,
     }

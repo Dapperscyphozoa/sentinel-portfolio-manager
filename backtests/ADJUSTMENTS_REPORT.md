@@ -5,6 +5,30 @@
 **Data:** `backtests/*.jsonl` — 7,893 simulated fires across 20 engines
 **Scope:** No live-trading code is modified by this analysis.
 
+## What this commit ships
+
+The verdicts below were validated offline. Code changes in this commit:
+
+- **#3 By-coin pruning** — new `pm/pretrade.py` gate behind `ENABLE_BY_COIN_PRUNE=0` (default OFF). 6 unit tests added covering default-off, dead-pair rejection, sample-size floor, PF threshold, noisy-closure exclusion, and engine allowlist.
+- **#4 fire_reason instrumentation** — `scripts/backtest_harness.py` now persists `fire_reason`, `extras`, and `vol_24h_usd` per fire. `scripts/counterfactual.py` activates `adj4_fire_reason_pruning` and `adj9_liquidity_floor` when the new fields are present (legacy JSONLs report `no_data_yet`).
+- **#6 Clean-closure hygiene** — `monitor/routines/daily_report.py` and `core/mer.py` now pass `?clean_only=1` to `/attribution`. `pm/server.py` local fallback `/attribution` honors `clean_only` parameter (was silently ignored). `pm/attribution.by_strategy()` defaults `clean_only=True`.
+- **#9 24h-volume instrumentation** — same harness patch as #4 above.
+
+**Not shipped (requires operator approval / live-path change):**
+- **#1 Maker entry** — fee bookkeeping already supports `extras.maker_only_recommended` (see `strategy_runner/trader.py:874`), but actual order routing still calls `hl.market_open`. A real implementation requires adding `limit_open(post_only=True, fallback_taker_after_ms=N)` to `common/hl_exchange.py`, integrating fill-timeout logic into `trader.py`, and operator review of the unfilled-rate impact. Separate PR.
+
+**To enable #3 in production (after operator review):**
+```bash
+# Per-service env vars on spm-pm
+ENABLE_BY_COIN_PRUNE=1
+BY_COIN_PRUNE_MIN_N=15
+BY_COIN_PRUNE_MAX_PF=1.0
+BY_COIN_PRUNE_ENGINES=hl_settle_5m,ict_confluence_4h,...  # explicit allowlist
+```
+Start with the allowlist set to one GREEN engine with ≥50 closures, monitor for 7 days, expand from there.
+
+---
+
 ## What this report does
 
 For each of the 10 proposed adjustments to lower cost / increase profit (excluding sizing and risk management), I ran an offline counterfactual against every honest-backtest JSONL in `backtests/`. Where a rule had to be fit (e.g. "drop loser pairs"), I used **walk-forward 50/50**: fit on the chronologically-first half, evaluate on the second half. An in-sample-overfit number is reported beside the walk-forward result so the gap is visible.

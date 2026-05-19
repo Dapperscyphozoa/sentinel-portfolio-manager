@@ -52,7 +52,7 @@ def run(conn: sqlite3.Connection) -> dict:
     out: dict = {"ts": time.time()}
     with httpx.Client(timeout=20) as c:
         try:
-            r = c.get(f"{pm_url}/attribution?since={since_ms}", headers={"X-PM-Auth": pm_token})
+            r = c.get(f"{pm_url}/attribution?since={since_ms}&clean_only=1", headers={"X-PM-Auth": pm_token})
             r.raise_for_status()
             out["attribution"] = _filter_dead(r.json(), dead)
         except Exception as e:
