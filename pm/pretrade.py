@@ -318,6 +318,18 @@ def check(conn, strategy: str, signal: dict, regime: dict,
     if os.environ.get(f"PM_FORCE_HALT_{strategy.upper()}", "0") == "1":
         return CheckResult(False, 0.0, "halt_forced")
 
+    # In-process halt check. The runner already short-circuits halted
+    # strategies before pm.check is called, but pm.check has historically
+    # never consulted halt.is_halted — meaning a /halt POST landing only
+    # on the PM side (not the runner) was cosmetic. Wire it here so halts
+    # are honored regardless of which service received the POST.
+    try:
+        from common import halt as _halt
+        if _halt.is_halted(strategy):
+            return CheckResult(False, 0.0, "halted")
+    except ImportError:
+        pass
+
     # 0) Hard-block: CUT engines (audit verdict — see CUT_ENGINES set)
     if strategy in CUT_ENGINES:
         return CheckResult(False, 0.0, "engine_cut_by_audit")

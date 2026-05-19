@@ -1153,11 +1153,28 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found", "path": path})
 
     def do_OPTIONS(self):
-        # CORS preflight for chat UI calls
+        # CORS preflight for chat UI calls. Allow-origin honours
+        # DASHBOARD_ORIGIN (comma-separated list) when set; falls back
+        # to echoing the request origin only if it appears in the list.
+        # Wildcard "*" is still accepted as an explicit opt-in but the
+        # auth headers are never advertised under a wildcard.
+        allowed = os.environ.get("DASHBOARD_ORIGIN", "").strip()
+        origin = self.headers.get("Origin", "")
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        if allowed == "*":
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        else:
+            allow_list = [o.strip() for o in allowed.split(",") if o.strip()]
+            if origin and origin in allow_list:
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
+                self.send_header(
+                    "Access-Control-Allow-Headers",
+                    "Content-Type, X-PM-Auth, X-Halt-Token, X-Sniper-Auth",
+                )
+            # else: omit Allow-Origin entirely → browser rejects.
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-PM-Auth, X-Halt-Token, X-Sniper-Auth")
         self.send_header("Access-Control-Max-Age", "3600")
         self.end_headers()
 
