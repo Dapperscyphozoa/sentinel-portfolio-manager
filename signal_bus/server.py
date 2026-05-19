@@ -38,6 +38,8 @@ from signal_bus import binance_ws  # noqa: E402
 from signal_bus import oi_poller  # noqa: E402
 from signal_bus import whale_poller  # noqa: E402
 from signal_bus.cache import Cache  # noqa: E402
+from signal_bus.ohlcv_store import OhlcvStore, fetch_bars  # noqa: E402
+from signal_bus import bench_config  # noqa: E402
 
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -45,6 +47,7 @@ log = logging.getLogger("signal_bus")
 
 
 CACHE: Cache | None = None
+OHLCV_STORE: OhlcvStore | None = None
 
 
 def _json_resp(handler: BaseHTTPRequestHandler, status: int, body) -> None:
@@ -237,6 +240,72 @@ class Handler(BaseHTTPRequestHandler):
                 rows = list(dq)[-n:] if dq else []
             return _json_resp(self, 200, rows)
 
+        # ─── sentinel-pm bench endpoints (bearer-auth gated) ────────────
+        if path in ("/ohlcv", "/universe", "/costs"):
+            expected = os.environ.get("SENTINEL_PM_TOKEN", "").strip()
+            if not expected:
+                return _json_resp(self, 503, {"error": "auth_not_configured"})
+            auth = self.headers.get("Authorization", "")
+            presented = auth[7:].strip() if auth.startswith("Bearer ") else ""
+            if presented != expected:
+                return _json_resp(self, 401, {"error": "unauthorized"})
+
+            if path == "/universe":
+                as_of = q.get("as_of")
+                syms = bench_config.universe_as_of(as_of)
+                return _json_resp(self, 200, {
+                    "as_of": as_of or time.strftime("%Y-%m-%d", time.gmtime()),
+                    "symbols": syms,
+                })
+
+            if path == "/costs":
+                return _json_resp(self, 200, bench_config.costs_table())
+
+            # /ohlcv
+            assert OHLCV_STORE is not None
+            sym = (q.get("symbol") or "").upper().strip()
+            interval = (q.get("interval") or "4h").strip()
+            start = q.get("start") or ""
+            end = q.get("end") or ""
+            cursor = q.get("cursor")
+            if not sym or not start or not end:
+                return _json_resp(self, 400, {
+                    "error": "missing_params",
+                    "required": ["symbol", "interval", "start", "end"],
+                })
+            try:
+                # ISO 8601 → ms
+                from datetime import datetime, timezone
+                def _iso_ms(s: str) -> int:
+                    s = s.replace("Z", "+00:00")
+                    return int(datetime.fromisoformat(s).astimezone(timezone.utc).timestamp() * 1000)
+                start_ms = _iso_ms(start)
+                end_ms = _iso_ms(end)
+            except Exception as e:
+                return _json_resp(self, 400, {"error": "bad_iso_timestamp", "detail": str(e)})
+
+            if cursor:
+                try:
+                    start_ms = max(start_ms, int(cursor))
+                except ValueError:
+                    return _json_resp(self, 400, {"error": "bad_cursor"})
+
+            bars, next_cursor = fetch_bars(OHLCV_STORE, sym, interval, start_ms, end_ms,
+                                            page_limit=10_000)
+            # Reshape bars: brief expects ISO timestamps
+            from datetime import datetime, timezone
+            out_bars = [{
+                "timestamp": datetime.fromtimestamp(b["open_ts"] / 1000, tz=timezone.utc)
+                              .strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "open": b["open"], "high": b["high"], "low": b["low"],
+                "close": b["close"], "volume": b["volume"],
+            } for b in bars]
+            return _json_resp(self, 200, {
+                "symbol": sym,
+                "interval": interval,
+                "bars": out_bars,
+                "next_cursor": next_cursor,
+            })
 
         return _json_resp(self, 404, {"error": "not_found", "path": path})
 
@@ -262,12 +331,17 @@ def _flush_loop(cache: Cache) -> None:
 
 
 def main() -> None:
-    global CACHE
+    global CACHE, OHLCV_STORE
     state = config.state_dir()
     db_path = os.path.join(state, "signal_bus.db")
     CACHE = Cache(db_path)
     CACHE.cold_load()
     log.info("cache cold-loaded; stats=%s", CACHE.stats())
+
+    # Historical OHLCV store (sentinel-pm bench validation). Separate SQLite
+    # file to keep the realtime cache lean.
+    OHLCV_STORE = OhlcvStore(os.path.join(state, "ohlcv.db"))
+    log.info("ohlcv_store ready at %s", OHLCV_STORE.db_path)
 
     syms = (config.get("BINANCE_SYMBOLS", "BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT") or "").strip()
     symbols = [s.strip().upper() for s in syms.split(",") if s.strip()]
