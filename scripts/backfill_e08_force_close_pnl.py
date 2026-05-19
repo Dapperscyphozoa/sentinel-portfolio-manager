@@ -59,7 +59,7 @@ for r in rows:
     
     real_close = fetch_hl_px_at(coin, close_ts)
     if not real_close:
-        print(f"  SKIP {coin} cloid={r["cloid"]} — could not fetch HL price")
+        print(f"  SKIP {coin} cloid={r['cloid']} — could not fetch HL price")
         continue
     
     gross = (real_close - open_px) * size * (1 if is_long else -1)
