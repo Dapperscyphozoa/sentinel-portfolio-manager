@@ -12,7 +12,10 @@ from urllib.parse import parse_qs, urlparse
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from common import config, halt, persistence  # noqa: E402
+from common import config
+from pm import pretrade as pm_pretrade
+from pm import regime as pm_regime  # noqa: E402
+from common import halt, persistence  # noqa: E402
 from common.bus_client import BusClient  # noqa: E402
 from common.hl_exchange import HLExchange  # noqa: E402
 from common.pm_client import PMClient  # noqa: E402
@@ -48,6 +51,18 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         path = u.path.rstrip("/") or "/"
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        if path == "/regime":
+            try:
+                bus = BusClient()
+                candles = bus.candles("BTC", "1h", n=60)
+                closes = [float(b["close"]) for b in candles]
+                highs = [float(b["high"]) for b in candles]
+                lows = [float(b["low"]) for b in candles]
+                return _json(self, 200, pm_regime.classify(closes, highs, lows))
+            except Exception as e:
+                return _json(self, 500, {"error": str(e)[:200],
+                                          "regime": "unknown", "confidence": 0.0})
+
         if path == "/health":
             return _json(self, 200, {"ok": True, "ts": time.time(), "registry": runner.registry_info(),
                                      "halted": list(halt.active_halts())})
@@ -236,6 +251,56 @@ class Handler(BaseHTTPRequestHandler):
                     "ok": True, "engine": target, "was_demoted": was,
                     "actor": body.get("actor", "api"),
                 })
+            except Exception as e:
+                return _json(self, 500, {"error": str(e)[:200]})
+
+        # /check — PM pre-trade gate (operator 2026-05-18: re-wire after silent break)
+        if path == "/check":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode() if length else "{}"
+                payload = json.loads(body)
+                strategy = str(payload.get("strategy", ""))
+                signal = payload.get("signal", {})
+                if not strategy or not isinstance(signal, dict):
+                    return _json(self, 400, {"error": "bad_payload"})
+                # Pull account state + regime
+                bus = BusClient()
+                try:
+                    acct = bus.hl_account()
+                    account_value = float(acct.get("value", 0))
+                    open_positions = acct.get("positions", []) or []
+                except Exception:
+                    account_value = 0.0
+                    open_positions = []
+                try:
+                    candles = bus.candles("BTC", "1h", n=60)
+                    closes = [float(b["close"]) for b in candles]
+                    highs = [float(b["high"]) for b in candles]
+                    lows = [float(b["low"]) for b in candles]
+                    regime_d = pm_regime.classify(closes, highs, lows)
+                except Exception:
+                    regime_d = {"regime": "unknown", "confidence": 0.0}
+                # Run pre-trade check
+                result = pm_pretrade.check(CONN, strategy, signal, regime_d,
+                                            account_value, open_positions)
+                return _json(self, 200, {
+                    "allow": result.allow,
+                    "size_usd": result.size_usd,
+                    "reason": result.reason,
+                    "bt_pf": getattr(result, "bt_pf", None),
+                })
+            except Exception as e:
+                log.exception("/check failed: %s", e)
+                return _json(self, 500, {"error": str(e)[:200], "allow": False, "size_usd": 0})
+
+        # /register_cloid — record HL order id for attribution
+        if path == "/register_cloid":
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = self.rfile.read(length).decode() if length else "{}"
+                p = json.loads(body)
+                return _json(self, 200, {"ok": True, "stored": p})
             except Exception as e:
                 return _json(self, 500, {"error": str(e)[:200]})
 

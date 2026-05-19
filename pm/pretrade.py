@@ -260,8 +260,12 @@ CUT_ENGINES: set = set()
 
 # Backward-compat alias
 OOS_ENGINE_REGISTRY = ENGINE_REGISTRY
-assert abs(sum(e["cap_frac"] for e in ENGINE_REGISTRY.values()) - 1.0) < 0.02, \
-    f"cap_fracs sum to {sum(e['cap_frac'] for e in ENGINE_REGISTRY.values())}"
+# Stage 1 engines use 'capital_fraction'; legacy use 'cap_frac'. Accept both.
+def _cap_of(e: dict) -> float:
+    return float(e.get("cap_frac", e.get("capital_fraction", 0.0)))
+
+_cap_sum = sum(_cap_of(e) for e in ENGINE_REGISTRY.values())
+assert abs(_cap_sum - 1.0) < 0.02, f"cap_fracs sum to {_cap_sum:.3f} (expected ~1.0)"
 
 # Singleton cooldown tracker (lock-guarded init — sentinel audit 2026-05-17)
 _cooldown: Optional[object] = None
