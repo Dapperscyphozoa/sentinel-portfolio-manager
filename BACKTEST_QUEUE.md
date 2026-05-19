@@ -1,36 +1,45 @@
 # Stage 1 Honest Backtest Queue — Phase 13 work plan (REVISED 2026-05-19)
 
-**Authorised:** operator 2026-05-19.
-**Scope:** the six HL-specific Stage 1 engines added to `pm/pretrade.py:ENGINE_REGISTRY` at `capital_fraction=0.00`, `audit_status: PROVISIONAL_NEW_ENGINE_PAPER`. None have been honest-backtested. This document fixes the run order, data dependencies, and pass/fail gates before any of them gets `cap_frac > 0`.
+**STATUS: SUPERSEDED.** Authoritative document is `STAGE1_GATES.md` (committed 2026-05-18). This file is retained for context and the per-engine telemetry/promotion ladder; the actual gate table and the "wait 14 days" action plan live in `STAGE1_GATES.md`.
 
-## REVISION 2026-05-19 — data-availability reality
+**Why this got rediscovered:** The original Phase 13 plan (BACKTEST_QUEUE v1, 2026-05-19) assumed historical backtest was feasible for the 6 Stage 1 engines after the OKX REST liq fix. Rechecking against the previous day's sentinel-council work showed all 6 were already reclassified to Category C (live-paper-only) because:
 
-After the liq-stream fix (commit `aae4aa9` — OKX REST poller into `cache.push_liq()`), historical liq data IS now available (~25h depth via REST cold-load). But other HL-specific data streams (whale positions, L2 book, NAV-vs-mark, HL trade-tape CVD) accumulate **prospectively only** — they are not backfillable from HL REST.
+- liq_cluster_hunt → no Binance forceOrder historical archive available
+- funding_triangulation → no HL hourly funding archive available
+- hl_whale_frontrun, hl_vault_predict, hl_cvd_aggressor, hl_depth_shock → HL-unique data with no historical proxy
 
-| Stream | Backfillable? | Current depth | Effect on Phase 13 |
-|---|---|---|---|
-| OKX liqs (REST) | Yes | ~25h cold-load; ongoing | `liq_cluster_hunt` honest-backtestable NOW |
-| Cross-venue funding | Yes (existing endpoint) | 30d historical via funding API | `funding_triangulation` honest-backtestable NOW |
-| HL whale positions | **No** (deque-only) | from-boot accumulation | `hl_whale_frontrun` needs ≥30d live paper, **not backtestable** |
-| HL L2 book snapshots | **No** | from-boot accumulation | `hl_depth_shock` needs ≥30d live paper, **not backtestable** |
-| HL HLP NAV-vs-mark | **No** | from-boot accumulation | `hl_vault_predict` needs ≥30d live paper, **not backtestable** |
-| HL trade tape CVD | **No** | from-boot accumulation (600 events/coin) | `hl_cvd_aggressor` needs ≥30d live paper, **not backtestable** |
+**Action:** all 6 Stage 1 engines are already `STRATEGY_<NAME>_ENABLED=1` on `spm-strategy-runner`. They are scanning live in paper mode (no per-engine `_LIVE` set, global `LIVE_TRADING` unset → default False per `trader.py`). Re-eval per `STAGE1_GATES.md`:
 
-**Conclusion:** the v1 BACKTEST_QUEUE.md ordering by est-PF was wrong because it ignored data availability. **Reordering below puts backtestable engines first and shifts the unbackfillable engines to a "live paper accumulation" track that runs in parallel.**
+| Engine | Cat | Promotion gate |
+|---|---|---|
+| `hl_cvd_aggressor` | C | n=30 paper, rolling-PF ≥ 1.5 |
+| `hl_depth_shock` | C | n=30 paper, rolling-PF ≥ 1.5 |
+| `hl_whale_frontrun` | C | n=50 paper, rolling-PF ≥ 1.5 |
+| `hl_vault_predict` | C | n=30 paper, rolling-PF ≥ 2.0 |
+| `liq_cluster_hunt` | C | n=40 paper, rolling-PF ≥ 1.5 |
+| `funding_triangulation` | C | n=30 paper, rolling-PF ≥ 1.5 |
 
-## Order of execution (revised — backtestable first)
+Estimated time to first gate: **14–21 days** of live paper accumulation. Monitor routine `auto_4loss_demote` already polls daily and updates `STAGE1_GATES.md`.
 
-| # | Engine | bt_pf (est) | Data ready? | Action |
-|---|---|---|---|---|
-| 1 | `liq_cluster_hunt` | 2.60 | **YES** (OKX REST liqs, 25h cold + ongoing) | Honest backtest NOW. Walk-forward 18h/4h split as bootstrap; full 60/30/30 once 90d of liq history accumulates. |
-| 2 | `funding_triangulation` | 2.00 | **YES** (binance/okx/HL funding 30d via existing endpoints) | Honest backtest NOW. Full walk-forward immediately. |
-| --- | --- | --- | --- | --- |
-| 3 | `hl_whale_frontrun` | 3.20 | **NO** (whale deque from-boot only) | **Live paper accumulation**. Set `STRATEGY_HL_WHALE_FRONTRUN_ENABLED=1`, `STRATEGY_HL_WHALE_FRONTRUN_LIVE=0`. Re-eval at n≥30 paper fires or 30d, whichever first. |
-| 4 | `hl_vault_predict` | 3.00 | **NO** (NAV-vs-mark from-boot only) | Live paper accumulation. Same protocol. |
-| 5 | `hl_cvd_aggressor` | 2.20 | **NO** (HL trade tape 600 events/coin in-memory) | Live paper accumulation. Same protocol. |
-| 6 | `hl_depth_shock` | 2.10 | **NO** (L2 book from-boot only) | Live paper accumulation. Same protocol. |
+---
 
-## Methodology (per backtestable engine — non-negotiable)
+## Promotion ladder (post-GREEN, per STAGE1_GATES.md)
+
+- n=30 @ rolling-PF ≥ 1.5 → canary 0.025 cap_frac
+- n=75 @ rolling-PF ≥ 2.0 → 0.05
+- n=150 @ rolling-PF ≥ 1.8 sustained → full registry cap
+
+## Infrastructure follow-up (recommended by STAGE1_GATES.md, est 3–5 days)
+
+To enable historical-backtest gating for future strategies:
+1. Build historical liq feed — current OKX REST cold-load gives ~25h; need archive of `signal_bus/cache.flush_liqs()` SQLite output, which is **already accumulating passively** since 2026-05-19 deploy. In 14d we'll have 14d of liq archive.
+2. Build HL funding rate historical via signal-bus persistence (already pulling, just need to archive).
+3. Build Binance L2 depth proxy historical (Bybit has free 30d L2 archive).
+4. Build CVD historical via Binance aggTrade replay (free, 30d history).
+
+---
+
+## Original v1 methodology (retained for reference; applies once historical data exists)
 
 Each engine must pass **all** of the following before `cap_frac > 0` is set in `pm/pretrade.py:ENGINE_REGISTRY`:
 
