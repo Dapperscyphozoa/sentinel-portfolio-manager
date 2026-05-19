@@ -660,6 +660,7 @@ class Handler(BaseHTTPRequestHandler):
         }
         """
         import json as _json_mod
+        from concurrent.futures import ThreadPoolExecutor
 
         engines_list: list = []
         closures: list = []
@@ -669,55 +670,47 @@ class Handler(BaseHTTPRequestHandler):
         equity_usd: float | None = None
         live_trading = os.environ.get("LIVE_TRADING", "0") == "1"
 
-        # Fan-out to internal subsystems. Each is best-effort; failures
-        # degrade gracefully (panel still renders other engines).
-        try:
-            with httpx.Client(timeout=8.0) as cli:
-                # PM registry
-                try:
-                    r = cli.get(f"http://localhost:{PM_PORT}/engines")
+        # Parallel fan-out — `/strategy/signals?limit=500` was sequentially
+        # gating the whole panel at 26+ seconds. Each call now runs in its
+        # own thread with a hard 5s timeout; the slowest blocker dictates
+        # total latency, not the sum.
+        def _get(url: str, timeout: float = 5.0):
+            try:
+                with httpx.Client(timeout=timeout) as cli:
+                    r = cli.get(url)
                     if r.status_code == 200:
-                        engines_list = r.json().get("engines", []) or []
+                        return r.json()
+            except Exception as e:
+                log.warning("engines_full GET %s: %s", url, e)
+            return None
+
+        urls = {
+            "engines":     (f"http://localhost:{PM_PORT}/engines", 5.0),
+            "closures":    (f"http://localhost:{STRATEGY_PORT}/closures?limit=2000", 8.0),
+            # limit=100 keeps payload small — /signals is slow with extras_json
+            "signals":     (f"http://localhost:{STRATEGY_PORT}/signals?limit=100", 5.0),
+            "state":       (f"http://localhost:{STRATEGY_PORT}/state", 5.0),
+            "attribution": (f"http://localhost:{STRATEGY_PORT}/attribution?since=0", 8.0),
+            "account":     (f"http://localhost:{SIGNAL_BUS_PORT}/hl/account", 3.0),
+        }
+        results: dict = {}
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            futs = {ex.submit(_get, url, t): name for name, (url, t) in urls.items()}
+            for fut in futs:
+                name = futs[fut]
+                try:
+                    results[name] = fut.result(timeout=10.0)
                 except Exception as e:
-                    log.warning("engines_full /pm/engines: %s", e)
-                # Closures (limit 5000 covers >30d at current cadence)
-                try:
-                    r = cli.get(f"http://localhost:{STRATEGY_PORT}/closures?limit=5000")
-                    if r.status_code == 200:
-                        closures = r.json() or []
-                except Exception as e:
-                    log.warning("engines_full /strategy/closures: %s", e)
-                # Recent signals
-                try:
-                    r = cli.get(f"http://localhost:{STRATEGY_PORT}/signals?limit=500")
-                    if r.status_code == 200:
-                        signals = r.json() or []
-                except Exception as e:
-                    log.warning("engines_full /strategy/signals: %s", e)
-                # Open positions
-                try:
-                    r = cli.get(f"http://localhost:{STRATEGY_PORT}/state")
-                    if r.status_code == 200:
-                        open_state = r.json() or []
-                except Exception as e:
-                    log.warning("engines_full /strategy/state: %s", e)
-                # Attribution aggregate (since=0 returns lifetime per engine)
-                try:
-                    r = cli.get(f"http://localhost:{STRATEGY_PORT}/attribution?since=0")
-                    if r.status_code == 200:
-                        attribution = r.json() or {"engines": []}
-                except Exception as e:
-                    log.warning("engines_full /strategy/attribution: %s", e)
-                # Equity
-                try:
-                    r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/hl/account")
-                    if r.status_code == 200:
-                        d = r.json() or {}
-                        equity_usd = d.get("value") or d.get("account_value")
-                except Exception:
-                    pass
-        except Exception as e:
-            log.exception("engines_full fan-out: %s", e)
+                    log.warning("engines_full fut[%s]: %s", name, e)
+                    results[name] = None
+
+        engines_list = (results.get("engines") or {}).get("engines", []) or []
+        closures = results.get("closures") or []
+        signals = results.get("signals") or []
+        open_state = results.get("state") or []
+        attribution = results.get("attribution") or {"engines": []}
+        if results.get("account"):
+            equity_usd = results["account"].get("value") or results["account"].get("account_value")
 
         # Bucket per-engine data
         attr_by_name = {e["engine"]: e for e in attribution.get("engines", [])
@@ -940,6 +933,11 @@ class Handler(BaseHTTPRequestHandler):
             for coin, agg in coin_agg.items():
                 agg["wr"] = round(agg["wins"] / agg["n"], 3) if agg["n"] else 0.0
                 agg["pnl_usd"] = round(agg["pnl_usd"], 4)
+                # Legacy panel aliases — landing.html loadHeatmap reads c.w / c.l / c.pnl
+                # rather than c.wins / (n-wins) / c.pnl_usd. Provide both shapes.
+                agg["w"] = agg["wins"]
+                agg["l"] = agg["n"] - agg["wins"]
+                agg["pnl"] = agg["pnl_usd"]
                 per_coin.append(agg)
             per_coin.sort(key=lambda x: x["pnl_usd"], reverse=True)
         except Exception:

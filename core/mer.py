@@ -185,13 +185,34 @@ def init_schema():
 # CLASSIFY + SCORE + HASH
 # ============================================================
 def _classify(title: str, source_tag: str) -> str:
+    """Tag-aware classification.
+
+    GLOBAL = events that move all markets simultaneously (Fed/ECB/BoJ rate
+             decisions, CPI/NFP prints, sanctions, ETF flows, BTC-systemic).
+    NATIONAL = country-scoped events with limited cross-border spillover
+               (regional CB decisions, regional inflation, world-events news
+               that doesn't trip a global keyword).
+
+    Default policy by source tag:
+      crypto  → GLOBAL  (crypto markets are global)
+      markets → GLOBAL  (broad-market financial news)
+      world   → NATIONAL (general world/regional reporting — falls back here
+                          unless a tier-1 GLOBAL keyword fires)
+    """
     t = (title or "").lower()
+    # Explicit GLOBAL keyword match always wins
     for kw in GLOBAL_KEYWORDS:
         if kw in t:
             return "global"
+    # Explicit NATIONAL keyword match
     for kw in NATIONAL_KEYWORDS:
         if kw in t:
             return "national"
+    # Tag-based fallback
+    tag = (source_tag or "").lower()
+    if tag == "world":
+        return "national"
+    # markets / crypto / unknown → global
     return "global"
 
 
@@ -305,6 +326,7 @@ def pull_all() -> dict:
     inserted = 0
     skipped_old = 0
     errors = []
+    reclassified = _reclassify_existing()
 
     for feed in RSS_FEEDS:
         try:
@@ -352,9 +374,37 @@ def pull_all() -> dict:
         "items_inserted": inserted,
         "events_inserted": events_added,
         "skipped_old": skipped_old,
+        "reclassified": reclassified,
         "errors": errors,
         "ts": now_ms,
     }
+
+
+def _reclassify_existing() -> int:
+    """Re-run classification on all existing mer_items. Used to migrate
+    rows ingested under prior (broken) classification rules — e.g. when
+    everything fell through to 'global' because the world-tag fallback
+    wasn't differentiating regional from cross-market news. Cheap to run
+    every pull cycle (~hundreds of rows max thanks to the 7-day retention)."""
+    # Source-tag lookup from RSS_FEEDS so we can re-apply tag-aware rules.
+    src_tag = {f["src"]: f.get("tag", "") for f in RSS_FEEDS}
+    updated = 0
+    try:
+        with _conn() as c:
+            rows = c.execute(
+                "SELECT hash, title, source, category FROM mer_items"
+            ).fetchall()
+            for h, title, source, current_cat in rows:
+                new_cat = _classify(title, src_tag.get(source, ""))
+                if new_cat != current_cat:
+                    c.execute(
+                        "UPDATE mer_items SET category=? WHERE hash=?",
+                        (new_cat, h),
+                    )
+                    updated += 1
+    except Exception as e:
+        print(f"[mer.reclassify] err: {e}", flush=True)
+    return updated
 
 
 def pull_ff_calendar() -> int:
@@ -646,19 +696,26 @@ _poller_thread: Optional[threading.Thread] = None
 def poller_loop(pull_interval_sec: int = 3600):
     """Pull every hour. Build snapshot once per UTC day boundary."""
     last_snapshot_day = None
+    first_run = True
     time.sleep(20)  # let the rest of core finish booting
     while True:
         try:
             stats = pull_all()
             print(
                 f"[mer.poller] pull: items={stats['items_inserted']} "
-                f"events={stats['events_inserted']} errs={len(stats['errors'])}",
+                f"events={stats['events_inserted']} "
+                f"reclassified={stats.get('reclassified', 0)} "
+                f"errs={len(stats['errors'])}",
                 flush=True,
             )
             day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-            if day != last_snapshot_day:
+            # Force snapshot on first run after restart — guarantees the
+            # served snapshot reflects current classification rules and any
+            # code changes deployed in this process.
+            if day != last_snapshot_day or first_run:
                 build_snapshot(day)
                 last_snapshot_day = day
+                first_run = False
                 print(f"[mer.poller] snapshot built for {day}", flush=True)
         except Exception as e:
             print(f"[mer.poller] err: {e}", flush=True)
