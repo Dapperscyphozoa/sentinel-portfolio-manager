@@ -40,7 +40,7 @@ The authoritative registry lives in `pm/pretrade.py:ENGINE_REGISTRY`. This SPEC 
 | `hl_settle_5m` | 1.85 | 55 | 0.20 | 5m | all regimes | Most-tested live. Promoted 2026-05-18 post short-only fix + denylist + TP 0.4% fee cleanup. |
 | `ict_confluence_4h` | 3.18 | — | 0.15 | 4h | all regimes | Council-trimmed from 0.25 → 0.15. OOS PF 1.37 on longs (asymmetric, kept SHORT_ONLY=0). Routed through `live_safety`. |
 | `e09_pump3d10_td_1d` | 2.20 | 26 | 0.10 | 1d | trend_down | n=26; over-allocated risk. Re-eval at n=50. |
-| `uzt_rev` (v3) | **6.92** | 41 | **0.05** | 1h | trend_up/down/range/chop | **NEW.** Reversal-only ship config. 16-coin universe (UNI ETH ATOM FIL BNB LTC NEAR SOL APT ARB WIF DOGE DOT SUI APE AVAX). Single TP=5R, signal SL, no BE, no partials, 40-bar time stop, Asia 00–05 UTC blocked. Phase-gated promotion per `VALIDATION_UZT_REV.md`. Paper-mode awaiting first fire as of 2026-05-19. |
+| `uzt_rev` (v3) | **6.92** | 41 | **0.05** | 15m | trend_up/down/range/chop | **NEW.** Reversal-only ship config. 16-coin universe (UNI ETH ATOM FIL BNB LTC NEAR SOL APT ARB WIF DOGE DOT SUI APE AVAX). Single TP=5R, signal SL, no BE, no partials, 40-bar time stop, Asia 00–05 UTC blocked. Phase-gated promotion per `VALIDATION_UZT_REV.md`. Paper-mode awaiting first fire as of 2026-05-19. |
 | `ict_confluence_1d` | 3.35 | — | 0.05 | 1d | all regimes | Paper-only via live_safety. |
 | `e16_bb_fade_hv_1d` | 5.35 | 29 | 0.05 | 1d | high_vol | Council-trimmed from 0.10 (n=29 too thin). |
 | `e01_zfade3s_tu_1d` | 1.29 | — | 0.05 | 1d | trend_up | |
