@@ -67,8 +67,32 @@ class Handler(BaseHTTPRequestHandler):
             return _json(self, 200, {"ok": True, "ts": time.time(), "registry": runner.registry_info(),
                                      "halted": list(halt.active_halts())})
         if path == "/state":
+            # Proxy to runner — trades DB is on runner disk (sentinel 2026-05-19)
+            try:
+                import httpx as _httpx
+                runner_url = os.environ.get("STRATEGY_RUNNER_URL",
+                                            "https://spm-strategy-runner.onrender.com")
+                qs_str = "?" + u.query if u.query else ""
+                r = _httpx.get(f"{runner_url.rstrip('/')}/state{qs_str}", timeout=15)
+                return _json(self, r.status_code, r.json())
+            except Exception as e:
+                log.warning("/state proxy failed: %s", e)
+                pass
+        if path == "/state":
             rows = CONN.execute("SELECT cloid,strategy,coin,is_long,open_ts,open_px,size_usd,sl_px,tp_px,status,extras_json FROM trades ORDER BY open_ts DESC LIMIT 200").fetchall()
             return _json(self, 200, [dict(r) for r in rows])
+        if path == "/signals":
+            # Proxy to runner — trades DB is on runner disk (sentinel 2026-05-19)
+            try:
+                import httpx as _httpx
+                runner_url = os.environ.get("STRATEGY_RUNNER_URL",
+                                            "https://spm-strategy-runner.onrender.com")
+                qs_str = "?" + u.query if u.query else ""
+                r = _httpx.get(f"{runner_url.rstrip('/')}/signals{qs_str}", timeout=15)
+                return _json(self, r.status_code, r.json())
+            except Exception as e:
+                log.warning("/signals proxy failed: %s", e)
+                pass
         if path == "/signals":
             n = int(q.get("limit", "100"))
             rows = CONN.execute("SELECT * FROM signals ORDER BY id DESC LIMIT ?", (n,)).fetchall()
@@ -90,10 +114,36 @@ class Handler(BaseHTTPRequestHandler):
                 return _json(self, 500, {"error": str(e)[:200]})
 
         if path == "/closures":
+            # Proxy to runner — trades DB is on runner disk (sentinel 2026-05-19)
+            try:
+                import httpx as _httpx
+                runner_url = os.environ.get("STRATEGY_RUNNER_URL",
+                                            "https://spm-strategy-runner.onrender.com")
+                qs_str = "?" + u.query if u.query else ""
+                r = _httpx.get(f"{runner_url.rstrip('/')}/closures{qs_str}", timeout=15)
+                return _json(self, r.status_code, r.json())
+            except Exception as e:
+                log.warning("/closures proxy failed: %s", e)
+                pass
+        if path == "/closures":
             n = int(q.get("limit", "1000"))
             since = float(q.get("since", "0"))
             rows = CONN.execute("SELECT * FROM closures WHERE close_ts>=? ORDER BY id DESC LIMIT ?", (since, n)).fetchall()
             return _json(self, 200, [dict(r) for r in rows])
+        if path == "/attribution":
+            # PM attribution must proxy to runner — trades DB lives on runner disk,
+            # PM has empty mirror. Sentinel-found bug 2026-05-19.
+            try:
+                import httpx as _httpx
+                runner_url = os.environ.get("STRATEGY_RUNNER_URL",
+                                            "https://spm-strategy-runner.onrender.com")
+                qs_str = "?" + u.query if u.query else ""
+                r = _httpx.get(f"{runner_url.rstrip('/')}/attribution{qs_str}", timeout=15)
+                return _json(self, r.status_code, r.json())
+            except Exception as e:
+                log.warning("attribution proxy failed: %s", e)
+                # Fall through to local query
+                pass
         if path == "/attribution":
             # Per-engine attribution: n, wr, pf, expectancy, gross_pnl, fees, net_pnl
             # Plus per-coin breakdown within each engine.
