@@ -150,12 +150,30 @@ async def _consume_liq(cache: Cache) -> None:
     Only the combined-stream URL `/market/stream?streams=!forceOrder@arr`
     works, so we use that with a single stream. Envelope is the standard
     combined-stream `{"stream": "!forceOrder@arr", "data": {...}}` wrapper."""
+    # DEBUG BEACON 2026-05-19 — push a synthetic event so we can confirm
+    # this coroutine actually runs on the deployed container. Remove once
+    # liq stream is verified live. usd=0.0 makes the beacon obvious.
+    import time as _t
+    beacon = {
+        "ts": int(_t.time() * 1000),
+        "coin": "BEACON",
+        "side": "BEACON",
+        "qty": 0.0,
+        "price": 0.0,
+        "usd": 0.0,
+    }
+    try:
+        cache.push_liq(beacon)
+        log.warning("liq ws beacon pushed (debug)")
+    except Exception:
+        log.exception("liq ws beacon push FAILED")
+
     url = "wss://fstream.binance.com/market/stream?streams=!forceOrder@arr"
     backoff = 1.0
     while True:
         try:
             async with websockets.connect(url, ping_interval=20, ping_timeout=20, max_size=2**22) as ws:
-                log.info("binance liq ws connected: %s", url)
+                log.warning("binance liq ws connected: %s", url)
                 backoff = 1.0
                 async for raw in ws:
                     try:
@@ -166,7 +184,10 @@ async def _consume_liq(cache: Cache) -> None:
                     data = msg.get("data") if isinstance(msg, dict) else None
                     if not data:
                         continue
-                    _on_liq(cache, data)
+                    try:
+                        _on_liq(cache, data)
+                    except Exception:
+                        log.exception("liq ws _on_liq raised; event dropped")
         except Exception as e:
             log.warning("binance liq ws disconnect: %s; reconnect in %.1fs", e, backoff)
             await asyncio.sleep(backoff)
