@@ -127,6 +127,10 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "ict_confluence_4h":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
                              "bt_pf": 3.18, "cap_frac": 0.15},   # council-trimmed from 0.25
     "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  2.2, "cap_frac": 0.10},
+    # uzt_rev v3 — reversal-only, single TP=5R, 16-coin universe. Bt n=41 WR 68% PF 6.92 OOS 6.92.
+    # Operator-promoted to live 2026-05-19. Cap_frac 0.05 starting allocation (~$25 notional).
+    "uzt_rev":             {"affinity": ["trend_up", "trend_down", "range", "chop"],
+                             "bt_pf": 6.92, "cap_frac": 0.05},
 
     # ─── WATCH: green by PF but suspect IS/OOS or undersize n (2 engines) ───
     "e16_bb_fade_hv_1d":   {"affinity": ["high_vol"],               "bt_pf":  5.35, "cap_frac": 0.05},  # council-trimmed from 0.10 — n=29
