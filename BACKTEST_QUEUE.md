@@ -1,20 +1,36 @@
-# Stage 1 Honest Backtest Queue — Phase 13 work plan
+# Stage 1 Honest Backtest Queue — Phase 13 work plan (REVISED 2026-05-19)
 
 **Authorised:** operator 2026-05-19.
 **Scope:** the six HL-specific Stage 1 engines added to `pm/pretrade.py:ENGINE_REGISTRY` at `capital_fraction=0.00`, `audit_status: PROVISIONAL_NEW_ENGINE_PAPER`. None have been honest-backtested. This document fixes the run order, data dependencies, and pass/fail gates before any of them gets `cap_frac > 0`.
 
-## Order of execution (descending estimated edge)
+## REVISION 2026-05-19 — data-availability reality
 
-| # | Engine | bt_pf (est) | Data deps | Notes |
+After the liq-stream fix (commit `aae4aa9` — OKX REST poller into `cache.push_liq()`), historical liq data IS now available (~25h depth via REST cold-load). But other HL-specific data streams (whale positions, L2 book, NAV-vs-mark, HL trade-tape CVD) accumulate **prospectively only** — they are not backfillable from HL REST.
+
+| Stream | Backfillable? | Current depth | Effect on Phase 13 |
+|---|---|---|---|
+| OKX liqs (REST) | Yes | ~25h cold-load; ongoing | `liq_cluster_hunt` honest-backtestable NOW |
+| Cross-venue funding | Yes (existing endpoint) | 30d historical via funding API | `funding_triangulation` honest-backtestable NOW |
+| HL whale positions | **No** (deque-only) | from-boot accumulation | `hl_whale_frontrun` needs ≥30d live paper, **not backtestable** |
+| HL L2 book snapshots | **No** | from-boot accumulation | `hl_depth_shock` needs ≥30d live paper, **not backtestable** |
+| HL HLP NAV-vs-mark | **No** | from-boot accumulation | `hl_vault_predict` needs ≥30d live paper, **not backtestable** |
+| HL trade tape CVD | **No** | from-boot accumulation (600 events/coin) | `hl_cvd_aggressor` needs ≥30d live paper, **not backtestable** |
+
+**Conclusion:** the v1 BACKTEST_QUEUE.md ordering by est-PF was wrong because it ignored data availability. **Reordering below puts backtestable engines first and shifts the unbackfillable engines to a "live paper accumulation" track that runs in parallel.**
+
+## Order of execution (revised — backtestable first)
+
+| # | Engine | bt_pf (est) | Data ready? | Action |
 |---|---|---|---|---|
-| 1 | `hl_whale_frontrun` | 3.20 | signal-bus `whale_poller` (top-20 HL wallets, 30s poll). 90d accumulation required. | World-first. Highest est edge. Tests viability of "copy big HL longs/shorts at entry". |
-| 2 | `hl_vault_predict` | 3.00 | signal-bus `hlp_poller` (HLP NAV vs mark, 5s poll). 90d minimum. | Anticipate HLP imminent rebalance from NAV-vs-mark divergence rate. |
-| 3 | `liq_cluster_hunt` | 2.60 | signal-bus liq events (Binance `!forceOrder@arr` + HL `liquidations`). Already accumulating; needs ≥30d. | Predict sweep path from stacked liq cluster + round-number alignment. |
-| 4 | `hl_cvd_aggressor` | 2.20 | signal-bus HL trade tape (aggressor side per print). Tape buffer needs ≥30d. | CVD aggressor flow on HL specifically (not Binance CVD). |
-| 5 | `hl_depth_shock` | 2.10 | signal-bus L2 book snapshots (1s). Storage cost is significant; 30d minimum. | Fade bid/ask depth shocks. Already has 1 open live position at runtime — that's an inflight test, not a backtest. |
-| 6 | `funding_triangulation` | 2.00 | HL funding + Binance funding + OKX funding, all time-aligned. signal-bus has Binance + OKX; HL funding via existing `funding/{coin}` endpoint. ≥30d. | Cross-venue divergence single-leg HL execution. |
+| 1 | `liq_cluster_hunt` | 2.60 | **YES** (OKX REST liqs, 25h cold + ongoing) | Honest backtest NOW. Walk-forward 18h/4h split as bootstrap; full 60/30/30 once 90d of liq history accumulates. |
+| 2 | `funding_triangulation` | 2.00 | **YES** (binance/okx/HL funding 30d via existing endpoints) | Honest backtest NOW. Full walk-forward immediately. |
+| --- | --- | --- | --- | --- |
+| 3 | `hl_whale_frontrun` | 3.20 | **NO** (whale deque from-boot only) | **Live paper accumulation**. Set `STRATEGY_HL_WHALE_FRONTRUN_ENABLED=1`, `STRATEGY_HL_WHALE_FRONTRUN_LIVE=0`. Re-eval at n≥30 paper fires or 30d, whichever first. |
+| 4 | `hl_vault_predict` | 3.00 | **NO** (NAV-vs-mark from-boot only) | Live paper accumulation. Same protocol. |
+| 5 | `hl_cvd_aggressor` | 2.20 | **NO** (HL trade tape 600 events/coin in-memory) | Live paper accumulation. Same protocol. |
+| 6 | `hl_depth_shock` | 2.10 | **NO** (L2 book from-boot only) | Live paper accumulation. Same protocol. |
 
-## Methodology (per engine — non-negotiable)
+## Methodology (per backtestable engine — non-negotiable)
 
 Each engine must pass **all** of the following before `cap_frac > 0` is set in `pm/pretrade.py:ENGINE_REGISTRY`:
 

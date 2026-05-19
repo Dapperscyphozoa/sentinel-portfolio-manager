@@ -65,6 +65,88 @@ def _in_asia_window(ts_ms: int) -> bool:
     return UZT_REV_ASIA_START_H <= h < UZT_REV_ASIA_END_H
 
 
+def _compute_filter_telemetry(bus, coin: str, entry_px: float, zone_edge_px: float,
+                              is_long: bool, fire_ts_ms: int) -> dict:
+    """Snapshot filter-relevant signals at fire time.
+
+    Recorded into Signal.extras for retrospective analysis once n grows past
+    ~100 fires. Three filter hypotheses (per Session 8+ R&D memory):
+
+      1. liq-density-near-zone — total $ of liqs in last N min, and the
+         subset that occurred within ±0.5% of the zone edge price. Side-of-
+         liq matters: longs liquidations (SELL side) near a long-zone edge
+         signal exhaustion of the move into the zone → REV bias improves.
+         Hypothesis: +5–10% WR.
+
+      2. OI-delta-into-zone — net OI change over last N min. Falling OI
+         while price moves to the zone = unwinding of the trapped side =
+         REV-bias improves. Rising OI = fresh momentum, REV worse.
+         Hypothesis: +10% WR.
+
+      3. CVD-divergence — net aggressor flow vs price move. Aggressors
+         buying/selling against the move into the zone is the classic
+         exhaustion signature. Hypothesis: +5–15% WR.
+
+    EVERY filter value is stored but the strategy STILL FIRES on the existing
+    UZT_REV v3 condition. Filters are observed, not enforced. Re-evaluate at
+    n≥100 fires per memory. Filter mechanism is written down BEFORE sign is
+    chosen to avoid the inverted-sign bug noted in Session 8 lessons.
+    """
+    out: dict = {"telem_version": 1}
+
+    # --- 1. liq-density (5/15/30 min, total and zone-proximal) ---
+    try:
+        for win_min in (5, 15, 30):
+            since = fire_ts_ms - win_min * 60_000
+            liqs = bus.liq(since_ms=since, coin=coin) or []
+            total_usd = 0.0
+            zone_usd = 0.0       # within ±0.5% of zone edge
+            long_liq_usd = 0.0   # liqs of LONGS (SELL side in our convention)
+            short_liq_usd = 0.0
+            for ev in liqs:
+                usd = float(ev.get("usd") or 0.0)
+                px = float(ev.get("price") or 0.0)
+                total_usd += usd
+                if ev.get("side") == "SELL":
+                    long_liq_usd += usd
+                elif ev.get("side") == "BUY":
+                    short_liq_usd += usd
+                if zone_edge_px > 0 and px > 0:
+                    if abs(px - zone_edge_px) / zone_edge_px < 0.005:
+                        zone_usd += usd
+            out[f"liq_{win_min}m_total_usd"] = round(total_usd, 2)
+            out[f"liq_{win_min}m_zone_usd"] = round(zone_usd, 2)
+            out[f"liq_{win_min}m_long_usd"] = round(long_liq_usd, 2)
+            out[f"liq_{win_min}m_short_usd"] = round(short_liq_usd, 2)
+    except Exception as e:
+        out["liq_telem_err"] = str(e)[:80]
+
+    # --- 2. OI-delta over 30 min ---
+    try:
+        oi_hist = bus.oi(coin=coin, n=8) or []   # 5min poll × 8 = 40min back
+        if len(oi_hist) >= 2:
+            oi_now = float(oi_hist[-1].get("oi_usd") or 0.0)
+            oi_prev = float(oi_hist[0].get("oi_usd") or 0.0)
+            if oi_prev > 0:
+                out["oi_30m_pct_delta"] = round((oi_now - oi_prev) / oi_prev, 5)
+                out["oi_now_usd"] = round(oi_now, 0)
+        else:
+            out["oi_telem_skip"] = "insufficient_history"
+    except Exception as e:
+        out["oi_telem_err"] = str(e)[:80]
+
+    # --- 3. CVD-divergence (last 30s of aggressor flow vs last 5min price move) ---
+    try:
+        cvd = bus.cvd(coin=coin, window_ms=30_000) or {}
+        out["cvd_30s_net"] = round(float(cvd.get("net") or 0.0), 4)
+        out["cvd_30s_buy_usd"] = round(float(cvd.get("buy_usd") or 0.0), 0)
+        out["cvd_30s_sell_usd"] = round(float(cvd.get("sell_usd") or 0.0), 0)
+    except Exception as e:
+        out["cvd_telem_err"] = str(e)[:80]
+
+    return out
+
+
 class UZT_REV(StrategyBase):
     """Reversal-only ship config. REV path of UZT, single 5R TP, Asia blocked."""
 
@@ -138,6 +220,21 @@ class UZT_REV(StrategyBase):
             # Override TP: single 5R (v1 used 3R + scaling ladder).
             tp = entry + UZT_REV_TP_R * risk if is_long else entry - UZT_REV_TP_R * risk
 
+            # Snapshot filter-relevant telemetry for retrospective analysis.
+            # Zone-edge price = SL (sweep wick), which is the boundary the
+            # liq density is measured against.
+            try:
+                telem = _compute_filter_telemetry(
+                    bus=bus,
+                    coin=coin,
+                    entry_px=entry,
+                    zone_edge_px=sl,
+                    is_long=is_long,
+                    fire_ts_ms=int(last_bar["open_ts"]),
+                )
+            except Exception as _e:
+                telem = {"telem_compute_err": str(_e)[:80]}
+
             return Signal(
                 coin=coin,
                 side=("B" if is_long else "A"),
@@ -155,6 +252,7 @@ class UZT_REV(StrategyBase):
                     "asia_blocked": False,
                     "audit_status": "PROVISIONAL",
                     "ship_version": "v3",
+                    "filter_telem": telem,
                 },
             )
 
