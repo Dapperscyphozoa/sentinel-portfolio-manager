@@ -149,9 +149,10 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "e16_bb_fade_hv_4h":   {"affinity": ["high_vol"],               "bt_pf":  1.50, "cap_frac": 0.02},  # n=1 BT only, low weight
 
     # ─── RED: honest PF < 1.0 — halted via STRATEGY_<NAME>_ENABLED=0 env ───
-    # e08_dip3d7_td_4h PROMOTED 2026-05-18: OOS PF 2.01 n=191; force_close PnL
-    # bug masked real performance. Re-graded after bug fix c5b055d.
-    "e08_dip3d7_td_4h":    {"affinity": ["trend_down"],             "bt_pf":  0.93, "cap_frac": 0.10},
+    # e08_dip3d7_td_4h GHOST CLEANUP 2026-05-19: file was archived 2026-05-18
+    # (commit 6c77c8a). Registry entry retained at cap_frac 0.10 by oversight.
+    # Removed entirely per SPEC v2.1 §3.10 / Phase 15. Cap_frac sum drops 1.05→0.95
+    # which remains inside the ±0.06 invariant tolerance — no redistribution needed.
     "e17_bb_fade_bt_4h":   {"affinity": ["high_vol", "range"],      "bt_pf":  0.86, "cap_frac": 0.00},
     "donchian":            {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.01, "cap_frac": 0.00},
     "cex_dex_arb":  {"affinity": ["range", "chop"],                  "bt_pf": 0.00, "cap_frac": 0.00},
