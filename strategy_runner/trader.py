@@ -77,14 +77,13 @@ class Trader:
 
     def open(self, strategy: StrategyBase, sig: Signal, size_usd: float) -> OpenResult:
         cloid = make_cloid(strategy.CLOID_PREFIX, sig.coin)
-        # PM returns size_usd as MARGIN (e.g. 5% of wallet). The HL `sz`
-        # parameter expects the position size in coin units at NOTIONAL,
-        # i.e. margin × leverage. Without the multiplier, every live trade
-        # came out at 1/leverage of the intended notional (sentinel finding
-        # T1, 2026-05-19). Skewed every backtest-vs-live PF comparison.
-        lev = float(self.leverage) if self.leverage else 5.0
-        notional_usd = size_usd * lev
-        size_coin = notional_usd / sig.ref_price if sig.ref_price > 0 else 0.0
+        # Position sizing: size_coin = size_usd / ref_price. PM passes size_usd
+        # as MARGIN (e.g. 5% wallet); the position notional on HL therefore
+        # equals margin, not margin × leverage. Operator-confirmed 2026-05-19:
+        # this conservative sizing is intentional. SPEC.md / pm/pretrade.py
+        # header text still references "notional = 25% wallet" — that line
+        # is descriptive of the registry's pre-bug shape, not current intent.
+        size_coin = size_usd / sig.ref_price if sig.ref_price > 0 else 0.0
         live = self._is_live(strategy.NAME)
         open_ts = time.time()
         coin_upper = (sig.coin or "").upper()
