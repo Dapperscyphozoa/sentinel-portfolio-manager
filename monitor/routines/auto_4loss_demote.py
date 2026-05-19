@@ -211,20 +211,28 @@ def _flip_env(engine: str, value: str) -> bool:
 
 def _count_paper_wins_streak(closures_conn: sqlite3.Connection, engine: str,
                              since_ts: float, n: int = 4) -> int:
-    """Count consecutive paper closures with PnL > 0 since `since_ts`."""
+    """Count consecutive CLEAN paper closures with PnL > 0 since `since_ts`.
+    Operator force-closes and bug-recovery backfills are skipped (they don't
+    reflect strategy edge)."""
+    from common.closures import is_clean_closure
     rows = closures_conn.execute(
-        "SELECT pnl_usd, extras_json FROM closures WHERE strategy=? AND close_ts>=? "
+        "SELECT pnl_usd, extras_json, close_reason FROM closures "
+        "WHERE strategy=? AND close_ts>=? "
         "ORDER BY close_ts DESC LIMIT ?",
-        (engine, since_ts, n),
+        (engine, since_ts, n * 3),  # over-fetch to allow filtering
     ).fetchall()
     paper_rows = []
     for r in rows:
+        if not is_clean_closure(r["close_reason"]):
+            continue
         try:
             e = json.loads(r["extras_json"] or "{}")
             if isinstance(e, dict) and e.get("live") is False:
                 paper_rows.append(r)
         except Exception:
             pass
+        if len(paper_rows) >= n:
+            break
     # rows are DESC, so paper_rows[0] is most recent paper trade
     if len(paper_rows) < n:
         return 0
@@ -271,12 +279,16 @@ def run(conn: sqlite3.Connection) -> dict:
         closures_data = []
 
     def _closures_for(engine_name: str, since_ts: float, n: int) -> int:
-        """Inline streak counter using closures_data list."""
+        """Inline streak counter using closures_data list. Excludes
+        operator-driven and bug-recovery closures via is_clean_closure."""
+        from common.closures import is_clean_closure
         paper = []
         for row in closures_data:
             if row.get("strategy") != engine_name:
                 continue
             if float(row.get("close_ts", 0)) < since_ts:
+                continue
+            if not is_clean_closure(row.get("close_reason")):
                 continue
             try:
                 e = json.loads(row.get("extras_json") or "{}")

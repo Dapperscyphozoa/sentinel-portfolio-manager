@@ -38,22 +38,30 @@ MIN_BT_PF = 1.0  # only check engines that claimed positive edge
 
 
 def _compute_rolling_pf(conn: sqlite3.Connection, strategy: str, n: int) -> tuple[float, int]:
-    """Return (rolling_pf, n_trades) for the last n closures of this strategy.
+    """Return (rolling_pf, n_trades) for the last n CLEAN closures of this
+    strategy. Excludes operator-driven and bug-recovery closures
+    (force_close*, backfill, reconciled_off_book, force_closed_unverified)
+    — these don't reflect strategy edge.
 
     Counts only LIVE-closed trades (extras_json says live=true)."""
+    from common.closures import is_clean_closure
     rows = conn.execute(
-        "SELECT pnl_usd, extras_json FROM closures WHERE strategy=? "
+        "SELECT pnl_usd, extras_json, close_reason FROM closures WHERE strategy=? "
         "ORDER BY close_ts DESC LIMIT ?",
-        (strategy, n),
+        (strategy, n * 3),  # over-fetch — most recent N CLEAN may be deeper than N raw
     ).fetchall()
     live_rows = []
     for r in rows:
+        if not is_clean_closure(r["close_reason"]):
+            continue
         try:
             e = json.loads(r["extras_json"] or "{}")
             if isinstance(e, dict) and e.get("live") is True:
                 live_rows.append(r)
         except Exception:
             pass
+        if len(live_rows) >= n:
+            break
     if len(live_rows) < n:
         return (0.0, len(live_rows))
     wins = sum(r["pnl_usd"] for r in live_rows if r["pnl_usd"] > 0)
