@@ -2509,8 +2509,11 @@ function _eng_fmtRelTime(ts) {
     return `${Math.floor(s/86400)}d`;
 }
 
-// Engines that expose /pnl /state /closures (template-fork + others). Engines NOT
-// here render with PM-only metadata (precog, smc-v2, smc-loose, V9, V10).
+// LEGACY: this whitelist gated engines that exposed per-service /pnl /state
+// /closures. The new collapsed-stack core exposes the union via /engines_full,
+// so the whitelist is no longer used as a hard gate — every engine in the
+// PM registry is treated as "API available". Keep the constant for any
+// downstream code that still references it.
 const _ENG_FULL_API = new Set([
     'vol-squeeze-fade','vol-squeeze-breakout-v1','pairs-engine-v1','dirmom-v1',
     'vol-mom-inverted-v1','fib-continuation-v1','cvd-inverted-v1',
@@ -2520,7 +2523,9 @@ const _ENG_FULL_API = new Set([
     'vpin-v1','whale-tracker-v1',
 ]);
 
-const _ENG_PM_URL = 'https://portfolio-manager-7df2.onrender.com';
+// All MER and engines data is served by core itself (same origin). No env
+// coupling, no legacy URL hardcodes.
+const _ENG_PM_URL = '';
 
 function _eng_baseUrl(haltUrl) {
     if (!haltUrl) return null;
@@ -2583,9 +2588,12 @@ function _eng_compute24h(closures) {
 }
 
 function _eng_renderCard(name, pm, data) {
-    const inFullApi = _ENG_FULL_API.has(name);
+    // In the collapsed stack, every engine in the PM registry has the same
+    // unified API surface (closures/signals/state) served by core. The legacy
+    // _ENG_FULL_API whitelist no longer gates anything — treat "halt_url
+    // present" as the sole "API available" signal.
     const base = _eng_baseUrl(pm.halt_url);
-    const apiAvailable = inFullApi && !!base;
+    const apiAvailable = !!pm.halt_url;
 
     const { pnl, state, closures, signals } = data || {};
     const stats24h = _eng_compute24h(closures);
@@ -2758,22 +2766,13 @@ function _eng_renderSection(title, desc, cls, engineList, allData) {
 
 async function loadEnginesGrid() {
     try {
-        // Fetch PM engines list
-        const r = await fetch(`${_ENG_PM_URL}/engines`, { cache: 'no-store' });
-        if (!r.ok) throw new Error(`PM /engines HTTP ${r.status}`);
+        // Single fan-out endpoint — see core/server.py _serve_engines_full.
+        // Returns {engines: {name: registry}, data: {name: {pnl,state,closures,signals}}}
+        const r = await fetch('/engines_full', { cache: 'no-store' });
+        if (!r.ok) throw new Error(`/engines_full HTTP ${r.status}`);
         const d = await r.json();
         const engines = d.engines || {};
-
-        // Fetch each engine's data in parallel (only those with halt_url + in full API set)
-        const tasks = [];
-        for (const [name, pm] of Object.entries(engines)) {
-            const base = _eng_baseUrl(pm.halt_url);
-            if (_ENG_FULL_API.has(name) && base) {
-                tasks.push(_eng_fetchEngineData(name, base).then(data => [name, data]));
-            }
-        }
-        const results = await Promise.all(tasks);
-        const allData = Object.fromEntries(results);
+        const allData = d.data || {};
 
         // Group by stage
         const live = [], paper = [], dead = [], other = [];

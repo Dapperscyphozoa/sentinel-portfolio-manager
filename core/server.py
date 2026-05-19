@@ -630,6 +630,221 @@ class Handler(BaseHTTPRequestHandler):
         # Could plug into a news API later. Empty for now.
         self._json(200, {"items": [], "ts": int(time.time() * 1000)})
 
+    # ────────────────── Engines full aggregator ──────────────────
+    def _serve_engines_full(self) -> None:
+        """Landing's /engines panel aggregator.
+
+        Replaces the legacy panel's habit of calling N legacy services
+        (`https://portfolio-manager-7df2.onrender.com/engines` then
+        `<engine_url>/pnl /state /closures /signals` per engine). The new
+        single-process stack exposes everything via internal localhost
+        endpoints; this method fans out once and returns a payload shaped
+        to match the panel's existing `loadEnginesGrid()` consumers.
+
+        Response shape:
+        {
+          ts: <ms>,
+          engines: { name: {  # dict keyed by engine name (legacy expectation)
+              halt_url,        # synthetic — panel only checks it's non-empty
+              capital_fraction, class, affinity, audit_status,
+              audit_metrics: {wr, pf, oos_pf, max_trades_per_day, n},
+              lifecycle_stage, spec: {thesis, timeframe},
+              cloid_prefix, live, deprecated, ...
+          }},
+          data: { name: {
+              pnl: {total_net_pnl, n_closed, wr_pct, equity},
+              state: {mode_effective, halt:{active}, open_trades:[...]},
+              closures: {closures: [{ts_close, net_pnl}]},
+              signals: {signals: [{fire_ts, ts}]},
+          }}
+        }
+        """
+        import json as _json_mod
+
+        engines_list: list = []
+        closures: list = []
+        signals: list = []
+        open_state: list = []
+        attribution: dict = {"engines": []}
+        equity_usd: float | None = None
+        live_trading = os.environ.get("LIVE_TRADING", "0") == "1"
+
+        # Fan-out to internal subsystems. Each is best-effort; failures
+        # degrade gracefully (panel still renders other engines).
+        try:
+            with httpx.Client(timeout=8.0) as cli:
+                # PM registry
+                try:
+                    r = cli.get(f"http://localhost:{PM_PORT}/engines")
+                    if r.status_code == 200:
+                        engines_list = r.json().get("engines", []) or []
+                except Exception as e:
+                    log.warning("engines_full /pm/engines: %s", e)
+                # Closures (limit 5000 covers >30d at current cadence)
+                try:
+                    r = cli.get(f"http://localhost:{STRATEGY_PORT}/closures?limit=5000")
+                    if r.status_code == 200:
+                        closures = r.json() or []
+                except Exception as e:
+                    log.warning("engines_full /strategy/closures: %s", e)
+                # Recent signals
+                try:
+                    r = cli.get(f"http://localhost:{STRATEGY_PORT}/signals?limit=500")
+                    if r.status_code == 200:
+                        signals = r.json() or []
+                except Exception as e:
+                    log.warning("engines_full /strategy/signals: %s", e)
+                # Open positions
+                try:
+                    r = cli.get(f"http://localhost:{STRATEGY_PORT}/state")
+                    if r.status_code == 200:
+                        open_state = r.json() or []
+                except Exception as e:
+                    log.warning("engines_full /strategy/state: %s", e)
+                # Attribution aggregate (since=0 returns lifetime per engine)
+                try:
+                    r = cli.get(f"http://localhost:{STRATEGY_PORT}/attribution?since=0")
+                    if r.status_code == 200:
+                        attribution = r.json() or {"engines": []}
+                except Exception as e:
+                    log.warning("engines_full /strategy/attribution: %s", e)
+                # Equity
+                try:
+                    r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/hl/account")
+                    if r.status_code == 200:
+                        d = r.json() or {}
+                        equity_usd = d.get("value") or d.get("account_value")
+                except Exception:
+                    pass
+        except Exception as e:
+            log.exception("engines_full fan-out: %s", e)
+
+        # Bucket per-engine data
+        attr_by_name = {e["engine"]: e for e in attribution.get("engines", [])
+                        if isinstance(e, dict) and e.get("engine")}
+        closures_by_name: dict = {}
+        for c in closures:
+            n = c.get("strategy") or c.get("engine")
+            if not n:
+                continue
+            closures_by_name.setdefault(n, []).append({
+                "ts_close": int((c.get("close_ts") or 0) * 1000),
+                "net_pnl": float(c.get("pnl_usd", 0)) - float(c.get("fees_usd", 0)),
+                "coin": c.get("coin"),
+                "is_long": bool(c.get("is_long")),
+                "close_reason": c.get("close_reason"),
+            })
+        signals_by_name: dict = {}
+        for s in signals:
+            n = s.get("strategy")
+            if not n:
+                continue
+            if n in signals_by_name:
+                continue  # /signals is already sorted desc; first hit wins
+            signals_by_name[n] = {
+                "fire_ts": int((s.get("ts") or 0) * 1000),
+                "ts": int((s.get("ts") or 0) * 1000),
+                "coin": s.get("coin"),
+                "side": "long" if s.get("is_long") else "short",
+                "fire_reason": s.get("fire_reason"),
+            }
+        open_by_name: dict = {}
+        for p in open_state:
+            n = p.get("strategy")
+            if not n:
+                continue
+            open_by_name.setdefault(n, []).append({
+                "coin": p.get("coin"),
+                "is_long": bool(p.get("is_long")),
+                "open_ts": int((p.get("open_ts") or 0) * 1000),
+                "open_px": p.get("open_px"),
+                "size_usd": p.get("size_usd"),
+            })
+
+        # Affinity-class fallback mapping
+        def _class_from_affinity(aff: list) -> str:
+            if not aff:
+                return ""
+            s = set(aff)
+            if "trend_up" in s and "trend_down" in s:
+                if "range" in s or "chop" in s:
+                    return "multi_regime"
+                return "trend_follower"
+            if "range" in s or "chop" in s:
+                return "mean_reversion"
+            if "trend_down" in s:
+                return "trend_short"
+            if "trend_up" in s:
+                return "trend_long"
+            return aff[0]
+
+        # Build dict-keyed registry in legacy shape
+        engines_dict: dict = {}
+        for e in engines_list:
+            name = e.get("name")
+            if not name:
+                continue
+            attr = attr_by_name.get(name) or {}
+            stage = e.get("stage") or "unknown"
+            # New PM uses 'live' for what legacy called 'full'
+            legacy_stage = {"live": "full"}.get(stage, stage)
+            engines_dict[name] = {
+                "halt_url": "/strategy/halt/" + name,  # synthetic — non-empty signals "API available"
+                "capital_fraction": e.get("capital_fraction"),
+                "class": _class_from_affinity(e.get("affinity") or []),
+                "affinity": e.get("affinity") or [],
+                "audit_status": e.get("audit_status") or "",
+                "audit_metrics": {
+                    "pf": e.get("bt_pf"),
+                    "n":  e.get("bt_n"),
+                    "wr": attr.get("wr"),
+                    "max_trades_per_day": None,
+                    "oos_pf": e.get("bt_pf"),
+                },
+                "lifecycle_stage": legacy_stage,
+                "spec": {
+                    "thesis": "",
+                    "timeframe": e.get("tf") or "",
+                },
+                "cloid_prefix": e.get("cloid_prefix") or "",
+                "live": legacy_stage in ("full", "canary", "small"),
+                "deprecated": legacy_stage in ("demoted", "deprecated"),
+                "needs_rewrite": False,
+            }
+
+        # Build per-engine data block
+        data_dict: dict = {}
+        for name in engines_dict.keys():
+            attr = attr_by_name.get(name) or {}
+            engine_closures = closures_by_name.get(name, [])
+            engine_open = open_by_name.get(name, [])
+            engine_signals = signals_by_name.get(name)
+            data_dict[name] = {
+                "pnl": {
+                    "total_net_pnl": attr.get("net_pnl", 0.0),
+                    "n_closed": attr.get("n", 0),
+                    "wr_pct": (attr.get("wr", 0.0) or 0.0) * 100.0 if attr else None,
+                    "equity": equity_usd,
+                    "__synthetic": False,
+                } if (attr or engine_closures) else None,
+                "state": {
+                    "mode_effective": "live" if live_trading else "paper",
+                    "halt": {"active": False},
+                    "open_trades": engine_open,
+                    "equity_usd": equity_usd,
+                    "daily_pnl_usd": attr.get("net_pnl", 0.0) if attr else None,
+                    "closed_trades_count": attr.get("n", 0) if attr else 0,
+                },
+                "closures": {"closures": engine_closures},
+                "signals": {"signals": [engine_signals] if engine_signals else []},
+            }
+
+        self._json(200, {
+            "ts": int(time.time() * 1000),
+            "engines": engines_dict,
+            "data": data_dict,
+        })
+
     # ────────────────── Macro Economic Report (MER) ──────────────────
     def _serve_mer_today(self) -> None:
         """GET /mer or /mer/today — landing /macro fetches this."""
@@ -872,6 +1087,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_whales()
         if path == "/news":
             return self._serve_news()
+        if path == "/engines_full":
+            return self._serve_engines_full()
         if path.startswith("/audit/deep"):
             return self._serve_audit_deep()
         if path.startswith("/orderbook/"):
