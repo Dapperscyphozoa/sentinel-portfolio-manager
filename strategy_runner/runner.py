@@ -212,7 +212,19 @@ def _load_registered() -> None:
             except Exception:
                 log.exception("failed to load legacy strategy %s", modname)
         log.info("Loaded %d legacy strategies: %s", len(legacy_loaded), legacy_loaded)
-    log.info("REGISTRY total: %d strategies (first-fire order)", len(REGISTRY))
+    # Sort REGISTRY by ENGINE_REGISTRY.bt_pf desc so first-fire-wins becomes
+    # best-edge-wins. Coin-lock is keyed only on coin, so without this the
+    # lowest-PF engine that scans first elbows out higher-edge engines.
+    # Unknown engines (no metadata) get pf=0 and sort to the bottom.
+    try:
+        from pm.pretrade import ENGINE_REGISTRY as _PM_REGISTRY
+        REGISTRY.sort(
+            key=lambda c: float(_PM_REGISTRY.get(c.NAME, {}).get("bt_pf", 0.0)),
+            reverse=True,
+        )
+    except Exception:
+        log.exception("could not pf-rank REGISTRY; keeping insertion order")
+    log.info("REGISTRY total: %d strategies (pf-ranked first-fire order)", len(REGISTRY))
 
     # ── Boot-time enabled-vs-registered sanity check (council 2026-05-18) ──
     # Caught a 48h silent outage where 29/30 engines were disabled because

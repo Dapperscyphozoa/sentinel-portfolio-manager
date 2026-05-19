@@ -156,7 +156,8 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "e17_bb_fade_bt_4h":   {"affinity": ["high_vol", "range"],      "bt_pf":  0.86, "cap_frac": 0.00},
     "donchian":            {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.01, "cap_frac": 0.00},
     "cex_dex_arb":  {"affinity": ["range", "chop"],                  "bt_pf": 0.00, "cap_frac": 0.00},
-    "cascade_sniper_hl":   {"affinity": ["high_vol", "trend_up", "trend_down", "range", "chop"], "bt_pf": 0.00, "cap_frac": 0.00},
+    # cascade_sniper_hl + e08_dip3d7_td_4h removed 2026-05-19 — modules
+    # archived; per SPEC §3.10 dead registry entries are not kept.
     # ─── World-first: HLP Vault Fade (Council #1 pick, Tier 1 ship-first) ───
     # ACTIVATED 2026-05-18 — sentinel council 3/5 YES; council caveat:
     # validate /hlp poll latency < 1s before first live fire (operator action)
@@ -378,6 +379,28 @@ def check(conn, strategy: str, signal: dict, regime: dict,
         if blocked:
             return CheckResult(False, 0.0, reason)
 
+    # 5c) Promotion gate — opt-in run-time enforcement. Refuses fires from
+    # canary/live engines whose metrics fail the per-stage minimums in
+    # pm/promotion_gate. Paper engines (cap_frac == 0) always pass. Operator
+    # bypasses a single engine via PROMOTION_OVERRIDE_<NAME>=1.
+    #
+    # Default OFF because the existing registry has many canary/live engines
+    # without full oos_pf / paper_n / paper_pf metadata — turning this on
+    # without first populating the registry will block every live trade.
+    # Set PROMOTION_GATE_RUNTIME=1 once metadata is populated to enforce
+    # at fire time rather than only at boot.
+    if os.environ.get("PROMOTION_GATE_RUNTIME", "0") in ("1", "true", "yes"):
+        try:
+            from . import promotion_gate as _pg
+            ok_pg, stage_pg, fails_pg = _pg.check_engine(strategy, eng_cfg)
+            if not ok_pg:
+                return CheckResult(
+                    False, 0.0,
+                    f"promotion_gate_fail:{stage_pg}:" + ",".join(fails_pg[:3])
+                )
+        except ImportError:
+            pass
+
     if account_value_usd <= 0:
         return CheckResult(False, 0.0, "no_account_value")
 
@@ -399,7 +422,7 @@ def check(conn, strategy: str, signal: dict, regime: dict,
     # 8) Live-safety gate for ICT signals + cascade sniper (council Phase 1 spec)
     # ICT + cascade sniper route through live_safety; OOS/legacy engines use
     # flat 5% margin × 5x lev as before.
-    LIVE_SAFETY_ENGINES = {"ict_confluence_4h", "ict_confluence_1d", "cascade_sniper_hl"}
+    LIVE_SAFETY_ENGINES = {"ict_confluence_4h", "ict_confluence_1d"}
     if strategy in LIVE_SAFETY_ENGINES and get_safety is not None:
         try:
             safety = get_safety()

@@ -1,74 +1,64 @@
 # sentinel-portfolio-manager
 
-Lean rebuild of MULTICA. Binance signals, Hyperliquid execution. 4 services. Sentinel-audited MODERATE 7/7.
+Algorithmic trading stack. Binance/OKX signals, Hyperliquid perps execution. Operator-curated engine registry, sentinel-audited.
 
-**Single source of truth:** [`SPEC.md`](SPEC.md)
-**Build plan:** [`WORKFLOW.md`](WORKFLOW.md)
+**Single source of truth:** [`SPEC.md`](SPEC.md) (v2.1).
+**Engine registry (authoritative):** `pm/pretrade.py:ENGINE_REGISTRY`.
 
-## Services (4)
+## Services
+
+The runtime is collapsed into two Render services (see `render.yaml`):
 
 | Service | Role |
 |---|---|
-| `signal-bus` | One Binance WS + one HL WS + optional OKX/Bybit funding WS. HTTP API to the rest of the stack. |
-| `strategy-runner` | 9 strategies, scan loop, position loop, HL orders. |
-| `pm` | Pre-trade gate (Rule 5b), regime detector, capital fractions, attribution. |
-| `monitor` | Drawdown halt + health-check + daily report cron, with $5/day Claude API budget. |
+| `core` | signal-bus + strategy-runner + pm + monitor in one process. HL execution, scan loop, position loop, pre-trade gate, drawdown halt, daily Claude routines. |
+| `sniper` | Hyperliquid listing-sniper micro-service. See [`DEPLOY_SNIPER.md`](DEPLOY_SNIPER.md). |
 
-## Strategies (9, per SPEC §3)
+Historical 4-service split (`signal-bus / strategy-runner / pm / monitor`) is documented in [`WORKFLOW.md`](WORKFLOW.md); the code now lives in one process per `core/server.py`.
 
-| Name | TF | Universe | Type |
-|---|---|---|---|
-| `fsp` | 1h | 30 alts | Funding Spike Predator — fresh sustained-funding entry |
-| `vsq` | 1h | 24 majors | Volatility Squeeze Breakout — BB inside KC then break |
-| `range_fade` | 15m | 18 mid-caps | RSI<25 + BB lower fade |
-| `range_bo` | 15m | BTC/ETH/SOL/XRP/BNB | Range break with 2× vol confirmation |
-| `lh1` | 1h | 24 majors+alts | Liquidation heatmap, INVERTED (sweep → continuation) |
-| `fd1` | 1h | 19 majors+alts | Funding-price divergence |
-| `precog` | 5m | 20 majors | Webhook consumer (HMAC) for HL Precog signals |
-| `liq_cascade` | 1m | 20 majors | Forced-order cascade fader |
-| `cex_dex_arb` | 1h | 20 majors | HL vs CEX funding spread (HL leg only) |
+## Engines
+
+The registry holds ~25 engines today across GREEN / WATCH / YELLOW / RED / UNTESTED / PROVISIONAL tiers. The full table — verdict, honest PF, n, cap_frac, affinity — lives in [`SPEC.md`](SPEC.md) §3 and mirrors `pm/pretrade.py:ENGINE_REGISTRY`. If the table and the code diverge, **the code wins**.
+
+Live capital is allocated only to engines with `cap_frac > 0`. Paper engines (`cap_frac=0`) still scan and write signals; they do not place HL orders.
 
 ## Local dev
 
 ```bash
 pip install -r requirements.txt
-pytest tests/                # 97 unit tests
+pytest tests/                # ~355 tests
 ```
 
-## Build sessions (per WORKFLOW.md, all complete)
+Some tests are stale against the current registry shape and will fail until refreshed; see commits tagged `chore(tests):`.
 
-| Session | Scope | Status |
-|---|---|---|
-| 1 | scaffold + common/ | done — 14 tests |
-| 2 | signal-bus Binance side | done — 11 tests |
-| 3 | signal-bus HL side | done — 4 tests |
-| 4 | strategy-runner + fsp | done — 7 tests |
-| 5 | range_fade + range_bo | done — 7 tests |
-| 6 | vsq + backtest harness | done — 4 tests |
-| 7 | fd1 + lh1 inverted | done — 10 tests |
-| 8 | precog webhook + HL confluence | done — 7 tests |
-| 9 | liq_cascade | done — 6 tests |
-| 10 | cex_dex_arb + OKX/Bybit WS | done — 6 tests |
-| 11 | pm rewrite | done — 12 tests |
-| 12 | monitor + Claude routines | done — 9 tests |
-| 13 | decommission legacy services | operator only — post-deploy |
+## Promotion lifecycle
 
-## Post-deploy gates (operator-owned)
+Engines are promoted GREEN → live one at a time via `STRATEGY_<NAME>_LIVE=1`. Demotion happens automatically on:
 
-1. Deploy via render.yaml; set `LIVE_TRADING=0` everywhere
-2. Verify 24h paper uptime + WS >95% liveness
-3. Run `python3 scripts/honest_backtest.py` → check `STRATEGY_GATES.md`
-4. Promote GREEN strategies to live one-at-a-time via `STRATEGY_<NAME>_LIVE=1`
-5. Decommission legacy `trend-rider-v1` + `vol-squeeze-fade` (already suspended)
+- 4 consecutive losses per coin or 6 per engine (1h cooldown)
+- 12% drawdown (1h cooldown)
+- live PF < 0.74× backtest PF (rolling 30-trade window, 1h cooldown)
+- 10% peak drawdown ⇒ global halt via monitor
+
+Promotion gate metadata and verdicts live in `pm/promotion_gate.py`; the run-time pre-trade gate is `pm/pretrade.py:check`.
 
 ## Halt control
 
 ```bash
 # halt single strategy
-curl -X POST https://spm-strategy-runner.onrender.com/halt/fsp \
+curl -X POST $CORE_URL/halt/<engine> \
      -H "X-Halt-Token: $HALT_TOKEN" -d '{"reason":"manual","actor":"operator"}'
 
 # halt all
-curl -X POST https://spm-strategy-runner.onrender.com/halt/all \
+curl -X POST $CORE_URL/halt/all \
      -H "X-Halt-Token: $HALT_TOKEN" -d '{"reason":"manual","actor":"operator"}'
 ```
+
+`HALT_TOKEN` must be set; the boot path aborts if it is missing on `core`. See `common/halt.py`.
+
+## Post-deploy gates (operator-owned)
+
+1. Deploy via `render.yaml`; confirm `LIVE_TRADING=0` and all `STRATEGY_*_LIVE=0` until validated.
+2. Verify 24h paper uptime + WS >95% liveness on `/health`.
+3. Run honest backtests in `scripts/` and check `STRATEGY_GATES.md` / `STAGE1_GATES.md`.
+4. Promote GREEN engines to live one-at-a-time via `STRATEGY_<NAME>_LIVE=1`.

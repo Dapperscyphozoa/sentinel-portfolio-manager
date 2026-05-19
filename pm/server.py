@@ -46,14 +46,48 @@ def _json(handler: BaseHTTPRequestHandler, status: int, body) -> None:
         pass
 
 
+# Max POST body size accepted. Prevents OOM via crafted Content-Length.
+_MAX_POST_BODY = 1_000_000
+
+
+def _pm_auth_ok(handler: BaseHTTPRequestHandler) -> bool:
+    """Constant-time X-PM-Auth check. Fail-closed when PM_AUTH_TOKEN unset."""
+    import hmac as _hmac
+    expected = os.environ.get("PM_AUTH_TOKEN", "")
+    if not expected:
+        return False
+    presented = handler.headers.get("X-PM-Auth") or ""
+    if not presented:
+        return False
+    return _hmac.compare_digest(expected, presented)
+
+
+# Endpoints that leak position/PnL/account information OR mutate state.
+# All require X-PM-Auth.
+_PM_AUTH_REQUIRED_GET = {
+    "/equity", "/risk", "/risk/events", "/state", "/closures",
+    "/attribution", "/demotions", "/signals",
+}
+_PM_AUTH_REQUIRED_POST = {"/check", "/register_cloid"}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
+
+    def _read_capped_body(self) -> bytes:
+        """Read POST body with a hard size cap; reject oversized requests."""
+        body_len = int(self.headers.get("content-length", "0") or "0")
+        if body_len < 0 or body_len > _MAX_POST_BODY:
+            return b""
+        return self.rfile.read(body_len) if body_len else b""
 
     def do_GET(self):
         u = urlparse(self.path)
         path = u.path.rstrip("/") or "/"
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        if path in _PM_AUTH_REQUIRED_GET and not _pm_auth_ok(self):
+            return _json(self, 401, {"error": "pm_auth_required"})
         if path == "/regime":
             try:
                 bus = BusClient()
@@ -332,13 +366,17 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         path = u.path.rstrip("/") or "/"
         parts = path.strip("/").split("/")
-        body_len = int(self.headers.get("content-length", "0") or "0")
-        raw = self.rfile.read(body_len) if body_len else b"{}"
+        raw = self._read_capped_body()
+        if not raw and int(self.headers.get("content-length", "0") or "0") > _MAX_POST_BODY:
+            return _json(self, 413, {"error": "body_too_large", "max_bytes": _MAX_POST_BODY})
+        raw = raw or b"{}"
         try:
             body = json.loads(raw or b"{}")
         except Exception:
             body = {}
         token = self.headers.get("X-Halt-Token")
+        if path in _PM_AUTH_REQUIRED_POST and not _pm_auth_ok(self):
+            return _json(self, 401, {"error": "pm_auth_required"})
 
         if len(parts) >= 2 and parts[0] == "halt":
             if not halt.halt_token_ok(token):
@@ -662,24 +700,10 @@ class Handler(BaseHTTPRequestHandler):
                                      "results": results})
 
         if path == "/precog/webhook":
-            # HMAC verification of X-Precog-Sig (hex sha256 of body with PRECOG_WEBHOOK_SECRET)
-            import hmac, hashlib
-            secret = os.environ.get("PRECOG_WEBHOOK_SECRET", "")
-            sig_hdr = self.headers.get("X-Precog-Sig") or self.headers.get("x-precog-sig", "")
-            if not secret:
-                return _json(self, 503, {"error": "no_secret_configured"})
-            expected = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
-            if not hmac.compare_digest(expected, (sig_hdr or "").lower()):
-                return _json(self, 401, {"error": "bad_signature"})
-            coin = (body.get("coin") or "").upper()
-            if not coin:
-                return _json(self, 400, {"error": "no_coin"})
-            try:
-                from strategy_runner.strategies import precog as precog_mod
-                precog_mod.enqueue(coin, body)
-            except Exception as e:
-                return _json(self, 500, {"error": str(e)})
-            return _json(self, 200, {"ok": True, "queue": precog_mod.queue_stats()})
+            # precog strategy archived 2026-05-19; module lives in _archived/.
+            # Route retained as 410 Gone so external producers see explicit
+            # deprecation instead of a 500 traceback that leaks module layout.
+            return _json(self, 410, {"error": "precog_archived"})
 
         return _json(self, 404, {"error": "not_found"})
 

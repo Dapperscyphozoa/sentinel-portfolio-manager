@@ -291,6 +291,9 @@ class Handler(BaseHTTPRequestHandler):
         path = u.path.rstrip("/") or "/"
         parts = path.strip("/").split("/")
         body_len = int(self.headers.get("content-length", "0") or "0")
+        # Cap body size — prevents OOM via crafted Content-Length header.
+        if body_len < 0 or body_len > 1_000_000:
+            return _json(self, 413, {"error": "body_too_large", "max_bytes": 1_000_000})
         raw = self.rfile.read(body_len) if body_len else b"{}"
         try:
             body = json.loads(raw or b"{}")
@@ -653,24 +656,10 @@ class Handler(BaseHTTPRequestHandler):
             return _json(self, 200, result)
 
         if path == "/precog/webhook":
-            # HMAC verification of X-Precog-Sig (hex sha256 of body with PRECOG_WEBHOOK_SECRET)
-            import hmac, hashlib
-            secret = os.environ.get("PRECOG_WEBHOOK_SECRET", "")
-            sig_hdr = self.headers.get("X-Precog-Sig") or self.headers.get("x-precog-sig", "")
-            if not secret:
-                return _json(self, 503, {"error": "no_secret_configured"})
-            expected = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
-            if not hmac.compare_digest(expected, (sig_hdr or "").lower()):
-                return _json(self, 401, {"error": "bad_signature"})
-            coin = (body.get("coin") or "").upper()
-            if not coin:
-                return _json(self, 400, {"error": "no_coin"})
-            try:
-                from strategy_runner.strategies import precog as precog_mod
-                precog_mod.enqueue(coin, body)
-            except Exception as e:
-                return _json(self, 500, {"error": str(e)})
-            return _json(self, 200, {"ok": True, "queue": precog_mod.queue_stats()})
+            # precog strategy archived 2026-05-19; module lives in _archived/.
+            # Route retained as 410 Gone so external producers see explicit
+            # deprecation instead of a 500 traceback that leaks module layout.
+            return _json(self, 410, {"error": "precog_archived"})
 
         return _json(self, 404, {"error": "not_found"})
 

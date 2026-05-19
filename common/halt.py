@@ -5,6 +5,7 @@ Token check is constant-time. Halt token defaults to None — if unset, POST /ha
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import threading
 import time
@@ -15,6 +16,21 @@ from . import persistence
 
 _LOCK = threading.RLock()
 _HALTED: set[str] = set()  # in-memory mirror; SQLite is source of truth
+
+_log = logging.getLogger(__name__)
+
+
+def require_halt_token_or_abort() -> None:
+    """Refuse to start a process whose safety relies on HALT_TOKEN being set.
+
+    Without the token, drawdown_check.run() and operator /halt routes silently
+    no-op, so trading runs uncapped. Boot loud rather than fail silent.
+    """
+    if not os.environ.get("HALT_TOKEN"):
+        raise RuntimeError(
+            "HALT_TOKEN env var is not set. Drawdown halt and operator /halt "
+            "endpoints will refuse to fire without it. Refusing to boot."
+        )
 
 
 def halt_token_ok(presented: Optional[str]) -> bool:

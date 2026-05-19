@@ -136,13 +136,29 @@ def run(conn: sqlite3.Connection) -> dict:
             env_key = f"STRATEGY_{name.upper()}_LIVE"
             env_ok = _render_set_env(env_key, "0")
             runtime_ok = _runtime_halt(name)
+            # Persist demotion to cooldown DB so pm.check enforces it even if
+            # the Render env flip failed (token missing, API rate-limited, etc).
+            # Without this, the demotion is lost on next restart.
+            cd_ok = False
+            try:
+                from common.cooldown import CooldownTracker
+                db_path = os.environ.get("COOLDOWN_DB", "/var/data/cooldowns.sqlite")
+                ct = CooldownTracker(db_path)
+                ct.demote_engine(
+                    name,
+                    f"auto_demote_rolling_pf:pf={pf:.2f}<thr={threshold:.2f}",
+                )
+                cd_ok = True
+            except Exception:
+                log.exception("could not persist auto-demote to cooldown DB for %s", name)
             log.error("AUTO-DEMOTE %s: rolling_PF=%.2f < threshold=%.2f "
-                      "(bt_pf=%.2f n=%d) render_env=%s runtime_halt=%s",
-                      name, pf, threshold, bt_pf, n, env_ok, runtime_ok)
+                      "(bt_pf=%.2f n=%d) render_env=%s runtime_halt=%s cooldown_db=%s",
+                      name, pf, threshold, bt_pf, n, env_ok, runtime_ok, cd_ok)
             demoted.append({
                 "engine": name, "rolling_pf": round(pf, 3),
                 "threshold": round(threshold, 3), "bt_pf": bt_pf,
                 "n": n, "env_persisted": env_ok, "runtime_halted": runtime_ok,
+                "cooldown_persisted": cd_ok,
             })
 
     severity = ("HIGH" if demoted

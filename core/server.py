@@ -1348,6 +1348,15 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     log.info("core service starting — public port %d, internal %d/%d/%d/%d",
              PUBLIC_PORT, SIGNAL_BUS_PORT, STRATEGY_PORT, PM_PORT, MONITOR_PORT)
+    # Refuse to boot without HALT_TOKEN — drawdown_check.run() and operator
+    # /halt routes silently no-op when the token is unset, leaving trading
+    # uncapped. Fail loud at startup instead of mid-incident.
+    try:
+        from common import halt as _halt
+        _halt.require_halt_token_or_abort()
+    except RuntimeError as e:
+        log.critical("%s", e)
+        raise
     # Serialize subsystem startup. Each subsystem's main() blocks on
     # serve_forever, so we can't wait for the thread function to return —
     # instead we wait for its TCP port to accept connections, then move on.
