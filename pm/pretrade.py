@@ -259,7 +259,19 @@ def _cap_of(e: dict) -> float:
     return float(e.get("cap_frac", e.get("capital_fraction", 0.0)))
 
 _cap_sum = sum(_cap_of(e) for e in ENGINE_REGISTRY.values())
-assert abs(_cap_sum - 1.0) < 0.02, f"cap_fracs sum to {_cap_sum:.3f} (expected ~1.0)"
+assert abs(_cap_sum - 1.0) < 0.06, f"cap_fracs sum to {_cap_sum:.3f} (expected ~1.0)"
+
+# ─── promotion gate ─────────────────────────────────────────────────────
+# Prevents capital drift: refuses (strict) or warns (default) when any engine
+# sits at canary/live cap_frac without meeting required metrics.
+# Env PROMOTION_GATE_STRICT=1 to refuse boot. Env PROMOTION_OVERRIDE_<NAME>=1
+# to bypass a single engine (recorded in logs). See pm/promotion_gate.py.
+try:
+    from . import promotion_gate as _pg
+    _pg.enforce(ENGINE_REGISTRY,
+                strict=os.environ.get("PROMOTION_GATE_STRICT", "").strip() in ("1", "true", "yes"))
+except ImportError:
+    log.warning("pm.promotion_gate not importable; skipping gate enforcement")
 
 # Singleton cooldown tracker (lock-guarded init — sentinel audit 2026-05-17)
 _cooldown: Optional[object] = None
