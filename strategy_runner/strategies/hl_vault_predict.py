@@ -58,6 +58,26 @@ class HLVaultPredict(StrategyBase):
     UNIVERSE = ["BTC", "ETH", "SOL", "XRP", "BNB", "DOGE", "AVAX", "LINK",
                 "LTC", "NEAR", "SUI", "APT", "ARB", "OP", "INJ", "SEI"]
 
+    # Rate-limited per-coin warn timestamps (epoch seconds) so the missing-
+    # unrealized_pnl warning fires at most once per 15min per coin. Class-
+    # level state — shared across evaluate() calls within one runner process.
+    _last_warn_unrl_pnl_ms: dict = {}
+
+    @classmethod
+    def _warn_missing_unrl_pnl(cls, coin: str) -> None:
+        """Log once per coin every 15min that hlp_position returned no
+        unrealized_pnl, so the gate is visible in runner logs rather than
+        silently no-firing. Sentinel-audit fix 2026-05-19."""
+        now_s = time.time()
+        last = cls._last_warn_unrl_pnl_ms.get(coin, 0)
+        if now_s - last >= 900:    # 15 min
+            cls._last_warn_unrl_pnl_ms[coin] = now_s
+            log.warning(
+                "hl_vault_predict[%s]: hlp_position returned no "
+                "unrealized_pnl — check signal-bus hlp_poller config",
+                coin,
+            )
+
     @classmethod
     def evaluate(cls, coin: str, bus) -> Optional[Signal]:
         # 1. HLP position (already exposed by hlp_poller). Use the public
@@ -97,11 +117,14 @@ class HLVaultPredict(StrategyBase):
         # for vaults that hold positions for hours/days. Firing on the proxy
         # produced spurious signals. Skip the engine for the coin until the
         # endpoint exposes unrealized_pnl.
+        #
+        # Sentinel-audit follow-up 2026-05-19: log a warning when this gate
+        # trips so a misconfigured hlp_poller (not returning unrealized_pnl)
+        # becomes visible in runner logs rather than silently no-firing.
+        # Rate-limited per-coin to once every 15min to avoid log spam.
         unrl_pnl = float(hlp_data.get("unrealized_pnl", 0) or 0)
         if unrl_pnl == 0 and abs(net_usd) > 0:
-            # No real PnL data available — bail out rather than fire on a
-            # broken proxy. When hlp_poller exposes unrealized_pnl, this gate
-            # removes itself automatically.
+            cls._warn_missing_unrl_pnl(coin)
             return None
         unrl_pct = unrl_pnl / abs(net_usd) if abs(net_usd) > 0 else 0
 
