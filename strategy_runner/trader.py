@@ -251,6 +251,116 @@ class Trader:
                         n, max_age_s)
         return n
 
+    def reconcile_with_hl(self) -> int:
+        """Cross-check every local 'open' row against HL's actual position
+        list. Any local 'open' coin not present on HL (and not 'pending') is
+        an off-book ghost — most likely the HL position closed by SL/TP that
+        the bracket placed at open, but our position_loop never observed the
+        close. These ghosts hold the coin lock and block new fires forever.
+
+        Action: mark such rows status='reconciled_off_book' so the lock
+        releases. The trade is NOT booked to closures (we have no fill px to
+        attribute) — but it stops jamming new opens. Operator can review the
+        reconciled rows in trades table to backfill PnL from HL fills history.
+
+        Returns # reconciled. No-op if HL bus unavailable.
+        """
+        try:
+            hl_pos = self.bus.hl_positions()
+        except Exception:
+            log.exception("reconcile_with_hl: bus.hl_positions failed; skip")
+            return 0
+        live_coins = {
+            (p.get("coin") or "").upper()
+            for p in (hl_pos or [])
+            if (p.get("coin") and float(p.get("size_coin", 0) or 0) != 0)
+        }
+        local_open = self.conn.execute(
+            "SELECT id, coin, strategy, open_ts FROM trades WHERE status='open'"
+        ).fetchall()
+        if not local_open:
+            return 0
+        to_reconcile = [
+            r for r in local_open if (r["coin"] or "").upper() not in live_coins
+        ]
+        if not to_reconcile:
+            return 0
+        # Be conservative: only reconcile rows older than 5min — protects
+        # against a transient HL WS gap right after an open.
+        cutoff = time.time() - 300
+        n = 0
+        for r in to_reconcile:
+            if r["open_ts"] >= cutoff:
+                continue
+            self.conn.execute(
+                "UPDATE trades SET status='reconciled_off_book', "
+                "extras_json=json_set(COALESCE(extras_json,'{}'),'$.reconcile_reason','hl_position_absent') "
+                "WHERE id=?",
+                (r["id"],),
+            )
+            n += 1
+            log.warning("reconcile_with_hl: %s/%s id=%d → reconciled_off_book "
+                        "(no HL position; open_ts=%.0f)",
+                        r["strategy"], r["coin"], r["id"], r["open_ts"])
+        return n
+
+    def force_close_stale(self, age_multiplier: float = 3.0) -> int:
+        """Local-only force-close for trades stuck 'open' way past their
+        max_hold_bars × tf. Defends against the failure mode where HL close
+        keeps erroring (size mismatch, position gone, rate limit) and
+        position_loop's retry budget is exhausted but the trade row stays
+        'open' indefinitely, holding the coin lock.
+
+        Closes locally using current mark price for an approximate PnL. The
+        position is marked closed in our DB; if it still exists on HL, the
+        next reconcile_with_hl() pass will be a no-op for this coin, but
+        operator must manually flatten via HL UI. The trade-off is jammed
+        coin lock vs. potentially-orphaned HL position — given that HL
+        bracket orders (SL/TP) already provide downside protection, the
+        lock-jam is the worse failure mode.
+
+        Returns # force-closed.
+        """
+        rows = self.conn.execute(
+            "SELECT cloid, strategy, coin, is_long, open_ts, open_px, size_coin, "
+            "max_hold_bars, extras_json FROM trades WHERE status='open'"
+        ).fetchall()
+        now = time.time()
+        n = 0
+        for r in rows:
+            tf_secs = 3600
+            try:
+                ex = json.loads(r["extras_json"] or "{}")
+                tf = (ex.get("extras", {}) or {}).get("tf") or ex.get("tf") or "1h"
+                tf_secs = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600,
+                           "4h": 14400, "1d": 86400}.get(tf, 3600)
+            except Exception:
+                pass
+            stale_at = r["open_ts"] + (r["max_hold_bars"] or 8) * tf_secs * age_multiplier
+            if now < stale_at:
+                continue
+            # Get current mark for approximate close PnL
+            try:
+                m = self.bus.markprice(r["coin"])
+                px = float(m.get("hl_mid") or m.get("binance_mid") or r["open_px"])
+            except Exception:
+                px = float(r["open_px"])  # fall back to open price → 0 PnL approx
+            self.conn.execute(
+                "UPDATE trades SET status='closed', "
+                "extras_json=json_set(COALESCE(extras_json,'{}'),"
+                "  '$.close_reason','stale_force_close',"
+                "  '$.close_px',?,"
+                "  '$.close_ts',?) "
+                "WHERE cloid=?",
+                (px, now, r["cloid"]),
+            )
+            n += 1
+            log.error("force_close_stale: %s/%s cloid=%s open_ts=%.0f age=%.1fh "
+                      "FORCE-CLOSED at px=%g (local only — verify HL manually)",
+                      r["strategy"], r["coin"], r["cloid"], r["open_ts"],
+                      (now - r["open_ts"]) / 3600.0, px)
+        return n
+
     def position_loop_once(self, registry=None) -> int:
         """Scan every open trade and close those that hit SL/TP/timeout, OR
         whose strategy.should_close() returns True (e.g. Donchian's

@@ -150,7 +150,46 @@ def init_db(db_path: str) -> sqlite3.Connection:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(trades)").fetchall()}
     if "close_retries" not in cols:
         conn.execute("ALTER TABLE trades ADD COLUMN close_retries INTEGER NOT NULL DEFAULT 0")
+    verify_integrity(conn)
     return conn
+
+
+def verify_integrity(conn: sqlite3.Connection) -> None:
+    """Assert the coin-lock partial unique index exists AND is enforced.
+
+    Hard guarantee at boot: if this raises, the runner refuses to start.
+    Failure mode this catches: silently-skipped CREATE UNIQUE INDEX (e.g. due
+    to prior schema mismatch) leaving the coin lock disabled — the exact
+    failure mode that allowed 10 duplicate APT shorts on 2026-05-17.
+    """
+    rows = conn.execute(
+        "SELECT name, sql FROM sqlite_master "
+        "WHERE type='index' AND tbl_name='trades' AND name='idx_trades_open_coin_lock'"
+    ).fetchall()
+    if not rows:
+        raise RuntimeError(
+            "persistence: idx_trades_open_coin_lock missing — coin lock is NOT "
+            "enforced at DB level. Refusing to boot. Inspect trades for "
+            "duplicate (coin, open|pending) rows and re-run init_db."
+        )
+    sql = (rows[0]["sql"] or "").lower()
+    if "unique" not in sql or "where status" not in sql:
+        raise RuntimeError(
+            f"persistence: idx_trades_open_coin_lock exists but malformed: {sql!r}"
+        )
+    # Final sanity: still any duplicate (coin, open|pending) rows? Means the
+    # pre-schema migration didn't run (or didn't catch them) AND the index
+    # somehow installed anyway — would be a SQLite anomaly. Halt.
+    dupes = conn.execute(
+        "SELECT coin FROM trades WHERE status IN ('open','pending') "
+        "GROUP BY coin HAVING COUNT(*) > 1 LIMIT 5"
+    ).fetchall()
+    if dupes:
+        coins = ", ".join(r["coin"] for r in dupes)
+        raise RuntimeError(
+            f"persistence: duplicate open|pending rows present for coins: {coins}. "
+            "Coin lock not enforced. Halt — manual reconciliation required."
+        )
 
 
 def table_names(conn: sqlite3.Connection) -> list[str]:

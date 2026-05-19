@@ -703,6 +703,7 @@ def _scan_loop() -> None:
 
 def _position_loop() -> None:
     from strategy_runner.runner import REGISTRY
+    tick = 0
     while True:
         try:
             # Defense in depth: clear any stale 'pending' rows (>5min old)
@@ -712,11 +713,32 @@ def _position_loop() -> None:
                 TRADER.sweep_stale_pending()
             except Exception:
                 log.exception("sweep_stale_pending failed")
+            # Every 5 ticks (~5 min): reconcile local 'open' rows against
+            # HL's actual position list. Releases ghost locks where HL closed
+            # via SL/TP but our loop missed it.
+            if tick % 5 == 0:
+                try:
+                    n = TRADER.reconcile_with_hl()
+                    if n:
+                        log.warning("reconcile_with_hl: %d off-book rows cleaned", n)
+                except Exception:
+                    log.exception("reconcile_with_hl failed")
+            # Every 15 ticks (~15 min): force-close trades stuck way past
+            # their max_hold. Last-resort defense against rows the loop can't
+            # close (e.g. persistent HL errors).
+            if tick % 15 == 0:
+                try:
+                    n = TRADER.force_close_stale()
+                    if n:
+                        log.error("force_close_stale: %d trades force-closed locally", n)
+                except Exception:
+                    log.exception("force_close_stale failed")
             closed = TRADER.position_loop_once(registry=REGISTRY)
             if closed:
                 log.info("position loop: closed %d", closed)
         except Exception:
             log.exception("position loop error")
+        tick += 1
         time.sleep(60)
 
 
