@@ -302,19 +302,30 @@ class Trader:
                         demoted, promoted, len(stale), hl_available)
         return demoted + promoted
 
-    def reconcile_with_hl(self) -> int:
+    def reconcile_with_hl(self, min_confirm_s: int = 60) -> int:
         """Cross-check every local 'open' row against HL's actual position
         list. Any local 'open' coin not present on HL (and not 'pending') is
         an off-book ghost — most likely the HL position closed by SL/TP that
         the bracket placed at open, but our position_loop never observed the
         close. These ghosts hold the coin lock and block new fires forever.
 
-        Action: mark such rows status='reconciled_off_book' so the lock
-        releases. The trade is NOT booked to closures (we have no fill px to
-        attribute) — but it stops jamming new opens. Operator can review the
-        reconciled rows in trades table to backfill PnL from HL fills history.
+        TWO-PASS CONFIRMATION (sentinel council H2 fix, 2026-05-19):
+        A single bus.hl_positions() snapshot can miss a real position during
+        WS reconnect or transient lag. If we trust a single snapshot, we may
+        release the lock for a coin that genuinely has an HL position open,
+        allowing a second engine to fire and create a duplicate HL position.
 
-        Returns # reconciled. No-op if HL bus unavailable.
+        Defense: require TWO consecutive 'absent' observations separated by
+        at least min_confirm_s (default 60s) before reconciling. First
+        absence is recorded in kv_state. Re-seeing the coin clears the
+        record. Only second-pass absence after the cool-down reconciles.
+
+        Action: mark such rows status='reconciled_off_book' so the lock
+        releases. The trade is NOT booked to closures — operator can review
+        the reconciled rows in trades table to backfill PnL from HL fills
+        history. Returns # reconciled.
+
+        No-op if HL bus unavailable.
         """
         try:
             hl_pos = self.bus.hl_positions()
@@ -331,28 +342,66 @@ class Trader:
         ).fetchall()
         if not local_open:
             return 0
-        to_reconcile = [
-            r for r in local_open if (r["coin"] or "").upper() not in live_coins
-        ]
-        if not to_reconcile:
-            return 0
-        # Be conservative: only reconcile rows older than 5min — protects
-        # against a transient HL WS gap right after an open.
-        cutoff = time.time() - 300
+        # 5min safety window for HL WS lag on freshly-opened trades
+        age_cutoff = time.time() - 300
+        now = time.time()
         n = 0
-        for r in to_reconcile:
-            if r["open_ts"] >= cutoff:
+        # Stash the set of absent-coins seen this pass for cleanup of stale
+        # kv_state entries
+        all_local_coins = {(r["coin"] or "").upper() for r in local_open}
+        for r in local_open:
+            coin = (r["coin"] or "").upper()
+            if r["open_ts"] >= age_cutoff:
                 continue
+            if coin in live_coins:
+                # coin reappeared on HL → clear pending-reconcile if any
+                key = f"recon_pending:{coin}"
+                if persistence.kv_get(self.conn, key) is not None:
+                    self.conn.execute("DELETE FROM kv_state WHERE k=?", (key,))
+                    log.info("reconcile_with_hl: %s reappeared on HL — pending cleared",
+                             coin)
+                continue
+            # Coin absent on HL. First-pass: record and wait.
+            key = f"recon_pending:{coin}"
+            first_seen = persistence.kv_get(self.conn, key)
+            if first_seen is None:
+                persistence.kv_set(self.conn, key, str(now))
+                log.warning("reconcile_with_hl: %s/%s id=%d absent on HL (pass 1/2) — "
+                            "will reconcile if still absent after %ds",
+                            r["strategy"], coin, r["id"], min_confirm_s)
+                continue
+            # Second-pass: only reconcile if min_confirm_s elapsed
+            try:
+                first_seen_ts = float(first_seen)
+            except (TypeError, ValueError):
+                first_seen_ts = now  # corrupt entry — reset
+                persistence.kv_set(self.conn, key, str(now))
+                continue
+            if now - first_seen_ts < min_confirm_s:
+                continue
+            # Confirmed: row is a ghost. Mark and clear sentinel.
             self.conn.execute(
                 "UPDATE trades SET status='reconciled_off_book', "
-                "extras_json=json_set(COALESCE(extras_json,'{}'),'$.reconcile_reason','hl_position_absent') "
+                "extras_json=json_set(COALESCE(extras_json,'{}'),"
+                "  '$.reconcile_reason','hl_position_absent_2pass',"
+                "  '$.reconcile_first_absent_ts',?,"
+                "  '$.reconcile_confirm_ts',?) "
                 "WHERE id=?",
-                (r["id"],),
+                (first_seen_ts, now, r["id"]),
             )
+            self.conn.execute("DELETE FROM kv_state WHERE k=?", (key,))
             n += 1
-            log.warning("reconcile_with_hl: %s/%s id=%d → reconciled_off_book "
-                        "(no HL position; open_ts=%.0f)",
-                        r["strategy"], r["coin"], r["id"], r["open_ts"])
+            log.error("reconcile_with_hl: %s/%s id=%d → reconciled_off_book "
+                      "(absent on HL for %ds — confirmed off-book)",
+                      r["strategy"], coin, r["id"], int(now - first_seen_ts))
+        # Garbage-collect kv_state entries for coins whose local 'open' rows
+        # are gone (closed/reconciled/etc) so they don't re-trigger spuriously.
+        for k_row in self.conn.execute(
+            "SELECT k FROM kv_state WHERE k LIKE 'recon_pending:%'"
+        ).fetchall():
+            coin_k = k_row["k"].split(":", 1)[1]
+            if coin_k not in all_local_coins:
+                self.conn.execute("DELETE FROM kv_state WHERE k=?", (k_row["k"],))
         return n
 
     def force_close_stale(self, age_multiplier: float = 3.0) -> int:
@@ -362,13 +411,12 @@ class Trader:
         position_loop's retry budget is exhausted but the trade row stays
         'open' indefinitely, holding the coin lock.
 
-        Closes locally using current mark price for an approximate PnL. The
-        position is marked closed in our DB; if it still exists on HL, the
-        next reconcile_with_hl() pass will be a no-op for this coin, but
-        operator must manually flatten via HL UI. The trade-off is jammed
-        coin lock vs. potentially-orphaned HL position — given that HL
-        bracket orders (SL/TP) already provide downside protection, the
-        lock-jam is the worse failure mode.
+        HL CHECK FIRST (sentinel council H3 fix, 2026-05-19):
+        Before marking closed locally, attempt to verify the HL state. If
+        HL says no position exists OR HL close succeeds, mark closed cleanly.
+        If HL is unreachable, fall back to 'force_closed_unverified' status
+        (still releases the lock) AND halts the strategy so the operator
+        must investigate before further trading.
 
         Returns # force-closed.
         """
@@ -378,6 +426,18 @@ class Trader:
         ).fetchall()
         now = time.time()
         n = 0
+        # One HL position snapshot per call (cheap) for the HL check
+        try:
+            hl_pos = self.bus.hl_positions()
+            hl_by_coin = {
+                (p.get("coin") or "").upper(): p for p in (hl_pos or [])
+                if (p.get("coin") and float(p.get("size_coin", 0) or 0) != 0)
+            }
+            hl_reachable = True
+        except Exception:
+            log.exception("force_close_stale: bus.hl_positions failed")
+            hl_by_coin = {}
+            hl_reachable = False
         for r in rows:
             tf_secs = 3600
             try:
@@ -390,26 +450,106 @@ class Trader:
             stale_at = r["open_ts"] + (r["max_hold_bars"] or 8) * tf_secs * age_multiplier
             if now < stale_at:
                 continue
+            coin = (r["coin"] or "").upper()
             # Get current mark for approximate close PnL
             try:
                 m = self.bus.markprice(r["coin"])
                 px = float(m.get("hl_mid") or m.get("binance_mid") or r["open_px"])
             except Exception:
-                px = float(r["open_px"])  # fall back to open price → 0 PnL approx
-            self.conn.execute(
-                "UPDATE trades SET status='closed', "
-                "extras_json=json_set(COALESCE(extras_json,'{}'),"
-                "  '$.close_reason','stale_force_close',"
-                "  '$.close_px',?,"
-                "  '$.close_ts',?) "
-                "WHERE cloid=?",
-                (px, now, r["cloid"]),
-            )
-            n += 1
-            log.error("force_close_stale: %s/%s cloid=%s open_ts=%.0f age=%.1fh "
-                      "FORCE-CLOSED at px=%g (local only — verify HL manually)",
-                      r["strategy"], r["coin"], r["cloid"], r["open_ts"],
-                      (now - r["open_ts"]) / 3600.0, px)
+                px = float(r["open_px"])  # 0-PnL fallback
+            # HL state branch
+            if not hl_reachable:
+                # Last resort: mark force_closed_unverified + halt strategy
+                self.conn.execute(
+                    "UPDATE trades SET status='force_closed_unverified', "
+                    "extras_json=json_set(COALESCE(extras_json,'{}'),"
+                    "  '$.close_reason','stale_force_close_hl_unreachable',"
+                    "  '$.close_px',?, '$.close_ts',?) "
+                    "WHERE cloid=?",
+                    (px, now, r["cloid"]),
+                )
+                # halt strategy — operator must reconcile
+                try:
+                    from common import halt as _halt
+                    _halt.set_halt(self.conn, r["strategy"], halted=True, actor="force_close_stale", reason="force_close_unverified_hl_unreachable")
+                except Exception:
+                    log.exception("set_halt failed")
+                n += 1
+                log.error("force_close_stale: %s/%s cloid=%s HL UNREACHABLE — "
+                          "force_closed_unverified + strategy HALTED",
+                          r["strategy"], coin, r["cloid"])
+                continue
+            hl_p = hl_by_coin.get(coin)
+            if hl_p is None:
+                # HL has no position: clean local close
+                self.conn.execute(
+                    "UPDATE trades SET status='closed', "
+                    "extras_json=json_set(COALESCE(extras_json,'{}'),"
+                    "  '$.close_reason','stale_force_close_hl_absent',"
+                    "  '$.close_px',?, '$.close_ts',?) "
+                    "WHERE cloid=?",
+                    (px, now, r["cloid"]),
+                )
+                n += 1
+                log.warning("force_close_stale: %s/%s cloid=%s closed locally "
+                            "(HL has no position; safe)",
+                            r["strategy"], coin, r["cloid"])
+                continue
+            # HL position exists. Attempt actual close.
+            if self.hl is None:
+                # No HL client configured (paper mode or boot error). Mark
+                # closed locally with a clear flag.
+                self.conn.execute(
+                    "UPDATE trades SET status='closed', "
+                    "extras_json=json_set(COALESCE(extras_json,'{}'),"
+                    "  '$.close_reason','stale_force_close_paper',"
+                    "  '$.close_px',?, '$.close_ts',?) "
+                    "WHERE cloid=?",
+                    (px, now, r["cloid"]),
+                )
+                n += 1
+                continue
+            try:
+                size_coin = float(r["size_coin"])
+                res = self.hl.market_close(coin=coin, size_coin=size_coin,
+                                            cloid=r["cloid"])
+                ok = bool(res and getattr(res, "ok", False))
+            except Exception:
+                log.exception("force_close_stale: hl.market_close raised")
+                ok = False
+            if ok:
+                self.conn.execute(
+                    "UPDATE trades SET status='closed', "
+                    "extras_json=json_set(COALESCE(extras_json,'{}'),"
+                    "  '$.close_reason','stale_force_close_hl_ok',"
+                    "  '$.close_px',?, '$.close_ts',?) "
+                    "WHERE cloid=?",
+                    (px, now, r["cloid"]),
+                )
+                n += 1
+                log.warning("force_close_stale: %s/%s cloid=%s closed via HL",
+                            r["strategy"], coin, r["cloid"])
+            else:
+                # HL close failed AND position exists on HL. Last resort:
+                # mark unverified + halt strategy.
+                self.conn.execute(
+                    "UPDATE trades SET status='force_closed_unverified', "
+                    "extras_json=json_set(COALESCE(extras_json,'{}'),"
+                    "  '$.close_reason','stale_force_close_hl_refused',"
+                    "  '$.close_px',?, '$.close_ts',?) "
+                    "WHERE cloid=?",
+                    (px, now, r["cloid"]),
+                )
+                try:
+                    from common import halt as _halt
+                    _halt.set_halt(self.conn, r["strategy"], halted=True, actor="force_close_stale", reason="force_close_unverified_hl_refused")
+                except Exception:
+                    log.exception("set_halt failed")
+                n += 1
+                log.error("force_close_stale: %s/%s cloid=%s HL close REFUSED — "
+                          "force_closed_unverified + strategy HALTED. "
+                          "Manual operator action required.",
+                          r["strategy"], coin, r["cloid"])
         return n
 
     def position_loop_once(self, registry=None) -> int:
