@@ -134,65 +134,9 @@ def _sig(coin="BTC", is_long=True, ref=60000.0):
             "max_hold_bars": 24, "fire_reason": "test"}
 
 
-def test_concentration_allows_room_inside_cap(monkeypatch):
-    """Already have $100 BTC notional, cap=2.0 → allow up to $100 more."""
-    monkeypatch.setenv("STRATEGY_FSP_ENABLED", "1")
-    monkeypatch.setenv("PRETRADE_COIN_CONC_MAX", "2.0")
-    monkeypatch.setenv("RISK_PCT_PER_TRADE", "0.02")
-    monkeypatch.setenv("LEVERAGE", "5")
-    monkeypatch.setenv("MIN_TRADE_USD", "10")
-    monkeypatch.setenv("PER_STRATEGY_CAP", "1.0")  # don't let per-strategy cap interfere
-    with tempfile.TemporaryDirectory() as d:
-        conn = persistence.init_db(os.path.join(d, "t.db"))
-        # account $500, risk 2% * lev 5 → proposed $50; existing $100 BTC notional;
-        # max_additional = 100 * (2-1) = $100. Proposed $50 ≤ $100 → allow at $50.
-        r = pretrade.check(conn, "fsp", _sig("BTC"), {"regime": "range", "confidence": 0.6},
-                           500.0, [{"coin": "BTC", "strategy": "fsp", "notional": 100}])
-        assert r.allow is True
-        assert r.size_usd == 50.0
-
-
-def test_concentration_caps_size_at_max_additional(monkeypatch):
-    """Already have $100 BTC notional, cap=1.5 → max_additional = $50; if proposal would be larger, clip to $50."""
-    monkeypatch.setenv("STRATEGY_FSP_ENABLED", "1")
-    monkeypatch.setenv("PRETRADE_COIN_CONC_MAX", "1.5")
-    monkeypatch.setenv("RISK_PCT_PER_TRADE", "0.10")  # large proposed
-    monkeypatch.setenv("LEVERAGE", "5")
-    monkeypatch.setenv("MIN_TRADE_USD", "10")
-    monkeypatch.setenv("PER_STRATEGY_CAP", "1.0")
-    with tempfile.TemporaryDirectory() as d:
-        conn = persistence.init_db(os.path.join(d, "t.db"))
-        # max_additional = 100 * 0.5 = $50 ; proposed pre-cap would be $250
-        r = pretrade.check(conn, "fsp", _sig("BTC"), {"regime": "range", "confidence": 0.6},
-                           500.0, [{"coin": "BTC", "strategy": "fsp", "notional": 100}])
-        assert r.allow is True
-        assert r.size_usd == 50.0
-
-
-def test_concentration_blocks_when_cap_equals_one(monkeypatch):
-    """cap=1.0 → no further concentration allowed."""
-    monkeypatch.setenv("STRATEGY_FSP_ENABLED", "1")
-    monkeypatch.setenv("PRETRADE_COIN_CONC_MAX", "1.0")
-    monkeypatch.setenv("PER_STRATEGY_CAP", "1.0")
-    with tempfile.TemporaryDirectory() as d:
-        conn = persistence.init_db(os.path.join(d, "t.db"))
-        r = pretrade.check(conn, "fsp", _sig("BTC"), {"regime": "range", "confidence": 0.6},
-                           500.0, [{"coin": "BTC", "strategy": "fsp", "notional": 100}])
-        assert r.allow is False
-        assert r.reason == "coin_concentration_full"
-
-
-def test_concentration_no_existing_position_is_open(monkeypatch):
-    """No existing this-coin notional → concentration check is no-op."""
-    monkeypatch.setenv("STRATEGY_FSP_ENABLED", "1")
-    monkeypatch.setenv("PRETRADE_COIN_CONC_MAX", "1.0")  # would block if applied
-    monkeypatch.setenv("MIN_TRADE_USD", "10")
-    monkeypatch.setenv("PER_STRATEGY_CAP", "1.0")
-    with tempfile.TemporaryDirectory() as d:
-        conn = persistence.init_db(os.path.join(d, "t.db"))
-        r = pretrade.check(conn, "fsp", _sig("BTC"), {"regime": "range", "confidence": 0.6},
-                           500.0, [])  # no BTC position
-        assert r.allow is True
+# Concentration tests removed 2026-05-19: the PRETRADE_COIN_CONC_MAX gate
+# was deleted from pm.pretrade and replaced by a strict 1_GLOBAL coin lock.
+# Coin-lock behavior is covered by tests/test_pm.py::test_pretrade_coin_lock_blocks_same_coin.
 
 
 # -------- Fix 4: HL funding from activeAssetCtx --------
@@ -240,23 +184,10 @@ def test_hl_ws_funding_does_not_clobber_binance_mark():
 
 # -------- Fix 5: backtest load_strategy --------
 
-def test_load_strategy_range_bo_via_range_breakout_module():
-    from scripts.backtest_harness import load_strategy
-    cls = load_strategy("range_bo")
-    assert cls.NAME == "range_bo"
-
-
-def test_load_strategy_explicit_module_name():
-    from scripts.backtest_harness import load_strategy
-    cls = load_strategy("range_breakout")
-    assert cls.NAME == "range_bo"
-
-
-def test_load_strategy_direct_name_match():
-    from scripts.backtest_harness import load_strategy
-    for n in ("fsp", "vsq", "range_fade", "fd1", "lh1", "precog", "liq_cascade", "cex_dex_arb"):
-        cls = load_strategy(n)
-        assert cls.NAME == n, f"{n} → {cls.NAME}"
+# load_strategy tests for archived modules (range_bo, range_breakout, fsp,
+# vsq, range_fade, fd1, lh1, precog, cex_dex_arb) removed 2026-05-19 — those
+# modules live in strategy_runner/strategies/_archived/. test_load_strategy_unknown_raises
+# is preserved below as it exercises the negative path.
 
 
 def test_load_strategy_unknown_raises():
@@ -265,27 +196,23 @@ def test_load_strategy_unknown_raises():
         load_strategy("definitely_not_a_strategy")
 
 
-# -------- Session 1.5 gate: fd1 hard-blocked --------
-
-def test_pretrade_blocks_fd1_red_gated(monkeypatch):
-    monkeypatch.setenv("STRATEGY_FD1_ENABLED", "1")  # even if env enabled
-    with tempfile.TemporaryDirectory() as d:
-        conn = persistence.init_db(os.path.join(d, "t.db"))
-        r = pretrade.check(conn, "fd1", _sig(), {"regime": "range", "confidence": 0.6},
-                           500.0, [])
-        assert r.allow is False
-        assert r.reason == "audit_red_gated"
+# fd1 red-gate test removed 2026-05-19: fd1 was archived from the registry,
+# so pm.check no longer hard-blocks it with reason "audit_red_gated" — it
+# falls through as an unknown engine. test_pretrade_other_strategies_not_red_gated
+# remains valid since it only checks the *absence* of audit_red_gated.
 
 
 def test_pretrade_other_strategies_not_red_gated(monkeypatch):
-    monkeypatch.setenv("STRATEGY_FSP_ENABLED", "1")
-    monkeypatch.setenv("STRATEGY_VSQ_ENABLED", "1")
-    monkeypatch.setenv("STRATEGY_LH1_ENABLED", "1")
+    # Archived strategies should not be hard-blocked with audit_red_gated;
+    # they may be blocked for other reasons (e.g. no registry entry), but
+    # the specific red-gate path is gone.
+    monkeypatch.setenv("STRATEGY_STOP_HUNT_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_VPOC_RETEST_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_OI_CONCENTRATION_ENABLED", "1")
     monkeypatch.setenv("MIN_TRADE_USD", "10")
-    monkeypatch.setenv("PER_STRATEGY_CAP", "1.0")
     with tempfile.TemporaryDirectory() as d:
         conn = persistence.init_db(os.path.join(d, "t.db"))
-        for s in ("fsp", "vsq", "lh1"):
+        for s in ("stop_hunt", "vpoc_retest", "oi_concentration"):
             r = pretrade.check(conn, s, _sig(), {"regime": "range", "confidence": 0.6},
                                500.0, [])
             assert r.reason != "audit_red_gated", f"{s} incorrectly red-gated"
