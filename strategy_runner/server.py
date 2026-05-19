@@ -448,6 +448,66 @@ class Handler(BaseHTTPRequestHandler):
                                      "total_pnl_correction": round(total_delta, 4),
                                      "results": results})
 
+        if path == "/admin/purge_dead_engines":
+            # Purge all rows in signals / trades / closures whose strategy is
+            # in AUDIT_DEAD_ENGINES env (default list per SPEC §4). Auth via
+            # HALT_TOKEN. Body:
+            #   {"dry_run": true|false,           # default true
+            #    "engines": ["name", ...]}        # optional override of env list
+            if not halt.halt_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            dry_run = bool(body.get("dry_run", True))
+            override = body.get("engines")
+            if override and isinstance(override, list):
+                dead = [str(e).strip() for e in override if str(e).strip()]
+            else:
+                dead = [e.strip() for e in os.environ.get(
+                    "AUDIT_DEAD_ENGINES",
+                    "cross_coin_zscore,UZT_REV,donchian,cascade_sniper_hl,e17_bb_fade_bt_4h,fd1"
+                ).split(",") if e.strip()]
+            if not dead:
+                return _json(self, 400, {"error": "no_dead_engines_configured"})
+            # Refuse to purge a strategy that has OPEN positions — too risky.
+            open_dead = CONN.execute(
+                f"SELECT strategy, COUNT(*) AS n FROM trades "
+                f"WHERE status IN ('open','pending') AND strategy IN "
+                f"({','.join('?' * len(dead))}) GROUP BY strategy",
+                dead
+            ).fetchall()
+            if open_dead:
+                return _json(self, 409, {
+                    "error": "dead_engine_has_open_positions_refusing_purge",
+                    "open": [dict(r) for r in open_dead],
+                })
+            # Count per-table per-engine
+            counts: dict = {}
+            for tbl in ("signals", "trades", "closures"):
+                counts[tbl] = {}
+                for eng in dead:
+                    n = CONN.execute(
+                        f"SELECT COUNT(*) FROM {tbl} WHERE strategy=?", (eng,)
+                    ).fetchone()[0]
+                    if n > 0:
+                        counts[tbl][eng] = n
+            total = sum(sum(v.values()) for v in counts.values())
+            if not dry_run and total > 0:
+                for tbl in ("signals", "trades", "closures"):
+                    for eng in dead:
+                        CONN.execute(f"DELETE FROM {tbl} WHERE strategy=?", (eng,))
+                CONN.commit()
+                # VACUUM to reclaim disk
+                try:
+                    CONN.execute("VACUUM")
+                except Exception:
+                    pass
+            return _json(self, 200, {
+                "ok": True, "dry_run": dry_run,
+                "dead_engines": dead,
+                "rows_per_table_per_engine": counts,
+                "total_rows_affected": total,
+                "applied": (not dry_run) and total > 0,
+            })
+
         if path == "/precog/webhook":
             # HMAC verification of X-Precog-Sig (hex sha256 of body with PRECOG_WEBHOOK_SECRET)
             import hmac, hashlib
