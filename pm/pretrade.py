@@ -260,11 +260,14 @@ def _cap_of(e: dict) -> float:
     return float(e.get("cap_frac", e.get("capital_fraction", 0.0)))
 
 _cap_sum = sum(_cap_of(e) for e in ENGINE_REGISTRY.values())
-# Block OVER-allocation only — under-allocation is safe (idle capital).
-# 2026-05-19: changed from abs(sum-1.0)<0.06 to sum<=1.06 after demoting
-# ict_confluence_4h (0.15→0) + halving hl_settle_5m (0.20→0.10). Allocation
-# is now ~0.80; redistribute only when a validated engine earns capital.
-assert _cap_sum <= 1.06, f"cap_fracs sum to {_cap_sum:.3f} (over-allocated; cap is 1.06)"
+# Block OVER-allocation strictly at 1.0 (with 0.005 float-tolerance).
+# Under-allocation is safe (idle capital); over-allocation puts the wallet
+# at risk via leveraged notional. On a $491 wallet × 5x lev, cap_sum=1.0
+# already permits ~$2,455 max notional — tightening further would limit
+# legitimate full-allocation engines.
+# 2026-05-19: tightened from 1.06 → 1.005 per operator decision (council
+# Qwen3 Coder 480B A4 flag on the previous 1.06 upper bound).
+assert _cap_sum < 1.005, f"cap_fracs sum to {_cap_sum:.3f} (over-allocated; hard cap 1.0)"
 
 # ─── promotion gate ─────────────────────────────────────────────────────
 # Prevents capital drift: refuses (strict) or warns (default) when any engine
