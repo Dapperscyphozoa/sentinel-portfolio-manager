@@ -77,7 +77,14 @@ class Trader:
 
     def open(self, strategy: StrategyBase, sig: Signal, size_usd: float) -> OpenResult:
         cloid = make_cloid(strategy.CLOID_PREFIX, sig.coin)
-        size_coin = size_usd / sig.ref_price if sig.ref_price > 0 else 0.0
+        # PM returns size_usd as MARGIN (e.g. 5% of wallet). The HL `sz`
+        # parameter expects the position size in coin units at NOTIONAL,
+        # i.e. margin × leverage. Without the multiplier, every live trade
+        # came out at 1/leverage of the intended notional (sentinel finding
+        # T1, 2026-05-19). Skewed every backtest-vs-live PF comparison.
+        lev = float(self.leverage) if self.leverage else 5.0
+        notional_usd = size_usd * lev
+        size_coin = notional_usd / sig.ref_price if sig.ref_price > 0 else 0.0
         live = self._is_live(strategy.NAME)
         open_ts = time.time()
         coin_upper = (sig.coin or "").upper()

@@ -65,6 +65,83 @@ def _json(handler: BaseHTTPRequestHandler, status: int, body) -> None:
         pass
 
 
+def _close_one_cloid(cloid: str, reason: str, actor: str) -> dict:
+    """Execute a force-close on a single open cloid. Returns result dict
+    suitable for inclusion in an /admin/force_close response.
+
+    Extracted so /admin/close_strategy/<name> and /admin/close_coin/<coin>
+    can reuse the exact close + PnL accounting path without duplication.
+    """
+    row = CONN.execute(
+        "SELECT * FROM trades WHERE cloid=? AND status='open'",
+        (cloid,)
+    ).fetchone()
+    if not row:
+        return {"cloid": cloid, "ok": False, "error": "not_open_or_not_found"}
+    coin = row["coin"]
+    size_coin = float(row["size_coin"])
+    try:
+        px = BUS.markprice(coin) or {}
+        if isinstance(px, dict):
+            close_px = float(px.get("hl_mid") or px.get("binance_mid") or row["open_px"])
+        else:
+            close_px = float(px) if px else float(row["open_px"])
+    except Exception:
+        close_px = float(row["open_px"])
+    try:
+        res = TRADER.hl.market_close(coin=coin, size_coin=size_coin, cloid=cloid) if TRADER.hl else None
+    except Exception as e:
+        log.exception("admin/force_close HL call failed cloid=%s", cloid)
+        return {"cloid": cloid, "coin": coin, "ok": False, "error": f"hl_raised:{e}"}
+    if res is None or not res.ok:
+        err = (res.error if res else "hl_disabled")
+        log.error("force_close FAILED cloid=%s coin=%s err=%s", cloid, coin, err)
+        return {"cloid": cloid, "coin": coin, "ok": False, "error": err}
+    try:
+        extras = json.loads(row["extras_json"] or "{}")
+        tp_orphan = extras.get("tp_cloid")
+        sl_orphan = extras.get("sl_cloid")
+        if tp_orphan and hasattr(TRADER.hl, "cancel_by_cloid"):
+            try: TRADER.hl.cancel_by_cloid(coin, tp_orphan)
+            except Exception: log.warning("orphan TP cancel failed")
+        if sl_orphan and hasattr(TRADER.hl, "cancel_by_cloid"):
+            try: TRADER.hl.cancel_by_cloid(coin, sl_orphan)
+            except Exception: log.warning("orphan SL cancel failed")
+    except Exception:
+        pass
+    ts_now = time.time()
+    pnl = (close_px - float(row["open_px"])) * size_coin * (1 if row["is_long"] else -1)
+    FORCE_CLOSE_FEE_RATE = 0.00045
+    notional = float(row["open_px"]) * size_coin
+    fees_usd = notional * FORCE_CLOSE_FEE_RATE * 2
+    pnl_net = pnl - fees_usd
+    try:
+        extras = json.loads(row["extras_json"] or "{}")
+    except Exception:
+        extras = {}
+    extras["force_closed"] = {"reason": reason, "actor": actor, "ts": ts_now,
+                              "close_px": close_px, "pnl_usd_gross": pnl,
+                              "pnl_usd_net": pnl_net, "fees_usd": fees_usd}
+    CONN.execute(
+        "UPDATE trades SET status=?, extras_json=? WHERE cloid=?",
+        ("closed", json.dumps(extras, default=str), cloid)
+    )
+    try:
+        CONN.execute(
+            "INSERT OR IGNORE INTO closures(cloid, strategy, coin, is_long, open_ts, "
+            "close_ts, open_px, close_px, size_coin, pnl_usd, fees_usd, close_reason, extras_json) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (cloid, row["strategy"], coin, row["is_long"], row["open_ts"], ts_now,
+             row["open_px"], close_px, size_coin, pnl_net, fees_usd,
+             f"force_close:{reason}", json.dumps(extras, default=str))
+        )
+    except Exception:
+        log.exception("closures insert failed for %s", cloid)
+    return {"cloid": cloid, "coin": coin, "ok": True,
+            "close_px": close_px, "pnl_usd": round(pnl_net, 4),
+            "fees_usd": round(fees_usd, 4)}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
@@ -374,103 +451,71 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/admin/force_close":
             # OPERATOR-INITIATED close. Sends HL market_close on the listed
-            # cloids, then marks them closed in our DB. Auth via HALT_TOKEN
-            # (same as halt — only operator should have it). Body:
+            # cloids, then marks them closed in our DB. Auth via
+            # FORCE_CLOSE_TOKEN (falls back to HALT_TOKEN for backward
+            # compat). Body:
             #   {"cloids": ["0x...", ...],     # specific positions
             #    "reason": "string",            # logged in extras_json
             #    "actor": "string"}
             # Returns per-cloid result list.
-            if not halt.halt_token_ok(token):
+            if not halt.force_close_token_ok(token):
                 return _json(self, 401, {"error": "bad_token"})
             cloids = body.get("cloids") or []
             reason = body.get("reason", "operator_force_close")
             actor = body.get("actor", "operator")
             if not cloids:
                 return _json(self, 400, {"error": "no_cloids"})
-            from common.bus_client import BusClient as _BC
-            results = []
-            for cloid in cloids:
-                row = CONN.execute(
-                    "SELECT * FROM trades WHERE cloid=? AND status='open'",
-                    (cloid,)
-                ).fetchone()
-                if not row:
-                    results.append({"cloid": cloid, "ok": False, "error": "not_open_or_not_found"})
-                    continue
-                coin = row["coin"]
-                size_coin = float(row["size_coin"])
-                try:
-                    # Get current mark for the close_px record.
-                    # BUS.markprice returns a dict {hl_mid, binance_mid, ...}, NOT a scalar.
-                    # Pre-2026-05-18 this fell through to row["open_px"] which made every
-                    # force_closed PnL look like $0.00 — masked real losses on red-engine cull.
-                    px = BUS.markprice(coin) or {}
-                    if isinstance(px, dict):
-                        close_px = float(px.get("hl_mid") or px.get("binance_mid") or row["open_px"])
-                    else:
-                        close_px = float(px) if px else float(row["open_px"])
-                except Exception:
-                    close_px = float(row["open_px"])
-                try:
-                    res = TRADER.hl.market_close(coin=coin, size_coin=size_coin, cloid=cloid) if TRADER.hl else None
-                except Exception as e:
-                    log.exception("admin/force_close HL call failed cloid=%s", cloid)
-                    results.append({"cloid": cloid, "coin": coin, "ok": False, "error": f"hl_raised:{e}"})
-                    continue
-                if res is None or not res.ok:
-                    err = (res.error if res else "hl_disabled")
-                    log.error("force_close FAILED cloid=%s coin=%s err=%s", cloid, coin, err)
-                    results.append({"cloid": cloid, "coin": coin, "ok": False, "error": err})
-                    continue
-                # Cancel orphan brackets
-                try:
-                    extras = json.loads(row["extras_json"] or "{}")
-                    tp_orphan = extras.get("tp_cloid")
-                    sl_orphan = extras.get("sl_cloid")
-                    if tp_orphan and hasattr(TRADER.hl, "cancel_by_cloid"):
-                        try: TRADER.hl.cancel_by_cloid(coin, tp_orphan)
-                        except Exception: log.warning("orphan TP cancel failed")
-                    if sl_orphan and hasattr(TRADER.hl, "cancel_by_cloid"):
-                        try: TRADER.hl.cancel_by_cloid(coin, sl_orphan)
-                        except Exception: log.warning("orphan SL cancel failed")
-                except Exception:
-                    pass
-                # Mark closed in DB + record close in closures table if it exists
-                ts_now = time.time()
-                pnl = (close_px - float(row["open_px"])) * size_coin * (1 if row["is_long"] else -1)
-                # Fees: round-trip taker (entry already paid at open, exit is taker via market_close)
-                # Default HL taker fee 0.045% per side. We can only record exit-side here unless
-                # extras_json has entry_fee already; fall back to 2x taker as estimate.
-                FORCE_CLOSE_FEE_RATE = 0.00045
-                notional = float(row["open_px"]) * size_coin
-                fees_usd = notional * FORCE_CLOSE_FEE_RATE * 2  # entry + exit estimate
-                pnl_net = pnl - fees_usd  # subtract fees from gross
-                try:
-                    extras = json.loads(row["extras_json"] or "{}")
-                except Exception:
-                    extras = {}
-                extras["force_closed"] = {"reason": reason, "actor": actor, "ts": ts_now,
-                                          "close_px": close_px, "pnl_usd_gross": pnl,
-                                          "pnl_usd_net": pnl_net, "fees_usd": fees_usd}
-                CONN.execute(
-                    "UPDATE trades SET status=?, extras_json=? WHERE cloid=?",
-                    ("closed", json.dumps(extras, default=str), cloid)
-                )
-                try:
-                    CONN.execute(
-                        "INSERT OR IGNORE INTO closures(cloid, strategy, coin, is_long, open_ts, "
-                        "close_ts, open_px, close_px, size_coin, pnl_usd, fees_usd, close_reason, extras_json) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                        (cloid, row["strategy"], coin, row["is_long"], row["open_ts"], ts_now,
-                         row["open_px"], close_px, size_coin, pnl_net, fees_usd,
-                         f"force_close:{reason}", json.dumps(extras, default=str))
-                    )
-                except Exception:
-                    log.exception("closures insert failed for %s", cloid)
-                results.append({"cloid": cloid, "coin": coin, "ok": True,
-                                "close_px": close_px, "pnl_usd": round(pnl_net, 4),
-                                "fees_usd": round(fees_usd, 4)})
+            # Hard cap so a token-holder can't accidentally liquidate too many.
+            if len(cloids) > 50:
+                return _json(self, 413, {"error": "too_many_cloids", "max": 50})
+            results = [_close_one_cloid(c, reason, actor) for c in cloids]
             return _json(self, 200, {"ok": True, "n_processed": len(cloids), "results": results})
+
+        # /admin/close_strategy/<name> — close every open position belonging
+        # to a given strategy. Convenience wrapper around force_close that
+        # resolves cloids server-side so the operator does not have to
+        # GET /state, filter, then POST cloids.
+        if len(parts) >= 2 and parts[0] == "admin" and parts[1] == "close_strategy":
+            if not halt.force_close_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            if len(parts) < 3:
+                return _json(self, 400, {"error": "missing_strategy"})
+            target = parts[2]
+            reason = body.get("reason", "operator_close_strategy")
+            actor = body.get("actor", "operator")
+            rows = CONN.execute(
+                "SELECT cloid FROM trades WHERE strategy=? AND status='open'",
+                (target,),
+            ).fetchall()
+            cloids = [r["cloid"] for r in rows]
+            if not cloids:
+                return _json(self, 200, {"ok": True, "strategy": target,
+                                          "n_processed": 0, "results": []})
+            results = [_close_one_cloid(c, f"{reason}:{target}", actor) for c in cloids]
+            return _json(self, 200, {"ok": True, "strategy": target,
+                                      "n_processed": len(cloids), "results": results})
+
+        # /admin/close_coin/<coin> — close every open position on a coin
+        # across all strategies. Same auth + behavior as close_strategy.
+        if len(parts) >= 2 and parts[0] == "admin" and parts[1] == "close_coin":
+            if not halt.force_close_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            if len(parts) < 3:
+                return _json(self, 400, {"error": "missing_coin"})
+            target = parts[2].upper()
+            reason = body.get("reason", "operator_close_coin")
+            actor = body.get("actor", "operator")
+            rows = CONN.execute(
+                "SELECT cloid FROM trades WHERE coin=? AND status='open'",
+                (target,),
+            ).fetchall()
+            cloids = [r["cloid"] for r in rows]
+            if not cloids:
+                return _json(self, 200, {"ok": True, "coin": target,
+                                          "n_processed": 0, "results": []})
+            results = [_close_one_cloid(c, f"{reason}:{target}", actor) for c in cloids]
+            return _json(self, 200, {"ok": True, "coin": target,
+                                      "n_processed": len(cloids), "results": results})
 
         if path == "/admin/backfill_force_close_pnl":
             # ONE-SHOT backfill for the force_close PnL bug (pre-c5b055d).
@@ -478,12 +523,16 @@ class Handler(BaseHTTPRequestHandler):
             # TypeError, caught silently → close_px defaulted to open_px → pnl=0
             # for every force_closed row. This endpoint fetches real HL price
             # at the original close_ts and rewrites pnl_usd + close_px + fees_usd.
-            # Auth via HALT_TOKEN. Body:
+            # Auth via FORCE_CLOSE_TOKEN (rewrites historical PnL). Body:
             #   {"close_reason_like": "force_close:%",  # SQL LIKE pattern
             #    "dry_run": true|false}                 # default true
-            if not halt.halt_token_ok(token):
+            if not halt.force_close_token_ok(token):
                 return _json(self, 401, {"error": "bad_token"})
             reason_like = body.get("close_reason_like", "force_close:%")
+            # Refuse over-broad LIKE patterns — "%" alone would rewrite
+            # every row. Require at least 5 chars of literal anchor.
+            if len([c for c in reason_like if c != "%" and c != "_"]) < 5:
+                return _json(self, 400, {"error": "close_reason_like_too_broad"})
             dry_run = bool(body.get("dry_run", True))
             import httpx as _httpx
             HL_INFO = "https://api.hyperliquid.xyz/info"
@@ -560,10 +609,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/admin/purge_dead_engines":
             # Purge all rows in signals / trades / closures whose strategy is
             # in AUDIT_DEAD_ENGINES env (default list per SPEC §4). Auth via
-            # HALT_TOKEN. Body:
+            # FORCE_CLOSE_TOKEN (mass DELETE — higher blast radius than halt).
+            # Body:
             #   {"dry_run": true|false,           # default true
             #    "engines": ["name", ...]}        # optional override of env list
-            if not halt.halt_token_ok(token):
+            if not halt.force_close_token_ok(token):
                 return _json(self, 401, {"error": "bad_token"})
             dry_run = bool(body.get("dry_run", True))
             override = body.get("engines")

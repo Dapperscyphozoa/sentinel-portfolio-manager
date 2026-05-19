@@ -42,6 +42,21 @@ def halt_token_ok(presented: Optional[str]) -> bool:
     return hmac.compare_digest(expected, presented)
 
 
+def force_close_token_ok(presented: Optional[str]) -> bool:
+    """Auth for high-blast endpoints (force_close, purge_dead_engines,
+    backfill_force_close_pnl). Falls back to HALT_TOKEN when
+    FORCE_CLOSE_TOKEN is unset so existing deploys keep working, but
+    operators are encouraged to set a distinct, narrower token in
+    render.yaml. Halt-only operators should hold HALT_TOKEN and never
+    learn FORCE_CLOSE_TOKEN."""
+    expected = os.environ.get("FORCE_CLOSE_TOKEN") or os.environ.get("HALT_TOKEN")
+    if not expected:
+        return False
+    if not presented:
+        return False
+    return hmac.compare_digest(expected, presented)
+
+
 def is_halted(strategy: str) -> bool:
     with _LOCK:
         return strategy in _HALTED or "__all__" in _HALTED

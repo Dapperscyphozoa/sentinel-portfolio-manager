@@ -83,6 +83,8 @@ services:
     sync: false
   - key: HALT_TOKEN
     sync: false
+  - key: FORCE_CLOSE_TOKEN
+    sync: false
   - key: COOLDOWN_DB
     value: /var/data/cooldowns.sqlite
   - key: CLAUDE_CODE_API_KEY
@@ -91,6 +93,24 @@ services:
     value: '5'
   - key: KRONOS_GATE_ENABLED
     value: '0'
+  # Drawdown / sizing / safety knobs pinned explicitly so the deployment
+  # does not silently drift on default changes in code.
+  - key: DRAWDOWN_HALT_PCT
+    value: '0.10'
+  - key: MARGIN_PCT_PER_TRADE
+    value: '0.05'
+  - key: MAX_MARGIN_FRAC
+    value: '1.0'
+  - key: MIN_24H_VOL_USD
+    value: '50000000'
+  - key: MAX_MARK_AGE_SEC
+    value: '30'
+  - key: PROMOTION_GATE_STRICT
+    value: '0'
+  - key: PROMOTION_GATE_RUNTIME
+    value: '0'
+  - key: DASHBOARD_ORIGIN
+    sync: false
   - key: STATE_DIR
     value: /var/data
   - key: HTTP_PORT
