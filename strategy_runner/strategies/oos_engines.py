@@ -456,52 +456,20 @@ class E07_zfade_2s_TU_4h(StrategyBase):
 
 
 # ============================================================
-# ENGINE 9 (E08_4h) — dip3d 7% in TREND_DOWN, 4h (adjusted threshold)
+# ENGINE 9 (E08_4h) — ARCHIVED 2026-05-19
 # ============================================================
-class E08_dip3d_7_TD_4h(StrategyBase):
-    """4h dip-buy at 7% drop in TREND_DOWN (lower threshold for shorter TF)."""
-    NAME = "e08_dip3d7_td_4h"
-    CLOID_PREFIX = "e08h_"
-    AFFINITY = ["trend_down"]
-    TF = "4h"
-    UNIVERSE = DEFAULT_UNIVERSE
-    # 2026-05-19 backtest reversion (180d × 43 coins, n=6720 configs):
-    # Initial sentinel council recommended drop 0.07→0.10. Empirical sweep
-    # showed this lands in the WORST zone of a U-shaped curve:
-    #   drop=5%:  PF 0.82   drop=10%: PF 0.72  ← dead zone
-    #   drop=7%:  PF 0.83   drop=12%: PF 0.58  ← deepest pit
-    #   drop=15%: PF 0.85   drop=20%: PF 2.66
-    # Walk-forward H1/H2 split reveals every deeper-drop config that wins
-    # on H1 (drop≥15 with wider RR) collapses on H2 (recent 90d, current
-    # regime). drop=20% holds OOS (H1 PF 2.79, H2 PF 1.98) but n=8 H2 is
-    # statistically meaningless. Engine is structurally broken in current
-    # regime; reverting to original 0.07 and leaving halted until regime
-    # shifts. Operator: do not reactivate without re-backtest.
-    _DROP_PCT = 0.07
-    _LOOKBACK = 18   # 3 days × 6 4h bars = 18
-    _HOLD_BARS = 12  # 48h
-
-    @classmethod
-    def evaluate(cls, coin: str, bus) -> Optional[Signal]:
-        bars = _bars_for_tf(bus, coin, cls.TF, cls._LOOKBACK + 70)
-        if not bars or len(bars) < cls._LOOKBACK + 65:
-            return None
-        closes = [b["close"] for b in bars]
-        highs = [b["high"] for b in bars]
-        lows = [b["low"] for b in bars]
-        if _regime(closes, highs, lows, len(bars) - 1) != "TREND_DOWN":
-            return None
-        cum = (closes[-1] - closes[-cls._LOOKBACK - 1]) / closes[-cls._LOOKBACK - 1] if closes[-cls._LOOKBACK - 1] > 0 else 0
-        if cum >= -cls._DROP_PCT:
-            return None
-        c = closes[-1]
-        sl, tp = _sl_tp(c, True)
-        return Signal(
-            coin=coin, side="B", is_long=True,
-            ref_price=c, sl_px=sl, tp_px=tp, max_hold_bars=cls._HOLD_BARS,
-            fire_ts=float(bars[-1]["open_ts"]), fire_reason=f"dip3d={cum*100:.1f}%",
-            extras={"cum_3d_pct": cum, "regime": "TREND_DOWN", "tf": cls.TF},
-        )
+# class E08_dip3d_7_TD_4h: REMOVED.
+#
+# Death certificate:
+#   - 180d backtest × 47 coins: PF 0.93 (negative-EV)
+#   - 90d sweep × top-10 majors: PF 0.43 at drop=0.07 baseline
+#   - drop=0.15/0.20/0.25: fires 0 trades (threshold too deep for regime)
+#   - LIVE: 8 closures = -$6.81 net (confirmed bleed)
+#   - Every parameter combination tested is RED or non-firing
+#
+# Engine remains documented in repo history (this comment + git log) but no
+# longer registered. Do NOT reactivate without (a) regime shift evidence and
+# (b) fresh honest backtest passing PF≥1.4 + OOS≥1.0 + n≥50 gate.
 
 
 # ============================================================
@@ -612,7 +580,7 @@ OOS_ENGINES = [
     E17_bb_fade_BT_1d,     # bt_PF 1.41
     E01_zfade_3s_TU_4h,
     E07_zfade_2s_TU_4h,    # top contributor by PnL
-    E08_dip3d_7_TD_4h,
+    # E08_dip3d_7_TD_4h — ARCHIVED 2026-05-19 (every param dead + -$6.81 live bleed)
     E16_bb_fade_HV_4h,
     E17_bb_fade_BT_4h,
 ]

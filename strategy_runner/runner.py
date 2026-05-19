@@ -51,13 +51,9 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load ICT confluence engines")
 
-    # 1.6) Cascade Sniper (council 5/6 pick — Binance liq → HL execution)
-    try:
-        from .strategies.cascade_sniper import CascadeSniperHL
-        register(CascadeSniperHL)
-        log.info("Loaded cascade sniper: %s", CascadeSniperHL.NAME)
-    except Exception:
-        log.exception("failed to load cascade sniper")
+    # 1.6) Cascade Sniper — ARCHIVED 2026-05-19. Never validated (no backtest,
+    # halted, PF 0.00). Module moved to _archived/. Do not reactivate without
+    # honest backtest + paper validation.
 
     # 1.7) HLP Fade (council 5+ voters world-first pick — fade WITH HLP vault)
     try:
@@ -199,14 +195,15 @@ def _load_registered() -> None:
     else:
         log.info("uzt_rev skipped (set STRATEGY_UZT_REV_ENABLED=1 to load)")
 
-    # 2) Remaining keepers — liq_cascade (sentinel-born), cex_dex_arb (paper),
-    #    donchian (post-sentinel build). The 7 legacy ports (fsp, vsq,
+    # 2) Remaining keepers — liq_cascade (sentinel-born), donchian (post-
+    #    sentinel build). cex_dex_arb ARCHIVED 2026-05-19 (look-ahead bias
+    #    history, halted, PF 0.00). The 7 earlier legacy ports (fsp, vsq,
     #    range_fade, range_breakout, lh1, fd1, precog) live in _archived/
     #    and are intentionally NOT imported here.
     import os
     if os.environ.get("STRATEGY_LEGACY_LOAD", "1") == "1":   # default ON for combined deployment
         legacy_loaded = []
-        for modname in ("liq_cascade", "cex_dex_arb", "donchian"):
+        for modname in ("liq_cascade", "donchian"):
             try:
                 mod = __import__(f"strategy_runner.strategies.{modname}", fromlist=["*"])
                 for attr in dir(mod):
