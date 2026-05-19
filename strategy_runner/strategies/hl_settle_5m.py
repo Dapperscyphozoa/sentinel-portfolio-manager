@@ -99,10 +99,7 @@ DEFAULT_UNIVERSE = [
 # AVAX was 2nd-biggest bleeder among non-denylisted coins (n=13, WR 50%,
 # net -$0.67) and removing it lifts replay PF 0.81→1.10 (+36% scaled to
 # live = 0.54→0.73, +35.8%). Reversible via HL_SETTLE_COIN_DENYLIST env.
-# 2026-05-19 attribution audit: SUI added (n=2, WR 0%, -$0.23 net).
-# Small sample but symmetric with other 0-WR bans (LINK 0/3, LTC 0/2).
-# Re-include via env if the regime regime shifts.
-_DEFAULT_DENY = "LINK,LTC,OP,BTC,APT,ARB,TIA,AVAX,SUI"
+_DEFAULT_DENY = "LINK,LTC,OP,BTC,APT,ARB,TIA,AVAX"
 HL_SETTLE_COIN_DENYLIST = set(
     c.strip().upper()
     for c in os.environ.get("HL_SETTLE_COIN_DENYLIST", _DEFAULT_DENY).split(",")

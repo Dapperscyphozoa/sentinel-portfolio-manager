@@ -125,7 +125,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "ict_confluence_1d":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
                              "bt_pf": 3.35, "cap_frac": 0.05},
     "ict_confluence_4h":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 3.18, "cap_frac": 0.00},   # 2026-05-19: 0 clean closures over 24 attempts (all backfills/reconciles). Demoted from 0.15 to paper until clean SL/TP history accrues.
+                             "bt_pf": 3.18, "cap_frac": 0.15},   # council-trimmed from 0.25
     "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  2.2, "cap_frac": 0.10},
     # uzt_rev v3 — reversal-only, single TP=5R, 16-coin universe. Bt n=41 WR 68% PF 6.92 OOS 6.92.
     # Operator-promoted to live 2026-05-19. Cap_frac 0.05 starting allocation (~$25 notional).
@@ -166,7 +166,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "fmom":                {"affinity": ["trend_up", "trend_down", "range", "chop"],
                              "bt_pf": 1.75, "cap_frac": 0.00},
     "hl_settle_5m":        {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 1.85, "cap_frac": 0.10},   # 2026-05-19: halved from 0.20 — 84 clean trades show PF 0.59, avg_loss 1.95× avg_win (SL slippage asymmetry). Defensive trim while we tighten params.
+                             "bt_pf": 1.85, "cap_frac": 0.20},
     # Stage 1 NEW ENGINE — paper-only pending honest backtest gate (council priority)
     "hl_cvd_aggressor": {
         "class": "cvd_aggressor_flow",
