@@ -586,18 +586,30 @@ class Trader:
                 # Direction mismatch — not the same position; leave it
                 left += 1
                 continue
-            # Match: restore to 'open' so position_loop resumes monitoring
-            self.conn.execute(
-                "UPDATE trades SET status='open', "
-                "extras_json=json_set(COALESCE(extras_json,'{}'),"
-                "  '$.reconcile_unreconciled_ts',?,"
-                "  '$.reconcile_unreconcile_reason','szi_field_bug_repair') "
-                "WHERE id=?",
-                (time.time(), r["id"]),
-            )
-            restored += 1
-            log.warning("unreconcile: %s/%s id=%d → status=open (HL has matching position)",
-                        r["strategy"], coin, r["id"])
+            # Match: restore to 'open' so position_loop resumes monitoring.
+            # The trades.coin partial unique index (status='open') will
+            # refuse if another 'open' row already holds that coin lock —
+            # treat as 'blocked', not error. Log and move on.
+            try:
+                self.conn.execute(
+                    "UPDATE trades SET status='open', "
+                    "extras_json=json_set(COALESCE(extras_json,'{}'),"
+                    "  '$.reconcile_unreconciled_ts',?,"
+                    "  '$.reconcile_unreconcile_reason','szi_field_bug_repair') "
+                    "WHERE id=?",
+                    (time.time(), r["id"]),
+                )
+                restored += 1
+                log.warning("unreconcile: %s/%s id=%d → status=open (HL has matching position)",
+                            r["strategy"], coin, r["id"])
+            except Exception as e:
+                # Most likely: UNIQUE constraint on trades.coin — another open
+                # row already holds the lock for this coin. Real position-
+                # holder identification requires entry-price matching.
+                left += 1
+                log.warning("unreconcile: %s/%s id=%d BLOCKED by coin lock (%s) — "
+                            "leave as reconciled_off_book; needs manual disambiguation",
+                            r["strategy"], coin, r["id"], type(e).__name__)
         return {"scanned": scanned, "restored": restored,
                 "false_positive_left_alone": left}
 
