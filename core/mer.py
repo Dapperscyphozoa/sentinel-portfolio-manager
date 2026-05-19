@@ -484,51 +484,202 @@ def _build_news_section(cat: str, cutoff_ms: int, limit: int = 10) -> list:
 
 
 def _build_internal_section() -> list:
-    """Stack-internal stats. Self-contained: queries core's view of the stack
-    via local proxy to /strategy + /pm. Returns [] if upstream unreachable
-    (landing renders 'no internal data')."""
-    items = []
-    try:
-        import httpx
-        sb_port = int(os.environ.get("SIGNAL_BUS_PORT", "10001") or 10001)
-        # Hero equity via signal_bus /hl/account
-        try:
-            r = httpx.get(f"http://localhost:{sb_port}/hl/account", timeout=3.0)
-            if r.status_code == 200:
-                d = r.json()
-                acct_val = d.get("value") or d.get("account_value")
-                if acct_val is not None:
-                    items.append({"label": "Account value", "value": f"${float(acct_val):,.2f}"})
-                pos = d.get("positions") or []
-                if pos:
-                    items.append({"label": "Open positions", "value": str(len(pos))})
-        except Exception:
-            pass
+    """Stack-internal macro audit data.
 
-        # Strategy stage breakdown via /pm/engines (proxied internally)
-        pm_port = int(os.environ.get("PM_PORT", "10002") or 10002)
+    Returns rows shaped {label, value} that renderInternal() draws as a
+    two-column table. The whole point of this section is: 'what is the
+    stack doing right now in the context of the macro picture?'
+
+    Includes:
+      - Regime classification + confidence + volatility
+      - Live HL account (value, margin, unrealized PnL, withdrawable)
+      - Live position book (count, net notional)
+      - Paper book (engines' view of what they'd be holding)
+      - 24h realized PnL (net, n trades, win rate)
+      - Top live exposure (biggest single position)
+      - Engines by stage (live / paper / halted)
+      - Capital aligned with current regime
+      - Next tier-1 macro event countdown
+      - Macro blackout status
+    """
+    import httpx
+
+    items: list = []
+    # Port assignments per core/server.py (single source of truth):
+    #   SIGNAL_BUS_PORT = 10001
+    #   STRATEGY_PORT   = 10002
+    #   PM_PORT         = 10003
+    sb_port = int(os.environ.get("SIGNAL_BUS_PORT", "10001") or 10001)
+    sr_port = int(os.environ.get("STRATEGY_PORT",   "10002") or 10002)
+    pm_port = int(os.environ.get("PM_PORT",         "10003") or 10003)
+
+    def _get(url: str, timeout: float = 3.0):
         try:
-            r = httpx.get(f"http://localhost:{pm_port}/engines", timeout=3.0)
-            if r.status_code == 200:
-                d = r.json()
-                engines = d.get("engines") or d.get("registry") or []
-                if isinstance(engines, list) and engines:
-                    stages = {}
-                    halted = 0
-                    for e in engines:
-                        s = e.get("stage", "unknown")
-                        stages[s] = stages.get(s, 0) + 1
-                        if e.get("halted"):
-                            halted += 1
-                    if stages:
-                        items.append({
-                            "label": "Engine stages",
-                            "value": " · ".join(f"{k}:{v}" for k, v in sorted(stages.items())),
-                        })
-                    if halted > 0:
-                        items.append({"label": "Halted", "value": f"{halted} engine(s)"})
+            with httpx.Client(timeout=timeout) as cli:
+                r = cli.get(url)
+                if r.status_code == 200:
+                    return r.json()
         except Exception:
-            pass
+            return None
+        return None
+
+    # ─── 1. Regime ─────────────────────────────────────────────
+    regime = _get(f"http://localhost:{pm_port}/regime") or {}
+    if regime:
+        rg = regime.get("regime", "?")
+        conf = regime.get("confidence", 0) or 0
+        atr_pct = (regime.get("atr_pct", 0) or 0) * 100
+        slope = regime.get("ema20_slope", 0) or 0
+        arrow = "↑" if slope > 0 else ("↓" if slope < 0 else "→")
+        items.append({
+            "label": "Regime",
+            "value": f"{rg.upper()} · conf {conf*100:.0f}% · ATR {atr_pct:.2f}% · slope {arrow}",
+        })
+
+    # ─── 2. Live HL account ────────────────────────────────────
+    acct = _get(f"http://localhost:{sb_port}/hl/account") or {}
+    if acct:
+        val = float(acct.get("value", 0) or 0)
+        margin = float(acct.get("margin_used", 0) or 0)
+        ntl = float(acct.get("ntl_pos", 0) or 0)
+        withdrawable = float(acct.get("withdrawable", 0) or 0)
+        items.append({
+            "label": "Account",
+            "value": f"${val:,.2f} · withdrawable ${withdrawable:,.2f}",
+        })
+        items.append({
+            "label": "Margin / notional",
+            "value": f"${margin:.2f} margin · ${ntl:.2f} notional",
+        })
+
+        # Live positions + unrealized PnL
+        live_positions = acct.get("positions") or []
+        if live_positions:
+            upnl = sum(float(p.get("unrealized_pnl", 0) or 0) for p in live_positions)
+            sign = "+" if upnl >= 0 else "-"
+            items.append({
+                "label": "Live positions",
+                "value": f"{len(live_positions)} open · uPnL {sign}${abs(upnl):.2f}",
+            })
+
+    # ─── 3. Paper book (strategy_runner view) ──────────────────
+    state = _get(f"http://localhost:{sr_port}/state", timeout=5.0) or []
+    if isinstance(state, list) and state:
+        long_usd = sum(float(p.get("size_usd", 0) or 0) for p in state if p.get("is_long"))
+        short_usd = sum(float(p.get("size_usd", 0) or 0) for p in state if not p.get("is_long"))
+        net = long_usd - short_usd
+        gross = long_usd + short_usd
+        net_sign = "long" if net >= 0 else "short"
+        items.append({
+            "label": "Paper book",
+            "value": f"{len(state)} open · gross ${gross:,.0f} · net ${abs(net):,.0f} {net_sign}",
+        })
+        # Top exposure by coin
+        by_coin: dict = {}
+        for p in state:
+            c = p.get("coin", "?")
+            by_coin[c] = by_coin.get(c, 0) + float(p.get("size_usd", 0) or 0)
+        if by_coin:
+            top_coin, top_usd = max(by_coin.items(), key=lambda x: x[1])
+            pct = (top_usd / gross * 100) if gross else 0
+            items.append({
+                "label": "Top exposure",
+                "value": f"{top_coin} ${top_usd:,.0f} · {pct:.0f}% of book",
+            })
+
+    # ─── 4. 24h realized PnL (paper) ───────────────────────────
+    since_24h = time.time() - 86400
+    attr = _get(f"http://localhost:{sr_port}/attribution?since={since_24h}", timeout=5.0) or {}
+    if attr and attr.get("engines"):
+        engines_24h = attr["engines"]
+        net_pnl = sum(float(e.get("net_pnl", 0) or 0) for e in engines_24h)
+        n = sum(int(e.get("n", 0) or 0) for e in engines_24h)
+        wins = sum(int(e.get("wins", 0) or 0) for e in engines_24h)
+        wr_pct = (wins / n * 100) if n else 0
+        sign = "+" if net_pnl >= 0 else "-"
+        items.append({
+            "label": "24h PnL",
+            "value": f"{sign}${abs(net_pnl):.2f} · {n} trades · {wr_pct:.0f}% WR",
+        })
+
+    # ─── 5. Engines by stage ───────────────────────────────────
+    eng_data = _get(f"http://localhost:{pm_port}/engines") or {}
+    engines_list = eng_data.get("engines", []) or []
+    if engines_list:
+        stages: dict = {}
+        for e in engines_list:
+            st = e.get("stage", "unknown")
+            stages[st] = stages.get(st, 0) + 1
+        items.append({
+            "label": "Engines",
+            "value": " · ".join(f"{k} {v}" for k, v in sorted(stages.items())),
+        })
+
+        # Regime alignment — fraction of capital_fraction whose affinity
+        # includes the current regime
+        current_regime = regime.get("regime") if regime else None
+        if current_regime:
+            aligned_cap = 0.0
+            total_cap = 0.0
+            for e in engines_list:
+                cf = float(e.get("capital_fraction", 0) or 0)
+                total_cap += cf
+                aff = e.get("affinity") or []
+                if current_regime in aff:
+                    aligned_cap += cf
+            if total_cap > 0:
+                pct = aligned_cap / total_cap * 100
+                items.append({
+                    "label": "Regime aligned",
+                    "value": f"{pct:.0f}% of capital in engines tuned for {current_regime}",
+                })
+
+    # ─── 6. Next tier-1 event (from mer_events) ────────────────
+    try:
+        init_schema()
+        now_ms = int(time.time() * 1000)
+        with _conn() as c:
+            rows = c.execute("""
+                SELECT ts_ms, currency, title
+                FROM mer_events
+                WHERE ts_ms > ? AND impact='high'
+                ORDER BY ts_ms ASC
+                LIMIT 20
+            """, (now_ms,)).fetchall()
+        # Find first row matching tier-1 currency keywords
+        for ts_ms, currency, title in rows:
+            if is_tier_1(currency, title):
+                mins = int((ts_ms - now_ms) / 60_000)
+                if mins < 60:
+                    when = f"{mins}m"
+                elif mins < 1440:
+                    h = mins // 60
+                    m = mins % 60
+                    when = f"{h}h {m}m" if m else f"{h}h"
+                else:
+                    d = mins // 1440
+                    h = (mins % 1440) // 60
+                    when = f"{d}d {h}h" if h else f"{d}d"
+                items.append({
+                    "label": "Next tier-1",
+                    "value": f"{currency} · {title} · in {when}",
+                })
+                break
+    except Exception:
+        pass
+
+    # ─── 7. Blackout state ─────────────────────────────────────
+    try:
+        bl = get_blackout_status()
+        if bl.get("active"):
+            ev = bl.get("active_event") or {}
+            ends = ev.get("ends_min_from_now", "?")
+            items.append({
+                "label": "Blackout",
+                "value": f"⛔ ACTIVE · {ev.get('currency','?')} {ev.get('title','?')[:50]} · {ends}m left",
+            })
+        else:
+            items.append({"label": "Blackout", "value": "inactive"})
     except Exception:
         pass
 
