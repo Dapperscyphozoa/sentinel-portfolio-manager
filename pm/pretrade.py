@@ -3,11 +3,16 @@
 NEW SPEC (operator confirmed):
   - 1 position per coin GLOBALLY (across all engines)
   - First-fire wins (engines evaluated in PF-priority order by runner)
-  - 5x leverage on perp
-  - 5% margin per new position (notional = 25% wallet)
+  - 5x leverage on perp (HL account setting, not applied to sz)
+  - 5% margin per new position. **trader.open() does NOT scale sz by
+    leverage**, so effective HL position notional == margin == 5% wallet.
+    The "notional = 25% wallet" framing in earlier drafts was the spec
+    intent but the codepath was reverted 2026-05-19 per operator
+    preference for conservative sizing (commit 970a537).
   - 20 max concurrent positions globally
   - 10% spot stop loss (set in strategy.evaluate)
-  - Auto-cooldowns: 4 consec loss/coin (1h), 6 consec loss/engine (1h),
+  - Auto-cooldowns: 4 consec loss/coin (1h), 4 consec loss/engine
+    (permanent paper demote — operator 2026-05-18, was 6 → 1h),
     12% DD (1h), live PF < 0.74×bt (1h)
   - Promotion: 20 trades + live PF within 20% of bt → live
 """
@@ -47,7 +52,9 @@ def _i(name: str, default: int) -> int:
 @dataclass
 class CheckResult:
     allow: bool
-    size_usd: float          # margin USD (notional = size × leverage)
+    size_usd: float          # margin USD; trader.open() uses this as-is for
+                             # notional (no leverage multiplier — see module
+                             # docstring). True notional == margin.
     reason: str
     bt_pf: float = 0.0
 

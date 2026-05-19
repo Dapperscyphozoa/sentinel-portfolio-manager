@@ -71,6 +71,11 @@ def _close_one_cloid(cloid: str, reason: str, actor: str) -> dict:
 
     Extracted so /admin/close_strategy/<name> and /admin/close_coin/<coin>
     can reuse the exact close + PnL accounting path without duplication.
+
+    Concurrency: claims the row by transitioning status open → closing in
+    a single SQL UPDATE before issuing the HL call. If the rowcount is 0,
+    another path (position_loop._close, a concurrent force_close) has
+    already claimed it; we return rather than send a duplicate HL order.
     """
     row = CONN.execute(
         "SELECT * FROM trades WHERE cloid=? AND status='open'",
@@ -78,6 +83,12 @@ def _close_one_cloid(cloid: str, reason: str, actor: str) -> dict:
     ).fetchone()
     if not row:
         return {"cloid": cloid, "ok": False, "error": "not_open_or_not_found"}
+    cur = CONN.execute(
+        "UPDATE trades SET status='closing' WHERE cloid=? AND status='open'",
+        (cloid,),
+    )
+    if cur.rowcount == 0:
+        return {"cloid": cloid, "ok": False, "error": "already_closing_or_closed"}
     coin = row["coin"]
     size_coin = float(row["size_coin"])
     try:
@@ -92,10 +103,13 @@ def _close_one_cloid(cloid: str, reason: str, actor: str) -> dict:
         res = TRADER.hl.market_close(coin=coin, size_coin=size_coin, cloid=cloid) if TRADER.hl else None
     except Exception as e:
         log.exception("admin/force_close HL call failed cloid=%s", cloid)
+        # Release the 'closing' claim so the next attempt can retry.
+        CONN.execute("UPDATE trades SET status='open' WHERE cloid=? AND status='closing'", (cloid,))
         return {"cloid": cloid, "coin": coin, "ok": False, "error": f"hl_raised:{e}"}
     if res is None or not res.ok:
         err = (res.error if res else "hl_disabled")
         log.error("force_close FAILED cloid=%s coin=%s err=%s", cloid, coin, err)
+        CONN.execute("UPDATE trades SET status='open' WHERE cloid=? AND status='closing'", (cloid,))
         return {"cloid": cloid, "coin": coin, "ok": False, "error": err}
     try:
         extras = json.loads(row["extras_json"] or "{}")
@@ -137,6 +151,8 @@ def _close_one_cloid(cloid: str, reason: str, actor: str) -> dict:
         )
     except Exception:
         log.exception("closures insert failed for %s", cloid)
+    log.warning("force_close OK cloid=%s coin=%s strategy=%s actor=%s reason=%s pnl=%.4f fees=%.4f",
+                cloid, coin, row["strategy"], actor, reason, pnl_net, fees_usd)
     return {"cloid": cloid, "coin": coin, "ok": True,
             "close_px": close_px, "pnl_usd": round(pnl_net, 4),
             "fees_usd": round(fees_usd, 4)}
@@ -488,6 +504,9 @@ class Handler(BaseHTTPRequestHandler):
                 (target,),
             ).fetchall()
             cloids = [r["cloid"] for r in rows]
+            if len(cloids) > 50:
+                log.warning("close path resolved %d cloids — truncating to 50", len(cloids))
+                cloids = cloids[:50]
             if not cloids:
                 return _json(self, 200, {"ok": True, "strategy": target,
                                           "n_processed": 0, "results": []})
@@ -510,6 +529,9 @@ class Handler(BaseHTTPRequestHandler):
                 (target,),
             ).fetchall()
             cloids = [r["cloid"] for r in rows]
+            if len(cloids) > 50:
+                log.warning("close path resolved %d cloids — truncating to 50", len(cloids))
+                cloids = cloids[:50]
             if not cloids:
                 return _json(self, 200, {"ok": True, "coin": target,
                                           "n_processed": 0, "results": []})

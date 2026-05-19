@@ -158,12 +158,15 @@ class Handler(BaseHTTPRequestHandler):
                 acct = bus.hl_account()
                 value = float(acct.get("value", 0))
                 margin_used = float(acct.get("margin_used", 0))
-                # Approx daily drawdown — not persisted yet, return zeros
+                # Approx daily drawdown — not persisted yet, return zeros.
+                # Threshold mirrors DRAWDOWN_HALT_PCT so the dashboard reads
+                # the same number monitor.drawdown_check uses to fire halts.
+                dd_thr_pct = float(os.environ.get("DRAWDOWN_HALT_PCT", "0.10")) * 100.0
                 return _json(self, 200, {
                     "account_value": value,
                     "margin_used": margin_used,
                     "drawdown_pct_24h": 0.0,
-                    "drawdown_halt_threshold_pct": 5.0,
+                    "drawdown_halt_threshold_pct": dd_thr_pct,
                     "halt_active": False,
                 })
             except Exception as e:
@@ -516,17 +519,20 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/admin/force_close":
             # OPERATOR-INITIATED close. Sends HL market_close on the listed
-            # cloids, then marks them closed in our DB. Auth via HALT_TOKEN
-            # (same as halt — only operator should have it). Body:
+            # cloids, then marks them closed in our DB. Auth via
+            # FORCE_CLOSE_TOKEN (falls back to HALT_TOKEN for backward
+            # compat). Body:
             #   {"cloids": ["0x...", ...],     # specific positions
             #    "reason": "string",            # logged in extras_json
             #    "actor": "string"}
             # Returns per-cloid result list.
-            if not halt.halt_token_ok(token):
+            if not halt.force_close_token_ok(token):
                 return _json(self, 401, {"error": "bad_token"})
             cloids = body.get("cloids") or []
             reason = body.get("reason", "operator_force_close")
             actor = body.get("actor", "operator")
+            if len(cloids) > 50:
+                return _json(self, 413, {"error": "too_many_cloids", "max": 50})
             if not cloids:
                 return _json(self, 400, {"error": "no_cloids"})
             from common.bus_client import BusClient as _BC
@@ -620,12 +626,14 @@ class Handler(BaseHTTPRequestHandler):
             # TypeError, caught silently → close_px defaulted to open_px → pnl=0
             # for every force_closed row. This endpoint fetches real HL price
             # at the original close_ts and rewrites pnl_usd + close_px + fees_usd.
-            # Auth via HALT_TOKEN. Body:
+            # Auth via FORCE_CLOSE_TOKEN (rewrites historical PnL). Body:
             #   {"close_reason_like": "force_close:%",  # SQL LIKE pattern
             #    "dry_run": true|false}                 # default true
-            if not halt.halt_token_ok(token):
+            if not halt.force_close_token_ok(token):
                 return _json(self, 401, {"error": "bad_token"})
             reason_like = body.get("close_reason_like", "force_close:%")
+            if len([c for c in reason_like if c != "%" and c != "_"]) < 5:
+                return _json(self, 400, {"error": "close_reason_like_too_broad"})
             dry_run = bool(body.get("dry_run", True))
             import httpx as _httpx
             HL_INFO = "https://api.hyperliquid.xyz/info"

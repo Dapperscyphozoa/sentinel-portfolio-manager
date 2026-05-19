@@ -214,9 +214,16 @@ class Trader:
                         # so no new opens stack on top of an unprotected one.
                         if not sl_placed_ok:
                             try:
+                                # Prefer the actual filled qty; fall back to the
+                                # requested size only when the exchange did not
+                                # report one. Reject zero/None defensively — a
+                                # market_close(size_coin=0) would silently no-op.
+                                emergency_size = res.size_coin if (res.size_coin and res.size_coin > 0) else size_coin
+                                if not emergency_size or emergency_size <= 0:
+                                    raise ValueError(f"emergency close: no valid size (res={res.size_coin}, req={size_coin})")
                                 close_res = self.hl.market_close(
                                     coin=sig.coin,
-                                    size_coin=res.size_coin or size_coin,
+                                    size_coin=emergency_size,
                                 )
                                 if close_res and getattr(close_res, "ok", False):
                                     log.critical(
@@ -225,6 +232,33 @@ class Trader:
                                         strategy.NAME, sig.coin, bracket_status,
                                     )
                                     err = "sl_bracket_failed_closed"
+                                    # Booking: the entry did fill and was
+                                    # closed immediately. PnL is near-zero
+                                    # (one round-trip slippage) minus 2×
+                                    # taker fees. Write a closures row so
+                                    # /attribution doesn't show a P&L hole.
+                                    try:
+                                        fill_px_for_close = getattr(close_res, "fill_px", None) or fill_px
+                                        notional_filled = float(emergency_size) * float(fill_px)
+                                        fees_emerg = notional_filled * 0.00045 * 2
+                                        pnl_emerg = ((float(fill_px_for_close) - float(fill_px))
+                                                     * float(emergency_size)
+                                                     * (1 if sig.is_long else -1)) - fees_emerg
+                                        self.conn.execute(
+                                            "INSERT OR IGNORE INTO closures(cloid, strategy, coin, is_long, "
+                                            "open_ts, close_ts, open_px, close_px, size_coin, pnl_usd, "
+                                            "fees_usd, close_reason, extras_json) "
+                                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                            (cloid, strategy.NAME, sig.coin, int(sig.is_long),
+                                             open_ts, time.time(), float(fill_px),
+                                             float(fill_px_for_close), float(emergency_size),
+                                             pnl_emerg, fees_emerg,
+                                             "sl_bracket_failed_emergency_close",
+                                             json.dumps({"bracket_status": bracket_status,
+                                                          "emergency_size": emergency_size}, default=str)),
+                                        )
+                                    except Exception:
+                                        log.exception("emergency-close closures insert failed for %s", cloid)
                                 else:
                                     log.critical(
                                         "SL bracket FAILED + emergency close FAILED %s/%s "
@@ -855,6 +889,16 @@ class Trader:
 
     def _close(self, trade_row, close_px: float, reason: str, ts: float) -> None:
         cloid = trade_row["cloid"]
+        # Concurrency: claim the row by transitioning open → closing in one
+        # SQL UPDATE. If rowcount is 0, another path (operator force_close,
+        # a sibling position_loop tick) has already claimed it. Return
+        # silently rather than double-firing market_close on HL.
+        cur = self.conn.execute(
+            "UPDATE trades SET status='closing' WHERE cloid=? AND status='open'",
+            (cloid,),
+        )
+        if cur.rowcount == 0:
+            return
         coin = trade_row["coin"]
         strategy = trade_row["strategy"]
         is_long = bool(trade_row["is_long"])
@@ -891,9 +935,11 @@ class Trader:
                 err = None if res.ok else (res.error or "unknown")
 
             if res is None or not res.ok:
-                # leave open, bump retry counter
+                # Release the 'closing' claim so the next tick can retry,
+                # and bump retry counter atomically.
                 self.conn.execute(
-                    "UPDATE trades SET close_retries = close_retries + 1 WHERE cloid=?",
+                    "UPDATE trades SET status='open', "
+                    "close_retries = close_retries + 1 WHERE cloid=?",
                     (cloid,),
                 )
                 cur = self.conn.execute(
