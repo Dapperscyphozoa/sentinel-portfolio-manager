@@ -93,10 +93,22 @@ def init_db(db_path: str) -> sqlite3.Connection:
 
 
 class Cache:
-    """All state for the signal-bus. Single instance per process."""
+    """All state for the signal-bus. Single instance per process.
+
+    SQLite access: each thread gets its own connection via the `db` property.
+    WAL journal mode (set in connect()) means multiple readers and one writer
+    can run concurrently without blocking. This replaces a previous shared
+    connection that raised sqlite3.InterfaceError when an HTTP handler thread
+    read while the WS flush thread wrote.
+    """
 
     def __init__(self, db_path: str):
-        self.db = init_db(db_path)
+        self._db_path = db_path
+        # Initialise schema on the constructing thread; subsequent threads
+        # get their own connections via the `db` property.
+        _init = init_db(db_path)
+        _init.close()
+        self._tls = threading.local()
         self.klines: dict[tuple[str, str], Deque[dict]] = defaultdict(lambda: deque(maxlen=KLINE_CAP))
         self.liqs: Deque[dict] = deque(maxlen=LIQ_CAP)
         self.marks: dict[str, Deque[dict]] = defaultdict(lambda: deque(maxlen=MARK_CAP))
@@ -128,6 +140,18 @@ class Cache:
         # Sentinel fix: flush cursor for liq events. Without this, each flush
         # re-wrote every event in the ring buffer (50k×12/hour duplicates).
         self._last_flushed_liq_ts: int = 0
+
+    @property
+    def db(self) -> sqlite3.Connection:
+        """Thread-local SQLite connection. WAL mode means concurrent readers
+        and one writer don't block each other. Replaces a previously shared
+        connection that raised sqlite3.InterfaceError under thread contention.
+        """
+        conn = getattr(self._tls, "conn", None)
+        if conn is None:
+            conn = connect(self._db_path)
+            self._tls.conn = conn
+        return conn
 
     def update_oi(self, snap: dict) -> None:
         """Update oi_latest snapshot and append to per-coin history."""
@@ -358,14 +382,13 @@ class Cache:
             dq = self.klines.get((coin, tf))
             if dq:
                 return list(dq)[-n:]
-        # cold-load from SQLite (must hold _DB_LOCK — same connection as writers,
-        # check_same_thread=False is not enough to serialise reads vs writes)
-        with _DB_LOCK:
-            rows = self.db.execute(
-                "SELECT open_ts,open_px,high_px,low_px,close_px,volume FROM klines "
-                "WHERE coin=? AND tf=? ORDER BY open_ts DESC LIMIT ?",
-                (coin, tf, n),
-            ).fetchall()
+        # cold-load from SQLite (thread-local connection — WAL allows concurrent
+        # reads alongside the WS-thread writer)
+        rows = self.db.execute(
+            "SELECT open_ts,open_px,high_px,low_px,close_px,volume FROM klines "
+            "WHERE coin=? AND tf=? ORDER BY open_ts DESC LIMIT ?",
+            (coin, tf, n),
+        ).fetchall()
         return [
             {"open_ts": r["open_ts"], "open": r["open_px"], "high": r["high_px"],
              "low": r["low_px"], "close": r["close_px"], "volume": r["volume"]}
@@ -385,11 +408,10 @@ class Cache:
 
     def get_funding(self, coin: str, hours: int) -> list[dict]:
         since = int((time.time() - hours * 3600) * 1000)
-        with _DB_LOCK:
-            rows = self.db.execute(
-                "SELECT ts, rate, venue FROM funding WHERE coin=? AND ts>=? ORDER BY ts ASC",
-                (coin, since),
-            ).fetchall()
+        rows = self.db.execute(
+            "SELECT ts, rate, venue FROM funding WHERE coin=? AND ts>=? ORDER BY ts ASC",
+            (coin, since),
+        ).fetchall()
         return [dict(r) for r in rows]
 
     # -------- flushers --------
