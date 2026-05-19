@@ -161,7 +161,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
     # ACTIVATED 2026-05-18 — sentinel council 3/5 YES; council caveat:
     # validate /hlp poll latency < 1s before first live fire (operator action)
     "hlp_fade":            {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 2.50, "cap_frac": 0.03},
+                             "bt_pf": 2.50, "cap_frac": 0.10},
     # ─── Tier 1 #2: Funding Momentum (2nd-derivative funding signal) ───
     "fmom":                {"affinity": ["trend_up", "trend_down", "range", "chop"],
                              "bt_pf": 1.75, "cap_frac": 0.00},
