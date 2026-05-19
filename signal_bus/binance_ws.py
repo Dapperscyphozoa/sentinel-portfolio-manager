@@ -44,7 +44,11 @@ def build_streams(symbols: Iterable[str]) -> list[str]:
         for tf in TIMEFRAMES:
             streams.append(f"{s}@kline_{tf}")
         streams.append(f"{s}@markPrice@1s")
-    streams.append("!forceOrder@arr")
+    # NOTE: !forceOrder@arr is intentionally NOT included here. When appended to
+    # a large combined-stream URL it lands in the smaller trailing chunk which
+    # silently fails to deliver forceOrder events (deployed 2026-05-19: 0 liqs
+    # in 1h vs sandbox-isolated 2 liqs in 25s on the same URL). Isolated onto a
+    # dedicated single-stream WS via _consume_liq() in _runner() below.
     return streams
 
 
@@ -136,6 +140,31 @@ def _on_mark(cache: Cache, data: dict) -> None:
             pass
 
 
+async def _consume_liq(cache: Cache) -> None:
+    """Dedicated single-stream WS for !forceOrder@arr. Isolated from the
+    combined-stream chunks because liq events were silently dropped when
+    appended to a large multi-stream URL (see build_streams note)."""
+    url = "wss://fstream.binance.com/ws/!forceOrder@arr"
+    backoff = 1.0
+    while True:
+        try:
+            async with websockets.connect(url, ping_interval=20, ping_timeout=20, max_size=2**22) as ws:
+                log.info("binance liq ws connected: %s", url)
+                backoff = 1.0
+                async for raw in ws:
+                    try:
+                        msg = json.loads(raw)
+                    except Exception:
+                        continue
+                    # Single-stream wire format: payload is the event itself
+                    # (no {stream, data} wrapper). Shape: {"e":"forceOrder","o":{...}}
+                    _on_liq(cache, msg)
+        except Exception as e:
+            log.warning("binance liq ws disconnect: %s; reconnect in %.1fs", e, backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60.0)
+
+
 async def _runner(symbols: list[str], cache: Cache) -> None:
     streams = build_streams(symbols)
     # Binance recommends ≤200 streams per conn; chunk if needed
@@ -156,7 +185,11 @@ async def _runner(symbols: list[str], cache: Cache) -> None:
             else:
                 backoff = 1.0
 
-    await asyncio.gather(*[one(c) for c in chunks])
+    # Run klines/markPrice chunks AND dedicated liq stream in parallel
+    await asyncio.gather(
+        *[one(c) for c in chunks],
+        _consume_liq(cache),
+    )
 
 
 def run_in_thread(symbols: list[str], cache: Cache) -> None:
