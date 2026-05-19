@@ -358,12 +358,14 @@ class Cache:
             dq = self.klines.get((coin, tf))
             if dq:
                 return list(dq)[-n:]
-        # cold-load from SQLite
-        rows = self.db.execute(
-            "SELECT open_ts,open_px,high_px,low_px,close_px,volume FROM klines "
-            "WHERE coin=? AND tf=? ORDER BY open_ts DESC LIMIT ?",
-            (coin, tf, n),
-        ).fetchall()
+        # cold-load from SQLite (must hold _DB_LOCK — same connection as writers,
+        # check_same_thread=False is not enough to serialise reads vs writes)
+        with _DB_LOCK:
+            rows = self.db.execute(
+                "SELECT open_ts,open_px,high_px,low_px,close_px,volume FROM klines "
+                "WHERE coin=? AND tf=? ORDER BY open_ts DESC LIMIT ?",
+                (coin, tf, n),
+            ).fetchall()
         return [
             {"open_ts": r["open_ts"], "open": r["open_px"], "high": r["high_px"],
              "low": r["low_px"], "close": r["close_px"], "volume": r["volume"]}
@@ -383,10 +385,11 @@ class Cache:
 
     def get_funding(self, coin: str, hours: int) -> list[dict]:
         since = int((time.time() - hours * 3600) * 1000)
-        rows = self.db.execute(
-            "SELECT ts, rate, venue FROM funding WHERE coin=? AND ts>=? ORDER BY ts ASC",
-            (coin, since),
-        ).fetchall()
+        with _DB_LOCK:
+            rows = self.db.execute(
+                "SELECT ts, rate, venue FROM funding WHERE coin=? AND ts>=? ORDER BY ts ASC",
+                (coin, since),
+            ).fetchall()
         return [dict(r) for r in rows]
 
     # -------- flushers --------

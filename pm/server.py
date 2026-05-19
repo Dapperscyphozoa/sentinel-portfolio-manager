@@ -627,7 +627,7 @@ def _scan_loop() -> None:
 
 
 def _position_loop() -> None:
-    from .runner import REGISTRY
+    from strategy_runner.runner import REGISTRY
     while True:
         try:
             # Defense in depth: clear any stale 'pending' rows (>5min old)
