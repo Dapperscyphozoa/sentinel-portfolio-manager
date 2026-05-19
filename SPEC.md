@@ -16,7 +16,7 @@ This v2.1 codifies what the system **actually is** as of 2026-05-19 — the regi
 - **cross_coin_zscore killed** 2026-05-19 (commit `f4f54c6`) — sentinel CRITICAL unanimous, honest PF 0.99 over 90d × 10 pairs (n=223). Already noted in v2.0 §4.
 - **Tier 1 engines activated:** `hlp_fade` (0.03), `stop_hunt` (0.02), `vpoc_retest` (0.03), `oi_concentration` (0.02) now live with capital. `fmom` remains at 0.00 paper-pending.
 - **Stage 1 HL-specific engines** added at cap_frac 0.00 PROVISIONAL_NEW_ENGINE_PAPER: `hl_cvd_aggressor`, `funding_triangulation`, `liq_cluster_hunt`, `hl_whale_frontrun`, `hl_depth_shock`, `hl_vault_predict`. None backtested yet (`bt_n=0`).
-- **4-loss workflow** (was DELTA): cooldown.demote_engine → monitor.auto_4loss_demote → sentinel audit + paper demote → auto-promote on 4 paper wins. Codified in §7.3 below.
+- **4-loss workflow superseded by PF gate** (operator 2026-05-19): auto-demote action removed; sentinel audit hook retained as informational early-warning. PF gate (n>=10, 0.74×bt_pf) is the sole engine-edge gate. See §7.3.
 - Sentinel scope (operator 2026-05-18, reaffirmed): consulted for edge development, loss reduction, profit increase, WR increase ONLY. Not consulted for live/paper sizing decisions or registry curation.
 
 ---
@@ -180,53 +180,47 @@ Order of evaluation:
 
 cap_frac is **advisory only** for current production — used by dashboard and the promotion gate. Current production sizing is flat. Per-engine cap_frac sizing planned for v2.2.
 
-### 7.3 Auto-cooldown rules + 4-loss workflow (folded in from SPEC_v2.1_DELTA)
+### 7.3 Auto-cooldown rules + 4-loss audit (operator 2026-05-19: PF gate replaces 4-loss demote)
 
 | Trigger | Action | Duration |
 |---|---|---|
 | 4 consec losses on same (engine, coin) | Coin cooldown | 1h rolling |
-| **4 consec losses on engine** | **Paper demote** (workflow below) | Permanent until reinstated |
+| 4 consec clean losses on engine | **Audit-only** (no demote) | n/a — informational |
 | Engine drawdown > 12% over last 50 trades | Engine cooldown | 1h rolling |
-| Live PF < 0.74 × backtest PF after n ≥ 22 | Engine cooldown | 1h rolling |
+| Live PF < 0.74 × backtest PF after n ≥ 10 | Engine cooldown | 1h rolling |
 
-**4-loss permanent-demote workflow:**
+**Why 4-loss no longer demotes:** A 50% WR engine with 1.5R avg-win/avg-loss can easily string 4 losses on normal variance while running PF > 2.0 — clearly live-worthy. The 4-loss-demote machinery was punishing variance, not edge degradation. PF gate measures edge directly and is unaffected by streaks.
+
+**4-loss audit workflow (informational):**
 
 ```
-  4 consec losses on engine
+  4 consec clean losses on engine
    ↓
-  cooldown.demote_engine()  (PM-internal flag, paper_demoted=true)
+  cooldown.engine_consec_losses count >= 4 (counter still kept)
    ↓
-  monitor.auto_4loss_demote routine detects new row (polls every 5 min)
+  monitor.four_loss_audit polls /cooldown/engine_consec_losses (every 5 min)
    ↓
-  Step 1: fires sentinel audit on the engine's source code
-          - Pulls source from GitHub raw
-          - Uses haiku model via internal claude_client (~$0.005/audit)
-          - Writes audit report to /var/data/audits/<engine>_<ts>.md
+  Fires sentinel audit on engine's source code (Claude Haiku, ~$0.005)
    ↓
-  Step 2: flips STRATEGY_<NAME>_LIVE=0 via Render API on strategy-runner
+  Writes audit report to /var/data/audits/<engine>_4loss_<ts>.md
    ↓
-  Engine now runs in PAPER MODE (signals fire and record, no live HL orders)
-   ↓
-  Auto-promote watch (every 5 min):
-    If last 4 PAPER closures all have pnl_usd > 0:
-      - Flip STRATEGY_<NAME>_LIVE=1 via Render API
-      - POST /reinstate/<engine> with X-Halt-Token (clears cooldown flag)
-      - Record promotion in seen_demotions.promoted_ts
+  NO env flip. NO demote. NO auto-promote. Engine fate is decided by PF gate.
 ```
 
 **Rule constants:**
 
 | Constant | Value | Location |
 |---|---|---|
-| `CONSEC_LOSS_ENGINE` | 4 | `common/cooldown.py` |
-| `WIN_STREAK_FOR_PROMOTE` | 4 | `monitor/routines/auto_4loss_demote.py` |
+| `CONSEC_LOSS_ENGINE` | 4 (audit trigger only) | `common/cooldown.py` |
+| `MIN_TRADES_FOR_PF_CHECK` | 10 (was 22) | `common/cooldown.py` |
+| `MIN_PF_RATIO` | 0.74 | `common/cooldown.py` |
 | Monitor poll interval | 300s | `monitor/server.py` |
 | Sentinel audit model | `claude-haiku-4-5-20251001` | `monitor/claude_client.py` |
 | Daily API budget | $5 | `DAILY_API_BUDGET_USD` env |
 
-**Manual override:** `POST /reinstate/<engine>` (X-Halt-Token), or flip `STRATEGY_<NAME>_LIVE=1` env on strategy-runner.
+**Manual operator demote/reinstate:** `cooldown.demote_engine()` and `POST /reinstate/<engine>` (X-Halt-Token) still work for explicit operator action — only the *automatic* path is removed.
 
-**Fail-soft semantics:** if Render API or GitHub or claude_client fails, the demote/promote step proceeds without that piece; never blocks lifecycle.
+**Fail-soft semantics:** if Claude API, GitHub, or PM is unreachable, the audit step is skipped silently. Cooldown and gating semantics are unaffected.
 
 ### 7.4 Promotion (lifecycle)
 

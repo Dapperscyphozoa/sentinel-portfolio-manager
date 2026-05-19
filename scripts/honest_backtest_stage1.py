@@ -402,7 +402,7 @@ def write_gates_md(results: list[dict]) -> None:
         "",
         "## Next actions (auto-promote when gates pass)",
         "",
-        "Monitor routine `auto_4loss_demote.py` extended to handle Stage 1 gate progression:",
+        "Monitor routine `four_loss_audit.py` (was `auto_4loss_demote.py`) extended to handle Stage 1 gate progression:",
         "- Each cycle, re-evaluate this gate.",
         "- If engine passes GREEN AND not already canary: promote to cap_frac 0.025 via Render API.",
         "- If engine passes 0.05 ladder: bump cap_frac.",

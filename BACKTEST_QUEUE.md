@@ -19,7 +19,7 @@
 | `liq_cluster_hunt` | C | n=40 paper, rolling-PF ≥ 1.5 |
 | `funding_triangulation` | C | n=30 paper, rolling-PF ≥ 1.5 |
 
-Estimated time to first gate: **14–21 days** of live paper accumulation. Monitor routine `auto_4loss_demote` already polls daily and updates `STAGE1_GATES.md`.
+Estimated time to first gate: **14–21 days** of live paper accumulation. Monitor routine `four_loss_audit` (was `auto_4loss_demote`) polls daily; PF gate at n≥10 / 0.74×bt is the sole edge gate post 2026-05-19.
 
 ---
 

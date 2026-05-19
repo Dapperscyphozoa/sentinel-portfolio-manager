@@ -2,12 +2,17 @@
 
 Rules:
   - 4 consecutive losses on same COIN → 1h coin cooldown (engine still runs other coins)
-  - 4 consecutive losses on any ENGINE → PERMANENT paper demote (operator reinstates)
-    (was: 6 consec → 1h cooldown — superseded by operator 2026-05-18)
   - Engine DD > 12% → 1h engine cooldown
-  - Live PF < 0.74 × backtest PF after 22+ trades → 1h engine cooldown
-  - Cooldowns are ROLLING (not permanent halts) EXCEPT the engine-level 4-loss
-    demote which is PERMANENT until operator calls POST /reinstate/<engine>.
+  - Live PF < 0.74 × backtest PF after 10+ trades → 1h engine cooldown
+    (was 22+ trades — operator 2026-05-19: PF gate replaces 4-loss demote)
+  - All cooldowns are ROLLING (1h, auto-recover).
+
+  4-loss engine-level workflow: counter is still tracked here (consumed by
+  monitor/routines/four_loss_audit), but NO automatic demote action fires.
+  PF gate is the sole engine-edge gate. A 50% WR engine on a normal losing
+  streak is no longer punished — only sustained PF degradation halts an
+  engine. Operator may still manually paper-demote via demote_engine() if
+  desired; auto-promotion logic is gone.
 
 Persisted to /var/data/cooldowns.sqlite for survival across restarts.
 """
@@ -21,11 +26,10 @@ from typing import Optional
 
 COOLDOWN_SECS = 3600   # 1h
 CONSEC_LOSS_COIN = 4
-CONSEC_LOSS_ENGINE = 4              # was 6 — operator 2026-05-18
+CONSEC_LOSS_ENGINE = 4              # audit trigger only — no demote action
 MAX_DD_PCT = 0.12
-MIN_TRADES_FOR_PF_CHECK = 22
+MIN_TRADES_FOR_PF_CHECK = 10        # was 22 — operator 2026-05-19
 MIN_PF_RATIO = 0.74    # live PF / backtest PF
-DEMOTE_REASON_4LOSS = "consec_loss_engine_demote"
 
 
 class CooldownTracker:
@@ -175,7 +179,9 @@ class CooldownTracker:
                 (engine, coin, 0, now),
             )
 
-        # Update per-engine consecutive losses
+        # Update per-engine consecutive losses (counter only — no auto-demote
+        # action; PF gate is the sole engine-edge gate. monitor/four_loss_audit
+        # reads this counter to fire informational audits.)
         if is_loss:
             row = c.execute(
                 "SELECT count FROM engine_consec_losses WHERE engine=?", (engine,)
@@ -185,21 +191,6 @@ class CooldownTracker:
                 "INSERT OR REPLACE INTO engine_consec_losses VALUES (?, ?, ?)",
                 (engine, new_count, now),
             )
-            if new_count >= CONSEC_LOSS_ENGINE:
-                # OPERATOR 2026-05-18: 4 consec losses → permanent paper demote
-                # (was 6 → 1h). Operator must POST /reinstate/<engine> to revive.
-                c.execute(
-                    "INSERT OR REPLACE INTO engine_demotions VALUES (?, ?, ?)",
-                    (engine, now, f"{DEMOTE_REASON_4LOSS}={new_count}"),
-                )
-                triggered.append({"type": "engine_demote", "engine": engine,
-                                  "demoted_ts": now,
-                                  "reason": f"{DEMOTE_REASON_4LOSS}={new_count}",
-                                  "permanent": True})
-                c.execute(
-                    "INSERT OR REPLACE INTO engine_consec_losses VALUES (?, ?, ?)",
-                    (engine, 0, now),
-                )
         else:
             c.execute(
                 "INSERT OR REPLACE INTO engine_consec_losses VALUES (?, ?, ?)",

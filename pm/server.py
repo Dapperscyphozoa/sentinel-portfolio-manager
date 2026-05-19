@@ -173,7 +173,8 @@ class Handler(BaseHTTPRequestHandler):
             rows = CONN.execute("SELECT * FROM signals ORDER BY id DESC LIMIT ?", (n,)).fetchall()
             return _json(self, 200, [dict(r) for r in rows])
         if path == "/demotions":
-            # Expose engine_demotions for monitor.auto_4loss_demote routine.
+            # Operator-driven manual demotes only (4-loss auto-demote was
+            # removed 2026-05-19; PF gate is the sole engine-edge gate).
             try:
                 from pm.pretrade import _get_cooldown
                 cd = _get_cooldown()
@@ -182,6 +183,23 @@ class Handler(BaseHTTPRequestHandler):
                 c = cd._conn()
                 rows = c.execute(
                     "SELECT engine, demoted_ts, reason FROM engine_demotions"
+                ).fetchall()
+                c.close()
+                return _json(self, 200, [dict(r) for r in rows])
+            except Exception as e:
+                return _json(self, 500, {"error": str(e)[:200]})
+
+        if path == "/cooldown/engine_consec_losses":
+            # Expose engine_consec_losses counter for monitor.four_loss_audit.
+            try:
+                from pm.pretrade import _get_cooldown
+                cd = _get_cooldown()
+                if cd is None:
+                    return _json(self, 200, [])
+                c = cd._conn()
+                rows = c.execute(
+                    "SELECT engine, count, updated_ts FROM engine_consec_losses "
+                    "WHERE count > 0 ORDER BY count DESC"
                 ).fetchall()
                 c.close()
                 return _json(self, 200, [dict(r) for r in rows])

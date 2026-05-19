@@ -10,7 +10,7 @@ operator-driven outcomes.
 Used by:
   - strategy_runner /attribution (?clean_only=1 flag)
   - monitor/routines/auto_demote (_compute_rolling_pf)
-  - monitor/routines/auto_4loss_demote (_count_paper_wins_streak)
+  - monitor/routines/four_loss_audit (informational audit only — no demote)
   - any future PF-based decision logic
 """
 from __future__ import annotations

@@ -13,6 +13,7 @@ The verdicts below were validated offline. Code changes in this commit:
 - **#4 fire_reason instrumentation** — `scripts/backtest_harness.py` now persists `fire_reason`, `extras`, and `vol_24h_usd` per fire. `scripts/counterfactual.py` activates `adj4_fire_reason_pruning` and `adj9_liquidity_floor` when the new fields are present (legacy JSONLs report `no_data_yet`).
 - **#6 Clean-closure hygiene** — `monitor/routines/daily_report.py` and `core/mer.py` now pass `?clean_only=1` to `/attribution`. `pm/server.py` local fallback `/attribution` honors `clean_only` parameter (was silently ignored). `pm/attribution.by_strategy()` defaults `clean_only=True`.
 - **#9 24h-volume instrumentation** — same harness patch as #4 above.
+- **#2 PF gate replaces 4-loss demote** (operator 2026-05-19, shipped default-ON, no validation): `MIN_TRADES_FOR_PF_CHECK` lowered 22 → 10 in `common/cooldown.py`. 4-loss auto-demote action removed; `auto_4loss_demote` routine renamed to `four_loss_audit` and downgraded to informational audit-only. PF gate is the sole engine-edge gate. The change is motivated by the false-positive problem: a 50% WR engine with 1.5R avg-win/avg-loss can string 4 losses on variance while running PF > 2.0.
 
 **Not shipped (requires operator approval / live-path change):**
 - **#1 Maker entry** — fee bookkeeping already supports `extras.maker_only_recommended` (see `strategy_runner/trader.py:874`), but actual order routing still calls `hl.market_open`. A real implementation requires adding `limit_open(post_only=True, fallback_taker_after_ms=N)` to `common/hl_exchange.py`, integrating fill-timeout logic into `trader.py`, and operator review of the unfilled-rate impact. Separate PR.
@@ -53,7 +54,7 @@ Some adjustments cannot be tested with the current data — those are flagged wi
 | # | Adjustment | Verdict | Headline impact |
 |---|---|---|---|
 | 1 | Maker entry (entry maker, exit taker) | **SHIP** | +236.8% net-pct across 7,893 fires = +30 bps/fire, no overfit risk |
-| 2 | Live PF degradation gate recalibration | **NEEDS FORWARD** | Not offline-testable |
+| 2 | PF gate replaces 4-loss demote | **SHIPPED** | Operator decision 2026-05-19; n_floor 22→10, auto-demote removed, audit retained |
 | 3 | By-coin pruning (n ≥ 15, PF < 1.0) | **SHIP W/ CAUTION** | WF OOS PF 1.23 → 1.43, +223.8% — but drops 53% of OOS fires |
 | 3a | By-coin pruning (n ≥ 10, PF < 1.0) | **REJECT** | WF OOS delta −43.3% — overfit at this threshold |
 | 4 | fire_reason variant pruning | **NEEDS INSTRUMENTATION** | Backtest harness strips `extras_json.fire_reason` |
@@ -123,7 +124,7 @@ Backtest JSONLs contain only simulator-clean closes (`timeout`, `sl`, `tp`, `eod
 
 But the adjustment is real and shippable against the live `closures` table: filter `close_reason NOT IN ('force_close:audit_red', 'reconciled_off_book', 'manual', 'force_close:%')` consistently across:
 - live PF degradation gate (`monitor/routines/`)
-- 4-loss demote counter (`monitor/routines/auto_4loss_demote`)
+- 4-loss audit trigger (`monitor/routines/four_loss_audit`)
 - `by_coin` / `by_reason` attribution
 - promotion gates (per `pm/promotion_gate.py`)
 
@@ -165,10 +166,17 @@ Five of eleven engines lose money OOS under their own fitted blackouts. The "hug
 
 These items genuinely can't be evaluated with current data. For each: the specific blocker, and the concrete next step to make it testable.
 
-### #2 — Live PF degradation gate recalibration
+### #2 — PF gate replaces 4-loss demote (SHIPPED 2026-05-19)
 
-- **Blocker:** Requires the live `closures` history *plus* the demote-event log in `monitor.db`. Neither is in the repo (production-only SQLite on Render).
-- **Next step:** Export `/attribution` snapshots over 30+ days. Replay the `live_pf < 0.74 × bt_pf after n ≥ 22` rule at varying thresholds (0.85x, 0.90x) and n_floors (22, 30, 50). The right answer minimizes false-positive demotes while catching genuine PF decay early.
+Operator decision after weighing the variance/edge problem: 4-loss auto-demote was punishing normal losing streaks on healthy engines. PF gate measures edge directly and is uncorrelated with streak length.
+
+Changes:
+- `common/cooldown.py`: `MIN_TRADES_FOR_PF_CHECK` 22 → 10. 4-loss auto-demote action removed. `engine_consec_losses` counter retained (consumed by audit routine).
+- `monitor/routines/auto_4loss_demote.py` → renamed `four_loss_audit.py`. Reads `/cooldown/engine_consec_losses` from PM. Fires sentinel audit on count ≥ 4. No env flip, no demote, no auto-promote.
+- `pm/server.py`: new `/cooldown/engine_consec_losses` read endpoint.
+- Tests: `test_4loss_demote.py` rewritten to assert no auto-demote + new PF-gate-at-n10 coverage.
+
+Not counterfactual-validated (operator chose "ship default-ON, skip validation"). Forward monitoring is via the `four_loss_audit` reports themselves — every audit fired post-deploy shows where the old 4-loss demote *would* have triggered, allowing operator to verify the PF gate is catching what matters.
 
 ### #4 — fire_reason variant pruning
 

@@ -380,10 +380,6 @@ def adj9_liquidity_floor(fires: list[Fire], floors_usd: tuple[float, ...] = (50e
 
 
 UNTESTABLE = {
-    "#2 — Live PF degradation gate recalibration": {
-        "blocker": "Requires live closures + the demote-event history kept in monitor.db. No offline source.",
-        "next_step": "Export /attribution snapshots over 30+ days and replay the 0.74x rule at varying thresholds (0.85x, 0.90x) and n_floors (22, 30, 50).",
-    },
     "#5 — Regime affinity confidence threshold tune": {
         "blocker": "No regime classification timeline in backtest data. Regime is computed live by pm/regime.py.",
         "next_step": "Snapshot /regime endpoint every 5min for 7+ days, then overlay on per-fire timestamps to compute per-confidence-bucket PF.",
