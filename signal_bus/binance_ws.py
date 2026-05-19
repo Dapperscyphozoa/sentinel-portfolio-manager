@@ -141,10 +141,16 @@ def _on_mark(cache: Cache, data: dict) -> None:
 
 
 async def _consume_liq(cache: Cache) -> None:
-    """Dedicated single-stream WS for !forceOrder@arr. Isolated from the
-    combined-stream chunks because liq events were silently dropped when
-    appended to a large multi-stream URL (see build_streams note)."""
-    url = "wss://fstream.binance.com/ws/!forceOrder@arr"
+    """Dedicated WS for !forceOrder@arr. Isolated from the main combined-stream
+    chunks because liq events were silently dropped when appended to a large
+    multi-stream URL (see build_streams note).
+
+    Empirical (2026-05-19): the path-based single-stream URL
+    `/ws/!forceOrder@arr` accepts the connection but delivers ZERO events.
+    Only the combined-stream URL `/market/stream?streams=!forceOrder@arr`
+    works, so we use that with a single stream. Envelope is the standard
+    combined-stream `{"stream": "!forceOrder@arr", "data": {...}}` wrapper."""
+    url = "wss://fstream.binance.com/market/stream?streams=!forceOrder@arr"
     backoff = 1.0
     while True:
         try:
@@ -156,9 +162,11 @@ async def _consume_liq(cache: Cache) -> None:
                         msg = json.loads(raw)
                     except Exception:
                         continue
-                    # Single-stream wire format: payload is the event itself
-                    # (no {stream, data} wrapper). Shape: {"e":"forceOrder","o":{...}}
-                    _on_liq(cache, msg)
+                    # Combined-stream envelope: {"stream":"!forceOrder@arr","data":{"e":"forceOrder","o":{...}}}
+                    data = msg.get("data") if isinstance(msg, dict) else None
+                    if not data:
+                        continue
+                    _on_liq(cache, data)
         except Exception as e:
             log.warning("binance liq ws disconnect: %s; reconnect in %.1fs", e, backoff)
             await asyncio.sleep(backoff)
