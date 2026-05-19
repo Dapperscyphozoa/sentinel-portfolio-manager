@@ -63,9 +63,17 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         try:
             self._route()
+        except (BrokenPipeError, ConnectionResetError):
+            # Client closed before we finished. Do NOT try to write a 500 —
+            # that'll just raise BrokenPipe again and kill the handler thread,
+            # which Render misreads as upstream failure and serves a 502.
+            pass
         except Exception as e:
             log.exception("handler error")
-            _json_resp(self, 500, {"error": str(e)})
+            try:
+                _json_resp(self, 500, {"error": str(e)})
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
     def _route(self) -> None:
         u = urlparse(self.path)

@@ -124,7 +124,7 @@ _PROXY_MAP = {
 }
 
 _HEALTH_CACHE: dict = {"ts": 0, "data": None}
-_HEALTH_TTL_S = 3.0
+_HEALTH_TTL_S = 15.0
 
 # ─── Deep research background job store ───
 # In-memory dict of job_id → {status, phase, started_at, progress, result}
@@ -163,7 +163,7 @@ def _aggregate_health() -> dict:
         ("pm", PM_PORT),
         ("monitor", MONITOR_PORT),
     ]
-    with httpx.Client(timeout=2.0) as cli:
+    with httpx.Client(timeout=5.0) as cli:
         for name, port in targets:
             try:
                 r = cli.get(f"http://localhost:{port}/health")
@@ -211,7 +211,7 @@ class Handler(BaseHTTPRequestHandler):
     def _pm_data(self) -> dict:
         """Fetch PM regime + account for shared use across endpoints."""
         try:
-            with httpx.Client(timeout=2.0) as cli:
+            with httpx.Client(timeout=5.0) as cli:
                 r = cli.get(f"http://localhost:{PM_PORT}/health")
                 if r.status_code == 200:
                     return r.json()
@@ -221,7 +221,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _strategy_state(self) -> dict:
         try:
-            with httpx.Client(timeout=2.0) as cli:
+            with httpx.Client(timeout=5.0) as cli:
                 r = cli.get(f"http://localhost:{STRATEGY_PORT}/health")
                 if r.status_code == 200:
                     return r.json()
@@ -231,7 +231,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _signal_bus_health(self) -> dict:
         try:
-            with httpx.Client(timeout=2.0) as cli:
+            with httpx.Client(timeout=5.0) as cli:
                 r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/health")
                 if r.status_code == 200:
                     return r.json()
@@ -242,7 +242,7 @@ class Handler(BaseHTTPRequestHandler):
     def _hl_account_full(self) -> dict:
         """Get FULL HL account with positions via signal_bus cache."""
         try:
-            with httpx.Client(timeout=2.0) as cli:
+            with httpx.Client(timeout=5.0) as cli:
                 r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/hl/account")
                 if r.status_code == 200:
                     return r.json()
@@ -252,7 +252,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _hl_positions(self) -> list:
         try:
-            with httpx.Client(timeout=2.0) as cli:
+            with httpx.Client(timeout=5.0) as cli:
                 r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/hl/positions")
                 if r.status_code == 200:
                     return r.json()
@@ -297,7 +297,7 @@ class Handler(BaseHTTPRequestHandler):
         # Get BTC mark
         btc_mid = 0.0
         try:
-            with httpx.Client(timeout=2.0) as cli:
+            with httpx.Client(timeout=5.0) as cli:
                 r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/markprice/BTC")
                 if r.status_code == 200:
                     mp = r.json() or {}
@@ -346,7 +346,7 @@ class Handler(BaseHTTPRequestHandler):
         # Coin → most-recent open trade row from our SQLite.
         runner_by_coin: dict = {}
         try:
-            with httpx.Client(timeout=2.0) as cli:
+            with httpx.Client(timeout=5.0) as cli:
                 r = cli.get(f"http://localhost:{STRATEGY_PORT}/state")
                 if r.status_code == 200:
                     for tr in r.json():
@@ -463,7 +463,7 @@ class Handler(BaseHTTPRequestHandler):
         # Engines block (PM registry)
         engines_pm = []
         try:
-            with httpx.Client(timeout=2.0) as cli:
+            with httpx.Client(timeout=5.0) as cli:
                 r = cli.get(f"http://localhost:{PM_PORT}/engines")
                 if r.status_code == 200:
                     engines_pm = r.json().get("engines", [])
@@ -488,7 +488,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         engines_pm = []
         try:
-            with httpx.Client(timeout=2.0) as cli:
+            with httpx.Client(timeout=5.0) as cli:
                 r = cli.get(f"http://localhost:{PM_PORT}/engines")
                 if r.status_code == 200:
                     engines_pm = r.json().get("engines", [])
@@ -548,7 +548,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         raw_items = []
         try:
-            with httpx.Client(timeout=2.0) as cli:
+            with httpx.Client(timeout=5.0) as cli:
                 r = cli.get(f"http://localhost:{STRATEGY_PORT}/signals?limit=50")
                 if r.status_code == 200:
                     data = r.json()
@@ -585,7 +585,7 @@ class Handler(BaseHTTPRequestHandler):
         """
         items = []
         try:
-            with httpx.Client(timeout=2.0) as cli:
+            with httpx.Client(timeout=5.0) as cli:
                 # Recent fills from signal_bus
                 since = int((time.time() - 3600) * 1000)
                 r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/hl/fills?since={since}")
@@ -623,7 +623,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             now = time.time()
             since = now - 24 * 3600
-            with httpx.Client(timeout=2.0) as cli:
+            with httpx.Client(timeout=5.0) as cli:
                 r = cli.get(f"http://localhost:{STRATEGY_PORT}/closures?since={since}&limit=2000")
                 closures = []
                 if r.status_code == 200:
@@ -724,7 +724,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
         # Fallback to markprice
         try:
-            with httpx.Client(timeout=2.0) as cli:
+            with httpx.Client(timeout=5.0) as cli:
                 r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/markprice/{coin}")
                 if r.status_code == 200:
                     mp = r.json() or {}
@@ -766,6 +766,21 @@ class Handler(BaseHTTPRequestHandler):
             self._json(502, {"error": "proxy_failed", "detail": str(e)})
 
     def do_GET(self):
+        try:
+            self._dispatch_get()
+        except (BrokenPipeError, ConnectionResetError):
+            # Client closed before we finished writing. Don't retry-write — just
+            # let the handler thread exit cleanly so Render doesn't see this as
+            # an upstream crash and serve a 502 to the next caller.
+            pass
+        except Exception:
+            log.exception("do_GET handler crashed")
+            try:
+                self._json(500, {"error": "internal"})
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+    def _dispatch_get(self):
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/health":
