@@ -354,6 +354,21 @@ class Handler(BaseHTTPRequestHandler):
                             runner_by_coin[tr["coin"]] = tr
         except Exception:
             pass
+        # Fallback: also query spm-strategy-runner (split-service stack) which
+        # may have placed orders on the same HL wallet. Operator runs BOTH the
+        # core monolith AND the spm-* split stack against the same wallet. Their
+        # DBs are independent, so attribution lookups must consult both.
+        try:
+            spm_url = os.environ.get("SPM_STRATEGY_RUNNER_URL",
+                                     "https://spm-strategy-runner.onrender.com")
+            with httpx.Client(timeout=5.0) as cli:
+                r = cli.get(f"{spm_url.rstrip('/')}/state")
+                if r.status_code == 200:
+                    for tr in r.json():
+                        if tr.get("status") == "open" and tr["coin"] not in runner_by_coin:
+                            runner_by_coin[tr["coin"]] = tr
+        except Exception:
+            pass
         # Positions list — shape landing expects: {upnl, lev, tp, sl, engine, stage, coin, side, size, entry, entry_px, mark_px}
         positions_out = []
         for p in hl_positions or account_pm.get("positions") or []:
