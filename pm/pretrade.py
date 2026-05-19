@@ -3,11 +3,16 @@
 NEW SPEC (operator confirmed):
   - 1 position per coin GLOBALLY (across all engines)
   - First-fire wins (engines evaluated in PF-priority order by runner)
-  - 5x leverage on perp
-  - 5% margin per new position (notional = 25% wallet)
+  - 5x leverage on perp (HL account setting, not applied to sz)
+  - 5% margin per new position. **trader.open() does NOT scale sz by
+    leverage**, so effective HL position notional == margin == 5% wallet.
+    The "notional = 25% wallet" framing in earlier drafts was the spec
+    intent but the codepath was reverted 2026-05-19 per operator
+    preference for conservative sizing (commit 970a537).
   - 20 max concurrent positions globally
   - 10% spot stop loss (set in strategy.evaluate)
-  - Auto-cooldowns: 4 consec loss/coin (1h), 6 consec loss/engine (1h),
+  - Auto-cooldowns: 4 consec loss/coin (1h), 4 consec loss/engine
+    (permanent paper demote — operator 2026-05-18, was 6 → 1h),
     12% DD (1h), live PF < 0.74×bt (1h)
   - Promotion: 20 trades + live PF within 20% of bt → live
 """
@@ -47,7 +52,9 @@ def _i(name: str, default: int) -> int:
 @dataclass
 class CheckResult:
     allow: bool
-    size_usd: float          # margin USD (notional = size × leverage)
+    size_usd: float          # margin USD; trader.open() uses this as-is for
+                             # notional (no leverage multiplier — see module
+                             # docstring). True notional == margin.
     reason: str
     bt_pf: float = 0.0
 
@@ -156,7 +163,8 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "e17_bb_fade_bt_4h":   {"affinity": ["high_vol", "range"],      "bt_pf":  0.86, "cap_frac": 0.00},
     "donchian":            {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.01, "cap_frac": 0.00},
     "cex_dex_arb":  {"affinity": ["range", "chop"],                  "bt_pf": 0.00, "cap_frac": 0.00},
-    "cascade_sniper_hl":   {"affinity": ["high_vol", "trend_up", "trend_down", "range", "chop"], "bt_pf": 0.00, "cap_frac": 0.00},
+    # cascade_sniper_hl + e08_dip3d7_td_4h removed 2026-05-19 — modules
+    # archived; per SPEC §3.10 dead registry entries are not kept.
     # ─── World-first: HLP Vault Fade (Council #1 pick, Tier 1 ship-first) ───
     # ACTIVATED 2026-05-18 — sentinel council 3/5 YES; council caveat:
     # validate /hlp poll latency < 1s before first live fire (operator action)
@@ -317,6 +325,18 @@ def check(conn, strategy: str, signal: dict, regime: dict,
     if os.environ.get(f"PM_FORCE_HALT_{strategy.upper()}", "0") == "1":
         return CheckResult(False, 0.0, "halt_forced")
 
+    # In-process halt check. The runner already short-circuits halted
+    # strategies before pm.check is called, but pm.check has historically
+    # never consulted halt.is_halted — meaning a /halt POST landing only
+    # on the PM side (not the runner) was cosmetic. Wire it here so halts
+    # are honored regardless of which service received the POST.
+    try:
+        from common import halt as _halt
+        if _halt.is_halted(strategy):
+            return CheckResult(False, 0.0, "halted")
+    except ImportError:
+        pass
+
     # 0) Hard-block: CUT engines (audit verdict — see CUT_ENGINES set)
     if strategy in CUT_ENGINES:
         return CheckResult(False, 0.0, "engine_cut_by_audit")
@@ -378,6 +398,28 @@ def check(conn, strategy: str, signal: dict, regime: dict,
         if blocked:
             return CheckResult(False, 0.0, reason)
 
+    # 5c) Promotion gate — opt-in run-time enforcement. Refuses fires from
+    # canary/live engines whose metrics fail the per-stage minimums in
+    # pm/promotion_gate. Paper engines (cap_frac == 0) always pass. Operator
+    # bypasses a single engine via PROMOTION_OVERRIDE_<NAME>=1.
+    #
+    # Default OFF because the existing registry has many canary/live engines
+    # without full oos_pf / paper_n / paper_pf metadata — turning this on
+    # without first populating the registry will block every live trade.
+    # Set PROMOTION_GATE_RUNTIME=1 once metadata is populated to enforce
+    # at fire time rather than only at boot.
+    if os.environ.get("PROMOTION_GATE_RUNTIME", "0") in ("1", "true", "yes"):
+        try:
+            from . import promotion_gate as _pg
+            ok_pg, stage_pg, fails_pg = _pg.check_engine(strategy, eng_cfg)
+            if not ok_pg:
+                return CheckResult(
+                    False, 0.0,
+                    f"promotion_gate_fail:{stage_pg}:" + ",".join(fails_pg[:3])
+                )
+        except ImportError:
+            pass
+
     if account_value_usd <= 0:
         return CheckResult(False, 0.0, "no_account_value")
 
@@ -399,7 +441,7 @@ def check(conn, strategy: str, signal: dict, regime: dict,
     # 8) Live-safety gate for ICT signals + cascade sniper (council Phase 1 spec)
     # ICT + cascade sniper route through live_safety; OOS/legacy engines use
     # flat 5% margin × 5x lev as before.
-    LIVE_SAFETY_ENGINES = {"ict_confluence_4h", "ict_confluence_1d", "cascade_sniper_hl"}
+    LIVE_SAFETY_ENGINES = {"ict_confluence_4h", "ict_confluence_1d"}
     if strategy in LIVE_SAFETY_ENGINES and get_safety is not None:
         try:
             safety = get_safety()

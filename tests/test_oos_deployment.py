@@ -31,9 +31,14 @@ def _make_bars(closes: list[float], start_ts: int = 1700000000000, tf_ms: int = 
 
 
 def test_oos_engines_import():
-    """All 11 OOS engines import + have valid NAME, AFFINITY, TF, UNIVERSE."""
+    """OOS engines import + have valid NAME, AFFINITY, TF, UNIVERSE.
+
+    e08_dip3d7_td_4h was archived 2026-05-19 (SPEC.md §3.10 ghost cleanup),
+    leaving 10 engines in OOS_ENGINES. Test asserts a lower bound rather than
+    a magic number so future additions don't silently break this gate.
+    """
     from strategy_runner.strategies.oos_engines import OOS_ENGINES
-    assert len(OOS_ENGINES) == 11
+    assert len(OOS_ENGINES) >= 10
     names = set()
     for cls in OOS_ENGINES:
         assert cls.NAME, f"{cls} missing NAME"
@@ -95,7 +100,10 @@ def test_cooldown_coin_4_consec_losses():
         os.unlink(path)
 
 
-def test_cooldown_engine_6_consec_losses():
+def test_cooldown_engine_4_consec_losses_demotes():
+    """Operator 2026-05-18: threshold lowered 6 → 4 and the trigger is now a
+    PERMANENT paper demote (not a rolling 1h cooldown). After 4 losses,
+    is_engine_demoted should return True; reinstate requires operator action."""
     from common.cooldown import CooldownTracker
     with tempfile.NamedTemporaryFile(suffix=".sqlite", delete=False) as f:
         path = f.name
@@ -103,13 +111,12 @@ def test_cooldown_engine_6_consec_losses():
         ct = CooldownTracker(path)
         engine = "e08_dip3d10_td_1d"
         bt_pf = 1.93
-        # Spread losses across coins to avoid coin cooldown triggering first
-        coins = ["BTC", "ETH", "SOL", "XRP", "BNB", "DOGE"]
-        for c in coins:
+        # Spread losses across coins to avoid coin cooldown short-circuiting
+        for c in ("BTC", "ETH", "SOL", "XRP"):
             ct.record_close(engine, c, -10.0, bt_pf)
-        blocked, reason = ct.is_engine_blocked(engine)
-        assert blocked, f"engine should be blocked after 6 losses; reason={reason}"
-        assert "consec_loss_engine" in reason
+        demoted, reason = ct.is_engine_demoted(engine)
+        assert demoted, f"engine should be demoted after 4 losses; reason={reason}"
+        assert "consec_loss_engine_demote" in reason
     finally:
         os.unlink(path)
 
@@ -183,15 +190,18 @@ def test_pretrade_max_open_blocks():
     del os.environ["MAX_OPEN_POSITIONS"]
 
 
-def test_pretrade_registry_cap_fracs_sum_to_1():
-    from pm.pretrade import OOS_ENGINE_REGISTRY
-    total = sum(e["cap_frac"] for e in OOS_ENGINE_REGISTRY.values())
-    assert abs(total - 1.0) < 0.01, f"cap_fracs sum to {total}, not 1.0"
+def test_pretrade_registry_cap_fracs_under_hard_cap():
+    """cap_frac sum must stay under the 1.005 invariant enforced by
+    pm.pretrade at import time (was: hard-equal to 1.0)."""
+    from pm.pretrade import OOS_ENGINE_REGISTRY, _cap_of
+    total = sum(_cap_of(e) for e in OOS_ENGINE_REGISTRY.values())
+    assert total < 1.005, f"cap_fracs sum to {total} (over-allocated)"
 
 
-def test_pretrade_all_11_engines_registered():
+def test_pretrade_oos_engines_registered():
+    """At least one engine of each e0X family must be present in the registry."""
     from pm.pretrade import OOS_ENGINE_REGISTRY
-    assert len(OOS_ENGINE_REGISTRY) == 20  # +2 ICT  # combined: 9 legacy + 11 OOS
+    assert len(OOS_ENGINE_REGISTRY) >= 20  # 10 OOS + 2 ICT + 8+ Tier-1/Stage-1
     expected_prefixes = ["e01", "e07", "e08", "e09", "e16", "e17"]
     for prefix in expected_prefixes:
         matches = [k for k in OOS_ENGINE_REGISTRY if k.startswith(prefix)]

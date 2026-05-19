@@ -55,39 +55,41 @@ def test_pretrade_blocks_when_max_open_global(monkeypatch):
 
 
 def test_pretrade_regime_mismatch_blocks(monkeypatch):
-    monkeypatch.setenv("STRATEGY_RANGE_FADE_ENABLED", "1")
+    # oi_concentration affinity is ["high_vol", "range", "chop"] (no trend_up);
+    # in strong trend_up regime the affinity gate should block.
+    monkeypatch.setenv("STRATEGY_OI_CONCENTRATION_ENABLED", "1")
     with tempfile.TemporaryDirectory() as d:
         conn = persistence.init_db(os.path.join(d, "t.db"))
-        # range_fade affinity is range/chop; in strong trend_up regime → block
-        r = pretrade.check(conn, "range_fade", _sig(), {"regime": "trend_up", "confidence": 0.9},
-                           500.0, [])
+        r = pretrade.check(conn, "oi_concentration", _sig(),
+                           {"regime": "trend_up", "confidence": 0.9}, 500.0, [])
         assert r.allow is False
         assert "regime_mismatch" in r.reason
 
 
 def test_pretrade_regime_low_confidence_passes(monkeypatch):
-    monkeypatch.setenv("STRATEGY_RANGE_FADE_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_OI_CONCENTRATION_ENABLED", "1")
     with tempfile.TemporaryDirectory() as d:
         conn = persistence.init_db(os.path.join(d, "t.db"))
         # low confidence trend → don't block even if affinity mismatch
-        r = pretrade.check(conn, "range_fade", _sig(), {"regime": "trend_up", "confidence": 0.5},
-                           500.0, [])
+        r = pretrade.check(conn, "oi_concentration", _sig(),
+                           {"regime": "trend_up", "confidence": 0.5}, 500.0, [])
         assert r.allow is True
 
 
-def test_pretrade_coin_concentration_blocks(monkeypatch):
-    monkeypatch.setenv("STRATEGY_FSP_ENABLED", "1")
-    monkeypatch.setenv("PRETRADE_COIN_CONC_MAX", "1.0")  # no further BTC allowed
-    monkeypatch.setenv("RISK_PCT_PER_TRADE", "0.02")
+def test_pretrade_coin_lock_blocks_same_coin(monkeypatch):
+    # 1_GLOBAL coin lock — one position per coin across all engines.
+    # Replaces the v1 PRETRADE_COIN_CONC_MAX gate (deleted from pm.pretrade).
+    monkeypatch.setenv("STRATEGY_STOP_HUNT_ENABLED", "1")
     monkeypatch.setenv("LEVERAGE", "5")
     monkeypatch.setenv("MIN_TRADE_USD", "10")
     with tempfile.TemporaryDirectory() as d:
         conn = persistence.init_db(os.path.join(d, "t.db"))
-        # already have BTC notional; add proposal also for BTC → blocked
-        r = pretrade.check(conn, "fsp", _sig("BTC"), {"regime": "range", "confidence": 0.6},
-                           500.0, [{"coin": "BTC", "strategy": "fsp", "notional": 200}])
+        # An engine already holds BTC; another engine attempting BTC is blocked.
+        r = pretrade.check(conn, "stop_hunt", _sig("BTC"),
+                           {"regime": "range", "confidence": 0.6}, 500.0,
+                           [{"coin": "BTC", "strategy": "hl_settle_5m", "notional": 200}])
         assert r.allow is False
-        assert "concentration" in r.reason
+        assert r.reason == "coin_locked"
 
 
 # -------- regime --------

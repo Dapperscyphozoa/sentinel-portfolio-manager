@@ -197,10 +197,17 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(json.dumps(body, default=str).encode())
 
     def _auth_ok(self) -> bool:
+        # Fail-closed when token unset (previously returned True on missing
+        # env, leaving all POSTs open by default — sentinel finding).
+        # Constant-time comparison via hmac.compare_digest.
+        import hmac as _hmac
         token = os.environ.get("SNIPER_AUTH_TOKEN", "")
         if not token:
-            return True
-        return self.headers.get("X-Sniper-Auth") == token
+            return False
+        presented = self.headers.get("X-Sniper-Auth") or ""
+        if not presented:
+            return False
+        return _hmac.compare_digest(token, presented)
 
     def do_GET(self):
         path = self.path.split("?")[0]
@@ -265,6 +272,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = self.path.split("?")[0]
         body_len = int(self.headers.get("Content-Length", "0") or 0)
+        # Cap body size — prevents OOM via crafted Content-Length header.
+        if body_len < 0 or body_len > 1_000_000:
+            self._json(413, {"error": "body_too_large", "max_bytes": 1_000_000})
+            return
         body = self.rfile.read(body_len) if body_len else b""
         try:
             payload = json.loads(body) if body else {}

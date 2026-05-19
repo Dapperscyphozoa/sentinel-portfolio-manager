@@ -321,7 +321,11 @@ def main() -> None:
         hl_wallet = config.get("HL_USER_WALLET", "") or config.get("HL_AGENT_WALLET", "")
         if hl_wallet:
             threading.Thread(target=hl_ws.run_in_thread, args=(hl_wallet, CACHE), daemon=True, name="hl_ws").start()
-            log.info("hl ws started for wallet %s", hl_wallet)
+            # Mask the wallet — Render logs are accessible to anyone with
+            # the dashboard URL; a full address gives any reader the
+            # trading account's positions on the public HL explorer.
+            _masked = (hl_wallet[:6] + "…" + hl_wallet[-4:]) if len(hl_wallet) > 12 else "<short>"
+            log.info("hl ws started for wallet %s", _masked)
     except Exception:
         log.warning("hl_ws not started", exc_info=True)
 

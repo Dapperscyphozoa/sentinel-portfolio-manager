@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
-from common import config, persistence
+from common import config, halt as _halt, persistence
 from common.bus_client import BusClient
 from common.hl_exchange import HLExchange, make_cloid
 from common.pm_client import PMClient
@@ -77,6 +77,12 @@ class Trader:
 
     def open(self, strategy: StrategyBase, sig: Signal, size_usd: float) -> OpenResult:
         cloid = make_cloid(strategy.CLOID_PREFIX, sig.coin)
+        # Position sizing: size_coin = size_usd / ref_price. PM passes size_usd
+        # as MARGIN (e.g. 5% wallet); the position notional on HL therefore
+        # equals margin, not margin × leverage. Operator-confirmed 2026-05-19:
+        # this conservative sizing is intentional. SPEC.md / pm/pretrade.py
+        # header text still references "notional = 25% wallet" — that line
+        # is descriptive of the registry's pre-bug shape, not current intent.
         size_coin = size_usd / sig.ref_price if sig.ref_price > 0 else 0.0
         live = self._is_live(strategy.NAME)
         open_ts = time.time()
@@ -173,6 +179,7 @@ class Trader:
                         except Exception:
                             log.exception("safe_sl computation failed; using strategy sl_px as-is")
                             effective_sl = float(sig.sl_px)
+                        sl_placed_ok = False
                         try:
                             bracket = self.hl.place_brackets(
                                 coin=sig.coin, is_long=bool(sig.is_long),
@@ -187,6 +194,7 @@ class Trader:
                                 "sl_ok": bool(bracket["sl"] and bracket["sl"].ok),
                                 "sl_err": (bracket["sl"].error if bracket["sl"] else None),
                             }
+                            sl_placed_ok = bracket_status["sl_ok"]
                             if not bracket_status["tp_ok"] or not bracket_status["sl_ok"]:
                                 log.warning("bracket place FAILED %s/%s: %s",
                                             strategy.NAME, sig.coin, bracket_status)
@@ -196,6 +204,91 @@ class Trader:
                         except Exception as e:
                             log.exception("place_brackets crashed %s/%s", strategy.NAME, sig.coin)
                             bracket_status = {"error": str(e)}
+
+                        # ── Atomic-SL guarantee: if the stop-loss bracket did
+                        # NOT place, the position is unprotected. The 60s
+                        # position-poll fallback is not a substitute for a
+                        # native trigger (stale-mark + missed wicks). Roll back
+                        # the entry: emergency market_close + flag the strategy.
+                        # If the rollback close ALSO fails, halt the strategy
+                        # so no new opens stack on top of an unprotected one.
+                        if not sl_placed_ok:
+                            try:
+                                # Prefer the actual filled qty; fall back to the
+                                # requested size only when the exchange did not
+                                # report one. Reject zero/None defensively — a
+                                # market_close(size_coin=0) would silently no-op.
+                                emergency_size = res.size_coin if (res.size_coin and res.size_coin > 0) else size_coin
+                                if not emergency_size or emergency_size <= 0:
+                                    raise ValueError(f"emergency close: no valid size (res={res.size_coin}, req={size_coin})")
+                                close_res = self.hl.market_close(
+                                    coin=sig.coin,
+                                    size_coin=emergency_size,
+                                )
+                                if close_res and getattr(close_res, "ok", False):
+                                    log.critical(
+                                        "SL bracket failed %s/%s — emergency closed "
+                                        "the entry (no native stop). %s",
+                                        strategy.NAME, sig.coin, bracket_status,
+                                    )
+                                    err = "sl_bracket_failed_closed"
+                                    # Booking: the entry did fill and was
+                                    # closed immediately. PnL is near-zero
+                                    # (one round-trip slippage) minus 2×
+                                    # taker fees. Write a closures row so
+                                    # /attribution doesn't show a P&L hole.
+                                    try:
+                                        fill_px_for_close = getattr(close_res, "fill_px", None) or fill_px
+                                        notional_filled = float(emergency_size) * float(fill_px)
+                                        fees_emerg = notional_filled * 0.00045 * 2
+                                        pnl_emerg = ((float(fill_px_for_close) - float(fill_px))
+                                                     * float(emergency_size)
+                                                     * (1 if sig.is_long else -1)) - fees_emerg
+                                        self.conn.execute(
+                                            "INSERT OR IGNORE INTO closures(cloid, strategy, coin, is_long, "
+                                            "open_ts, close_ts, open_px, close_px, size_coin, pnl_usd, "
+                                            "fees_usd, close_reason, extras_json) "
+                                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                            (cloid, strategy.NAME, sig.coin, int(sig.is_long),
+                                             open_ts, time.time(), float(fill_px),
+                                             float(fill_px_for_close), float(emergency_size),
+                                             pnl_emerg, fees_emerg,
+                                             "sl_bracket_failed_emergency_close",
+                                             json.dumps({"bracket_status": bracket_status,
+                                                          "emergency_size": emergency_size}, default=str)),
+                                        )
+                                    except Exception:
+                                        log.exception("emergency-close closures insert failed for %s", cloid)
+                                else:
+                                    log.critical(
+                                        "SL bracket FAILED + emergency close FAILED %s/%s "
+                                        "— position open WITHOUT native stop. Halting strategy. %s",
+                                        strategy.NAME, sig.coin,
+                                        getattr(close_res, "error", None) or close_res,
+                                    )
+                                    err = "sl_bracket_failed_unprotected"
+                                    try:
+                                        _halt.set_halt(
+                                            self.conn, strategy.NAME, halted=True,
+                                            reason=f"sl_bracket_failed_unprotected cloid={cloid}",
+                                            actor="trader",
+                                        )
+                                    except Exception:
+                                        log.exception("halt-on-bracket-fail set_halt failed")
+                            except Exception:
+                                log.exception(
+                                    "SL bracket failed + emergency close raised %s/%s — "
+                                    "halting strategy", strategy.NAME, sig.coin,
+                                )
+                                err = "sl_bracket_failed_close_raised"
+                                try:
+                                    _halt.set_halt(
+                                        self.conn, strategy.NAME, halted=True,
+                                        reason=f"sl_bracket_failed_close_raised cloid={cloid}",
+                                        actor="trader",
+                                    )
+                                except Exception:
+                                    log.exception("halt-on-bracket-fail set_halt failed")
                         # Telemetry: if effective_sl diverged from strategy's sl_px,
                         # persist effective value so position_loop monitors the
                         # actually-active level (the strategy's intent stays in
@@ -636,7 +729,6 @@ class Trader:
                 )
                 # halt strategy — operator must reconcile
                 try:
-                    from common import halt as _halt
                     _halt.set_halt(self.conn, r["strategy"], halted=True, actor="force_close_stale", reason="force_close_unverified_hl_unreachable")
                 except Exception:
                     log.exception("set_halt failed")
@@ -707,7 +799,6 @@ class Trader:
                     (px, now, r["cloid"]),
                 )
                 try:
-                    from common import halt as _halt
                     _halt.set_halt(self.conn, r["strategy"], halted=True, actor="force_close_stale", reason="force_close_unverified_hl_refused")
                 except Exception:
                     log.exception("set_halt failed")
@@ -733,6 +824,11 @@ class Trader:
         closed = 0
         now = time.time()
         strat_by_name = {s.NAME: s for s in (registry or [])}
+        # Refuse to evaluate SL/TP against marks older than this many seconds.
+        # On a thin WS reconnect or signal-bus outage, get_mark returns the
+        # last cached tick; without a freshness guard the bot would close on
+        # arbitrarily-stale prices. Brackets remain the primary stop.
+        max_mark_age_sec = config.get_int("MAX_MARK_AGE_SEC", 30)
         for r in rows:
             coin = r["coin"]
             try:
@@ -741,6 +837,16 @@ class Trader:
                 continue
             px = (m.get("hl_mid") or m.get("binance_mid"))
             if not px:
+                continue
+            # WS freshness — mark ts is in milliseconds from signal-bus.
+            mark_ts_ms = m.get("ts") or 0
+            try:
+                age_sec = (time.time() * 1000 - float(mark_ts_ms)) / 1000.0
+            except (TypeError, ValueError):
+                age_sec = None
+            if age_sec is None or age_sec > max_mark_age_sec:
+                log.warning("stale mark for %s (age=%.1fs > %ds) — skipping SL/TP eval",
+                            coin, age_sec if age_sec is not None else -1, max_mark_age_sec)
                 continue
             px = float(px)
             is_long = bool(r["is_long"])
@@ -783,6 +889,16 @@ class Trader:
 
     def _close(self, trade_row, close_px: float, reason: str, ts: float) -> None:
         cloid = trade_row["cloid"]
+        # Concurrency: claim the row by transitioning open → closing in one
+        # SQL UPDATE. If rowcount is 0, another path (operator force_close,
+        # a sibling position_loop tick) has already claimed it. Return
+        # silently rather than double-firing market_close on HL.
+        cur = self.conn.execute(
+            "UPDATE trades SET status='closing' WHERE cloid=? AND status='open'",
+            (cloid,),
+        )
+        if cur.rowcount == 0:
+            return
         coin = trade_row["coin"]
         strategy = trade_row["strategy"]
         is_long = bool(trade_row["is_long"])
@@ -819,9 +935,11 @@ class Trader:
                 err = None if res.ok else (res.error or "unknown")
 
             if res is None or not res.ok:
-                # leave open, bump retry counter
+                # Release the 'closing' claim so the next tick can retry,
+                # and bump retry counter atomically.
                 self.conn.execute(
-                    "UPDATE trades SET close_retries = close_retries + 1 WHERE cloid=?",
+                    "UPDATE trades SET status='open', "
+                    "close_retries = close_retries + 1 WHERE cloid=?",
                     (cloid,),
                 )
                 cur = self.conn.execute(
@@ -831,13 +949,14 @@ class Trader:
                 log.error("hl close FAILED (retry %d/%d) %s/%s reason=%s err=%s",
                           retries, self.MAX_CLOSE_RETRIES, strategy, coin, reason, err)
                 if retries >= self.MAX_CLOSE_RETRIES:
-                    # Halt the strategy via halts table so no new opens.
-                    # Existing trades remain open and the operator must
-                    # manually reconcile (or the next deploy's reconciler will).
+                    # Halt the strategy. Must go through halt.set_halt so the
+                    # in-memory _HALTED set updates — raw INSERT only writes
+                    # the row, leaving the next scan unaware until restart.
                     try:
-                        self.conn.execute(
-                            "INSERT INTO halts(ts, strategy, halted, reason, actor) VALUES (?, ?, 1, ?, ?)",
-                            (ts, strategy, f"close_failed cloid={cloid} after {retries} retries", "trader"),
+                        _halt.set_halt(
+                            self.conn, strategy, halted=True,
+                            reason=f"close_failed cloid={cloid} after {retries} retries",
+                            actor="trader",
                         )
                         log.critical("HALT %s — close failures (cloid=%s)", strategy, cloid)
                     except Exception:

@@ -25,6 +25,10 @@ log = logging.getLogger("routine.drawdown")
 
 
 _KV_KEY = "drawdown_peak_v1"
+_FAIL_KEY = "drawdown_consecutive_failures_v1"
+# Drawdown check runs every ~5min; 4 consecutive failures = ~20min of
+# unevaluated drawdown protection before we fire a precautionary halt.
+_FAIL_BUS_HALT_AFTER = 4
 
 
 def _load_peak(conn: sqlite3.Connection) -> dict:
@@ -54,7 +58,32 @@ def run(conn: sqlite3.Connection) -> dict:
             r.raise_for_status()
             acct = r.json()
     except Exception as e:
-        return {"ok": False, "error": str(e)}
+        # Fail-safe: track consecutive bus failures. If we cannot evaluate
+        # drawdown for too long, post a precautionary /halt/all so trading
+        # does not run uncapped during a multi-poll outage.
+        raw = persistence.kv_get(conn, _FAIL_KEY) or "0"
+        try:
+            fails = int(raw) + 1
+        except ValueError:
+            fails = 1
+        persistence.kv_set(conn, _FAIL_KEY, str(fails))
+        out = {"ok": False, "error": str(e), "consecutive_failures": fails}
+        if fails >= _FAIL_BUS_HALT_AFTER and halt_token and runner_url:
+            try:
+                with httpx.Client(timeout=10) as c:
+                    resp = c.post(
+                        f"{runner_url}/halt/all",
+                        headers={"X-Halt-Token": halt_token, "content-type": "application/json"},
+                        content=json.dumps({"reason": f"bus_unreachable_failsafe_{fails}",
+                                             "actor": "monitor"}),
+                    )
+                    out["halt_response"] = {"status_code": resp.status_code,
+                                            "body": resp.text[:400]}
+            except Exception as he:
+                out["halt_error"] = str(he)
+        return out
+    # Reset failure counter on successful poll.
+    persistence.kv_set(conn, _FAIL_KEY, "0")
     value = float(acct.get("value", 0))
     now = time.time()
 

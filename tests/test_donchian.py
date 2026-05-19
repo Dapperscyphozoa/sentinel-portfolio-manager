@@ -54,28 +54,55 @@ def test_donchian_no_breakout_in_flat_market():
     assert sig is None  # no breakout in flat conditions
 
 
-def test_donchian_fires_long_on_clean_breakout():
-    """Build a rising trend, place EMA200 below current price, then a clean
-    breakout bar above the 80-bar high with above-avg volume."""
+def test_donchian_fires_short_on_clean_breakout_inverted_default(monkeypatch):
+    """Default mode is INVERTED (DC_INVERT=1 as of 2026-05-19 OOS sweep),
+    so a clean upside breakout fires the FADE — a SHORT, not a long.
+
+    Canonical mode is covered by test_donchian_canonical_fires_long_on_breakout.
+    """
+    # Ensure inverted default — module reads env at import-time, but the
+    # module attribute is what evaluate() consults. Force the production
+    # default explicitly here to make the test resistant to env pollution.
+    import strategy_runner.strategies.donchian as donch
+    monkeypatch.setattr(donch, "DC_INVERT", True)
+
     bars: list[dict] = []
-    # 250 bars rising slowly from 100 to 150 (200-EMA will be ~125)
     for i in range(250):
         px = 100.0 + i * 0.2
         bars.append(_bar(px, px + 0.3, px - 0.3, px + 0.1, v=100.0))
-    # Last bar: strong breakout — high beyond recent 80-bar high, big volume
     breakout_px = max(b["high"] for b in bars[-80:]) + 5.0
     bars.append(_bar(breakout_px - 1, breakout_px + 0.1, breakout_px - 1.2, breakout_px, v=500.0))
 
-    bus = FakeBus({"BTC": bars})
-    sig = Donchian.evaluate("BTC", bus)
+    sig = Donchian.evaluate("BTC", FakeBus({"BTC": bars}))
+    assert sig is not None
+    assert sig.is_long is False           # inverted: breakout up → SHORT
+    assert sig.side == "A"
+    # SL above entry (short), TP below entry
+    assert sig.tp_px < sig.ref_price < sig.sl_px
+
+
+def test_donchian_canonical_fires_long_on_breakout(monkeypatch):
+    """Sanity check: with DC_INVERT=0 the original Turtle-breakout direction
+    is restored (upside breakout → LONG)."""
+    import strategy_runner.strategies.donchian as donch
+    monkeypatch.setattr(donch, "DC_INVERT", False)
+    monkeypatch.setattr(donch, "DC_TP_ATR_MULT", 20.0)  # restore canonical TP
+
+    bars: list[dict] = []
+    for i in range(250):
+        px = 100.0 + i * 0.2
+        bars.append(_bar(px, px + 0.3, px - 0.3, px + 0.1, v=100.0))
+    breakout_px = max(b["high"] for b in bars[-80:]) + 5.0
+    bars.append(_bar(breakout_px - 1, breakout_px + 0.1, breakout_px - 1.2, breakout_px, v=500.0))
+
+    sig = Donchian.evaluate("BTC", FakeBus({"BTC": bars}))
     assert sig is not None
     assert sig.is_long is True
     assert sig.side == "B"
     assert sig.sl_px < sig.ref_price < sig.tp_px
-    # SL distance = 2 ATR; TP very wide
     sl_dist = sig.ref_price - sig.sl_px
     tp_dist = sig.tp_px - sig.ref_price
-    assert tp_dist > sl_dist * 5  # 20 ATR vs 2 ATR
+    assert tp_dist > sl_dist * 5
 
 
 def test_donchian_blocks_long_below_ema():

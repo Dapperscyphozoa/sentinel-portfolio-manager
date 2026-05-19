@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -36,6 +37,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from typing import Optional
 from xml.etree import ElementTree as ET
+
+log = logging.getLogger("mer")
 
 # ============================================================
 # CONFIG
@@ -403,7 +406,7 @@ def _reclassify_existing() -> int:
                     )
                     updated += 1
     except Exception as e:
-        print(f"[mer.reclassify] err: {e}", flush=True)
+        log.exception("reclassify err: %s", e)
     return updated
 
 
@@ -852,12 +855,10 @@ def poller_loop(pull_interval_sec: int = 3600):
     while True:
         try:
             stats = pull_all()
-            print(
-                f"[mer.poller] pull: items={stats['items_inserted']} "
-                f"events={stats['events_inserted']} "
-                f"reclassified={stats.get('reclassified', 0)} "
-                f"errs={len(stats['errors'])}",
-                flush=True,
+            log.info(
+                "poller pull: items=%d events=%d reclassified=%d errs=%d",
+                stats["items_inserted"], stats["events_inserted"],
+                stats.get("reclassified", 0), len(stats["errors"]),
             )
             day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             # Force snapshot on first run after restart — guarantees the
@@ -867,9 +868,9 @@ def poller_loop(pull_interval_sec: int = 3600):
                 build_snapshot(day)
                 last_snapshot_day = day
                 first_run = False
-                print(f"[mer.poller] snapshot built for {day}", flush=True)
+                log.info("poller snapshot built for %s", day)
         except Exception as e:
-            print(f"[mer.poller] err: {e}", flush=True)
+            log.exception("poller err: %s", e)
         time.sleep(pull_interval_sec)
 
 
@@ -880,4 +881,4 @@ def start_poller():
         return
     _poller_thread = threading.Thread(target=poller_loop, name="mer-poller", daemon=True)
     _poller_thread.start()
-    print("[mer] poller thread started", flush=True)
+    log.info("poller thread started")

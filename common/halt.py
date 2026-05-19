@@ -5,6 +5,7 @@ Token check is constant-time. Halt token defaults to None — if unset, POST /ha
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import threading
 import time
@@ -16,9 +17,39 @@ from . import persistence
 _LOCK = threading.RLock()
 _HALTED: set[str] = set()  # in-memory mirror; SQLite is source of truth
 
+_log = logging.getLogger(__name__)
+
+
+def require_halt_token_or_abort() -> None:
+    """Refuse to start a process whose safety relies on HALT_TOKEN being set.
+
+    Without the token, drawdown_check.run() and operator /halt routes silently
+    no-op, so trading runs uncapped. Boot loud rather than fail silent.
+    """
+    if not os.environ.get("HALT_TOKEN"):
+        raise RuntimeError(
+            "HALT_TOKEN env var is not set. Drawdown halt and operator /halt "
+            "endpoints will refuse to fire without it. Refusing to boot."
+        )
+
 
 def halt_token_ok(presented: Optional[str]) -> bool:
     expected = os.environ.get("HALT_TOKEN")
+    if not expected:
+        return False
+    if not presented:
+        return False
+    return hmac.compare_digest(expected, presented)
+
+
+def force_close_token_ok(presented: Optional[str]) -> bool:
+    """Auth for high-blast endpoints (force_close, purge_dead_engines,
+    backfill_force_close_pnl). Falls back to HALT_TOKEN when
+    FORCE_CLOSE_TOKEN is unset so existing deploys keep working, but
+    operators are encouraged to set a distinct, narrower token in
+    render.yaml. Halt-only operators should hold HALT_TOKEN and never
+    learn FORCE_CLOSE_TOKEN."""
+    expected = os.environ.get("FORCE_CLOSE_TOKEN") or os.environ.get("HALT_TOKEN")
     if not expected:
         return False
     if not presented:

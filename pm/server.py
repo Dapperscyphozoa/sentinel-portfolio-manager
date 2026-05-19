@@ -46,14 +46,48 @@ def _json(handler: BaseHTTPRequestHandler, status: int, body) -> None:
         pass
 
 
+# Max POST body size accepted. Prevents OOM via crafted Content-Length.
+_MAX_POST_BODY = 1_000_000
+
+
+def _pm_auth_ok(handler: BaseHTTPRequestHandler) -> bool:
+    """Constant-time X-PM-Auth check. Fail-closed when PM_AUTH_TOKEN unset."""
+    import hmac as _hmac
+    expected = os.environ.get("PM_AUTH_TOKEN", "")
+    if not expected:
+        return False
+    presented = handler.headers.get("X-PM-Auth") or ""
+    if not presented:
+        return False
+    return _hmac.compare_digest(expected, presented)
+
+
+# Endpoints that leak position/PnL/account information OR mutate state.
+# All require X-PM-Auth.
+_PM_AUTH_REQUIRED_GET = {
+    "/equity", "/risk", "/risk/events", "/state", "/closures",
+    "/attribution", "/demotions", "/signals",
+}
+_PM_AUTH_REQUIRED_POST = {"/check", "/register_cloid"}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
+
+    def _read_capped_body(self) -> bytes:
+        """Read POST body with a hard size cap; reject oversized requests."""
+        body_len = int(self.headers.get("content-length", "0") or "0")
+        if body_len < 0 or body_len > _MAX_POST_BODY:
+            return b""
+        return self.rfile.read(body_len) if body_len else b""
 
     def do_GET(self):
         u = urlparse(self.path)
         path = u.path.rstrip("/") or "/"
         q = {k: v[0] for k, v in parse_qs(u.query).items()}
+        if path in _PM_AUTH_REQUIRED_GET and not _pm_auth_ok(self):
+            return _json(self, 401, {"error": "pm_auth_required"})
         if path == "/regime":
             try:
                 bus = BusClient()
@@ -124,12 +158,15 @@ class Handler(BaseHTTPRequestHandler):
                 acct = bus.hl_account()
                 value = float(acct.get("value", 0))
                 margin_used = float(acct.get("margin_used", 0))
-                # Approx daily drawdown — not persisted yet, return zeros
+                # Approx daily drawdown — not persisted yet, return zeros.
+                # Threshold mirrors DRAWDOWN_HALT_PCT so the dashboard reads
+                # the same number monitor.drawdown_check uses to fire halts.
+                dd_thr_pct = float(os.environ.get("DRAWDOWN_HALT_PCT", "0.10")) * 100.0
                 return _json(self, 200, {
                     "account_value": value,
                     "margin_used": margin_used,
                     "drawdown_pct_24h": 0.0,
-                    "drawdown_halt_threshold_pct": 5.0,
+                    "drawdown_halt_threshold_pct": dd_thr_pct,
                     "halt_active": False,
                 })
             except Exception as e:
@@ -332,13 +369,17 @@ class Handler(BaseHTTPRequestHandler):
         u = urlparse(self.path)
         path = u.path.rstrip("/") or "/"
         parts = path.strip("/").split("/")
-        body_len = int(self.headers.get("content-length", "0") or "0")
-        raw = self.rfile.read(body_len) if body_len else b"{}"
+        raw = self._read_capped_body()
+        if not raw and int(self.headers.get("content-length", "0") or "0") > _MAX_POST_BODY:
+            return _json(self, 413, {"error": "body_too_large", "max_bytes": _MAX_POST_BODY})
+        raw = raw or b"{}"
         try:
             body = json.loads(raw or b"{}")
         except Exception:
             body = {}
         token = self.headers.get("X-Halt-Token")
+        if path in _PM_AUTH_REQUIRED_POST and not _pm_auth_ok(self):
+            return _json(self, 401, {"error": "pm_auth_required"})
 
         if len(parts) >= 2 and parts[0] == "halt":
             if not halt.halt_token_ok(token):
@@ -478,17 +519,20 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/admin/force_close":
             # OPERATOR-INITIATED close. Sends HL market_close on the listed
-            # cloids, then marks them closed in our DB. Auth via HALT_TOKEN
-            # (same as halt — only operator should have it). Body:
+            # cloids, then marks them closed in our DB. Auth via
+            # FORCE_CLOSE_TOKEN (falls back to HALT_TOKEN for backward
+            # compat). Body:
             #   {"cloids": ["0x...", ...],     # specific positions
             #    "reason": "string",            # logged in extras_json
             #    "actor": "string"}
             # Returns per-cloid result list.
-            if not halt.halt_token_ok(token):
+            if not halt.force_close_token_ok(token):
                 return _json(self, 401, {"error": "bad_token"})
             cloids = body.get("cloids") or []
             reason = body.get("reason", "operator_force_close")
             actor = body.get("actor", "operator")
+            if len(cloids) > 50:
+                return _json(self, 413, {"error": "too_many_cloids", "max": 50})
             if not cloids:
                 return _json(self, 400, {"error": "no_cloids"})
             from common.bus_client import BusClient as _BC
@@ -582,12 +626,14 @@ class Handler(BaseHTTPRequestHandler):
             # TypeError, caught silently → close_px defaulted to open_px → pnl=0
             # for every force_closed row. This endpoint fetches real HL price
             # at the original close_ts and rewrites pnl_usd + close_px + fees_usd.
-            # Auth via HALT_TOKEN. Body:
+            # Auth via FORCE_CLOSE_TOKEN (rewrites historical PnL). Body:
             #   {"close_reason_like": "force_close:%",  # SQL LIKE pattern
             #    "dry_run": true|false}                 # default true
-            if not halt.halt_token_ok(token):
+            if not halt.force_close_token_ok(token):
                 return _json(self, 401, {"error": "bad_token"})
             reason_like = body.get("close_reason_like", "force_close:%")
+            if len([c for c in reason_like if c != "%" and c != "_"]) < 5:
+                return _json(self, 400, {"error": "close_reason_like_too_broad"})
             dry_run = bool(body.get("dry_run", True))
             import httpx as _httpx
             HL_INFO = "https://api.hyperliquid.xyz/info"
@@ -662,24 +708,10 @@ class Handler(BaseHTTPRequestHandler):
                                      "results": results})
 
         if path == "/precog/webhook":
-            # HMAC verification of X-Precog-Sig (hex sha256 of body with PRECOG_WEBHOOK_SECRET)
-            import hmac, hashlib
-            secret = os.environ.get("PRECOG_WEBHOOK_SECRET", "")
-            sig_hdr = self.headers.get("X-Precog-Sig") or self.headers.get("x-precog-sig", "")
-            if not secret:
-                return _json(self, 503, {"error": "no_secret_configured"})
-            expected = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
-            if not hmac.compare_digest(expected, (sig_hdr or "").lower()):
-                return _json(self, 401, {"error": "bad_signature"})
-            coin = (body.get("coin") or "").upper()
-            if not coin:
-                return _json(self, 400, {"error": "no_coin"})
-            try:
-                from strategy_runner.strategies import precog as precog_mod
-                precog_mod.enqueue(coin, body)
-            except Exception as e:
-                return _json(self, 500, {"error": str(e)})
-            return _json(self, 200, {"ok": True, "queue": precog_mod.queue_stats()})
+            # precog strategy archived 2026-05-19; module lives in _archived/.
+            # Route retained as 410 Gone so external producers see explicit
+            # deprecation instead of a 500 traceback that leaks module layout.
+            return _json(self, 410, {"error": "precog_archived"})
 
         return _json(self, 404, {"error": "not_found"})
 
