@@ -31,6 +31,26 @@ PM = None
 TRADER = None
 
 
+def _resolve_git_sha() -> str:
+    """Return deployed git SHA. Render exposes RENDER_GIT_COMMIT; fall back to
+    a local `git rev-parse HEAD` if available; otherwise 'unknown'."""
+    sha = os.environ.get("RENDER_GIT_COMMIT") or os.environ.get("GIT_COMMIT") or ""
+    if sha:
+        return sha[:40]
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=os.path.dirname(__file__) or ".",
+            stderr=subprocess.DEVNULL, timeout=2
+        )
+        return out.decode().strip()[:40]
+    except Exception:
+        return "unknown"
+
+
+_DEPLOYED_GIT_SHA = _resolve_git_sha()
+
+
 def _json(handler: BaseHTTPRequestHandler, status: int, body) -> None:
     payload = json.dumps(body, separators=(",", ":"), default=str).encode()
     try:
@@ -178,6 +198,82 @@ class Handler(BaseHTTPRequestHandler):
                 "open": open_summary,
                 "total": total,
             })
+        if path == "/admin/diagnostics":
+            # Read-only diagnostics for post-deploy verification (sentinel F2-F5).
+            # No auth — purely informational, no state mutation.
+            out: dict = {
+                "ts": int(time.time() * 1000),
+                "git_sha": _DEPLOYED_GIT_SHA,
+            }
+            # F3: partial unique index existence + definition
+            idx_rows = CONN.execute(
+                "SELECT name, sql FROM sqlite_master "
+                "WHERE type='index' AND tbl_name='trades' ORDER BY name"
+            ).fetchall()
+            out["trades_indexes"] = [
+                {"name": r["name"], "sql": (r["sql"] or "(autogen)")} for r in idx_rows
+            ]
+            # F4: kv_state — recon_pending entries + total kv count
+            kv_recon = CONN.execute(
+                "SELECT k, v, ts FROM kv_state WHERE k LIKE 'recon_pending:%' ORDER BY k"
+            ).fetchall()
+            out["kv_state_recon_pending"] = [
+                {"k": r["k"], "v": r["v"], "ts": r["ts"]} for r in kv_recon
+            ]
+            kv_total = CONN.execute("SELECT COUNT(*) AS n FROM kv_state").fetchone()
+            out["kv_state_total"] = int(kv_total["n"])
+            # F2: trades.status breakdown across WHOLE table (no LIMIT)
+            stat_rows = CONN.execute(
+                "SELECT status, COUNT(*) AS n FROM trades GROUP BY status"
+            ).fetchall()
+            out["status_breakdown"] = {r["status"]: int(r["n"]) for r in stat_rows}
+            # F2: any coin with >1 open|pending row (lock violation)?
+            dup_rows = CONN.execute(
+                "SELECT coin, COUNT(*) AS n FROM trades "
+                "WHERE status IN ('open','pending') GROUP BY coin HAVING n > 1"
+            ).fetchall()
+            out["coin_lock_violations"] = [
+                {"coin": r["coin"], "n": int(r["n"])} for r in dup_rows
+            ]
+            # F2: recent close_reason distribution from extras_json on rows
+            # transitioned to terminal status in last 24h. Tells us which path
+            # closed each batch (sweep_stale_pending vs reconcile vs force_close).
+            since_ts = time.time() - 86400
+            recent_terminal = CONN.execute(
+                "SELECT status, "
+                "  json_extract(extras_json, '$.close_reason') AS close_reason, "
+                "  json_extract(extras_json, '$.reconcile_reason') AS reconcile_reason, "
+                "  json_extract(extras_json, '$.open_error') AS open_error, "
+                "  json_extract(extras_json, '$.recovered') AS recovered, "
+                "  COUNT(*) AS n "
+                "FROM trades "
+                "WHERE status IN ('closed','reconciled_off_book','open_failed',"
+                "                  'force_closed_unverified') "
+                "  AND open_ts > ? "
+                "GROUP BY status, close_reason, reconcile_reason, open_error, recovered "
+                "ORDER BY n DESC LIMIT 50",
+                (since_ts,),
+            ).fetchall()
+            out["recent_terminal_paths_24h"] = [
+                {k: r[k] for k in ("status", "close_reason", "reconcile_reason",
+                                    "open_error", "recovered", "n")}
+                for r in recent_terminal
+            ]
+            # F2 specifically: how did ict_confluence_4h trades terminate?
+            ict_rows = CONN.execute(
+                "SELECT cloid, coin, status, open_ts, "
+                "  json_extract(extras_json, '$.close_reason') AS close_reason, "
+                "  json_extract(extras_json, '$.reconcile_reason') AS reconcile_reason, "
+                "  json_extract(extras_json, '$.open_error') AS open_error, "
+                "  json_extract(extras_json, '$.recovered') AS recovered "
+                "FROM trades WHERE strategy='ict_confluence_4h' "
+                "ORDER BY open_ts DESC LIMIT 30"
+            ).fetchall()
+            out["ict_confluence_4h_recent_rows"] = [dict(r) for r in ict_rows]
+            # Useful counters
+            out["force_closed_unverified_count"] = int(out["status_breakdown"]
+                                                       .get("force_closed_unverified", 0))
+            return _json(self, 200, out)
         return _json(self, 404, {"error": "not_found"})
 
     def do_POST(self):
