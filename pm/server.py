@@ -396,6 +396,51 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     account_value = 0.0
                     open_positions = []
+                # ENRICH open_positions with strategy/engine tag from local
+                # trades table. HL records have no concept of which engine
+                # opened a position — without this enrichment, the cap_frac
+                # per-engine concentration cap can't compute open margin per
+                # engine and is silently bypassed (sentinel H1, 95% conf).
+                # Also include 'pending' rows: they reserve budget before
+                # the HL fill arrives (closes the TOCTOU window where a
+                # second /check sees no HL position yet for the just-allowed
+                # trade — sentinel H7 race condition).
+                try:
+                    coin_to_strategy: dict[str, str] = {}
+                    rows = CONN.execute(
+                        "SELECT coin, strategy, size_coin, open_px "
+                        "FROM trades WHERE status IN ('open','pending')"
+                    ).fetchall()
+                    for r in rows:
+                        coin = (r["coin"] or "").upper()
+                        if coin and coin not in coin_to_strategy:
+                            coin_to_strategy[coin] = r["strategy"]
+                    # Tag HL position records
+                    for p in open_positions:
+                        coin = (p.get("coin") or "").upper()
+                        tag = coin_to_strategy.get(coin)
+                        if tag and not p.get("strategy"):
+                            p["strategy"] = tag
+                    # Also surface any LOCAL trades whose HL position hasn't
+                    # appeared yet (pending state) so cap_frac counts them.
+                    hl_coins = {(p.get("coin") or "").upper() for p in open_positions}
+                    leverage = float(os.environ.get("LEVERAGE", "5.0"))
+                    margin_pct = float(os.environ.get("MARGIN_PCT_PER_TRADE", "0.05"))
+                    for r in rows:
+                        coin = (r["coin"] or "").upper()
+                        if coin in hl_coins:
+                            continue  # already represented by an HL record
+                        # Use approximate margin for the pending row
+                        approx_margin = margin_pct * account_value
+                        open_positions.append({
+                            "coin": coin,
+                            "strategy": r["strategy"],
+                            "margin": approx_margin,
+                            "_synthetic_pending": True,
+                        })
+                except Exception:
+                    log.exception("open_positions enrichment failed; "
+                                   "cap_frac may be under-counted this check")
                 try:
                     candles = bus.candles("BTC", "1h", n=60)
                     closes = [float(b["close"]) for b in candles]

@@ -285,6 +285,23 @@ except ImportError:
 _cooldown: Optional[object] = None
 _cooldown_lock = threading.Lock()
 
+# Per-engine check serialization (sentinel H7 race condition fix 2026-05-19).
+# Two concurrent /check calls on the same engine can both read the same
+# open_positions snapshot, both pass the cap_frac concentration cap, and
+# both allow trades that together exceed the engine's budget. Serialize
+# per-engine to close the TOCTOU window between read and trade insertion.
+_engine_locks: dict[str, threading.Lock] = {}
+_engine_locks_guard = threading.Lock()
+
+
+def _engine_check_lock(engine: str) -> threading.Lock:
+    with _engine_locks_guard:
+        lock = _engine_locks.get(engine)
+        if lock is None:
+            lock = threading.Lock()
+            _engine_locks[engine] = lock
+        return lock
+
 
 def _get_cooldown():
     global _cooldown
@@ -308,6 +325,15 @@ def _get_cooldown():
 def check(conn, strategy: str, signal: dict, regime: dict,
           account_value_usd: float, open_positions: list[dict]) -> CheckResult:
     """Pre-trade gate for OOS engine production deployment."""
+    # Serialize concurrent /check calls per engine to prevent TOCTOU race
+    # on the cap_frac concentration cap (sentinel H7 2026-05-19).
+    with _engine_check_lock(strategy):
+        return _check_impl(conn, strategy, signal, regime,
+                            account_value_usd, open_positions)
+
+
+def _check_impl(conn, strategy: str, signal: dict, regime: dict,
+                account_value_usd: float, open_positions: list[dict]) -> CheckResult:
     coin = signal.get("coin", "").upper()
     if not coin:
         return CheckResult(False, 0.0, "no_coin")
@@ -355,12 +381,31 @@ def check(conn, strategy: str, signal: dict, regime: dict,
     bt_pf = eng_cfg.get("bt_pf", 0.0)
     affinity = eng_cfg.get("affinity", [])
 
-    # 4) Regime affinity
+    # 4) Regime affinity + Rule 5b trend_direction_aware half-size
+    # Rule 5a (hard): if engine has affinity AND current regime is NOT in
+    # affinity AND confidence > 0.7 → block. Unless trend_direction_aware
+    # is true AND regime is the OPPOSITE trend; then allow at half size.
+    size_mult = 1.0
+    trend_aware = bool(eng_cfg.get("trend_direction_aware", False))
     if affinity:
         reg_name = (regime.get("regime") or "unknown").lower()
         conf = float(regime.get("confidence", 0.0))
         if reg_name not in affinity and conf > 0.7:
-            return CheckResult(False, 0.0, f"regime_mismatch:{reg_name}")
+            # Trend engine in opposite trend? Apply half-size if flagged.
+            opposite_pairs = {
+                "trend_up": "trend_down",
+                "trend_down": "trend_up",
+            }
+            opposite_of_reg = opposite_pairs.get(reg_name)
+            in_opposite_trend = (opposite_of_reg is not None
+                                  and opposite_of_reg in affinity)
+            if trend_aware and in_opposite_trend:
+                size_mult = 0.5
+                log.info("Rule 5b: %s firing at half size in opposite trend "
+                         "(regime=%s conf=%.2f affinity=%s)",
+                         strategy, reg_name, conf, affinity)
+            else:
+                return CheckResult(False, 0.0, f"regime_mismatch:{reg_name}")
 
     # 5) Cooldown checks
     cd = _get_cooldown()
@@ -381,10 +426,43 @@ def check(conn, strategy: str, signal: dict, regime: dict,
     if account_value_usd <= 0:
         return CheckResult(False, 0.0, "no_account_value")
 
-    # 6) Sizing — 5% margin × 5x leverage
+    # 6) Sizing — per-trade 5% margin × 5x leverage (spec §6).
+    # cap_frac is enforced as a per-ENGINE concentration cap below, not
+    # as a per-trade multiplier. Each trade is sized identically; cap_frac
+    # limits how many concurrent positions an engine can hold.
     leverage = _f("LEVERAGE", 5.0)
     margin_pct = _f("MARGIN_PCT_PER_TRADE", 0.05)
-    margin_usd = margin_pct * account_value_usd
+    margin_usd = margin_pct * account_value_usd * size_mult
+
+    # 6a) Per-engine concentration cap (spec §7.1: capital_fraction).
+    # Spec ends with "Sum: 1.00 (allocate every dollar)" — cap_frac is the
+    # engine's SHARE of wallet equity, summed across all engines. Enforce
+    # by capping the engine's TOTAL open margin at cap_frac × equity.
+    # Before 2026-05-19 this was decorative — sentinel CRITICAL finding
+    # (Mistral Large + Qwen3 235B unanimous). With LEVERAGE=5 and
+    # MAX_OPEN_POSITIONS=20, the engine could open up to 20 trades × 25%
+    # notional = 500% wallet notional, ignoring cap_frac entirely.
+    cap_frac = _cap_of(eng_cfg)
+    if cap_frac > 0:
+        # Engine's existing open margin from positions tagged with this engine.
+        # open_positions records typically include 'strategy' or 'engine' tag;
+        # fall back to coin-name match-free counting (yields 0 if untagged).
+        engine_open_margin = 0.0
+        for p in open_positions:
+            tag = (p.get("strategy") or p.get("engine") or "").lower()
+            if tag != strategy.lower():
+                continue
+            engine_open_margin += abs(float(
+                p.get("margin", p.get("notional", 0) / leverage)
+            ))
+        engine_budget = cap_frac * account_value_usd
+        if engine_open_margin + margin_usd > engine_budget:
+            return CheckResult(
+                False, 0.0,
+                f"engine_cap_frac_exhausted:"
+                f"{engine_open_margin:.2f}+{margin_usd:.2f}>"
+                f"{engine_budget:.2f}",
+            )
 
     max_margin_frac = _f("MAX_MARGIN_FRAC", 1.0)
     current_margin = sum(abs(float(p.get("margin", p.get("notional", 0) / leverage)))
