@@ -670,6 +670,16 @@ class Handler(BaseHTTPRequestHandler):
         equity_usd: float | None = None
         live_trading = os.environ.get("LIVE_TRADING", "0") == "1"
 
+        def _engine_is_live(engine_name: str) -> bool:
+            """Mirror strategy_runner/trader._is_live precedence:
+            per-engine STRATEGY_<NAME>_LIVE overrides global LIVE_TRADING.
+            Without this, the engines_full panel mislabels per-engine
+            promotions as 'paper' even when they're transacting live HL orders."""
+            per = os.environ.get(f"STRATEGY_{engine_name.upper()}_LIVE")
+            if per is not None:
+                return per.strip().lower() in ("1", "true", "yes", "on")
+            return live_trading
+
         # Parallel fan-out — `/strategy/signals?limit=500` was sequentially
         # gating the whole panel at 26+ seconds. Each call now runs in its
         # own thread with a hard 5s timeout; the slowest blocker dictates
@@ -821,7 +831,7 @@ class Handler(BaseHTTPRequestHandler):
                     "__synthetic": False,
                 } if (attr or engine_closures) else None,
                 "state": {
-                    "mode_effective": "live" if live_trading else "paper",
+                    "mode_effective": "live" if _engine_is_live(name) else "paper",
                     "halt": {"active": False},
                     "open_trades": engine_open,
                     "equity_usd": equity_usd,
