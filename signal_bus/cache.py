@@ -124,6 +124,11 @@ class Cache:
         # whale_events: detected new opens; consumed by hl_whale_frontrun engine
         self.whale_events: Deque[dict] = deque(maxlen=800)  # was 2000 — OOM mitigation
         self.whale_stats: dict = {"ts": 0, "n_whales": 0, "new_events": 0}
+        # HLP decoder (per-vault state for the 4 known HLP sub-vaults)
+        # Consumed by hlp_decoder strategy (different from hlp_fade which uses
+        # the aggregate net via hlp_poller).
+        self.hlp_vault_snapshots: dict[str, dict] = {}  # {label: {ts_ms, positions}}
+        self.hlp_vault_events: Deque[dict] = deque(maxlen=600)
         # L2 order book per coin (Stage 1 #6 — depth shock detection)
         # Each: {ts, bids: [{px,sz,n}, ...20], asks: [{px,sz,n}, ...20]}
         self.l2book_latest: dict[str, dict] = {}
@@ -208,6 +213,40 @@ class Cache:
         """Append whale-position-open event. Consumed by hl_whale_frontrun."""
         with self._lock:
             self.whale_events.append(ev)
+
+    def add_hlp_vault_event(self, ev: dict) -> None:
+        """Append an HLP sub-vault delta event for hlp_decoder strategy."""
+        with self._lock:
+            self.hlp_vault_events.append(ev)
+
+    def set_hlp_vault_snapshot(self, label: str, positions: dict, ts_ms: int) -> None:
+        """Persist a per-vault snapshot for hlp_decoder lookups."""
+        with self._lock:
+            self.hlp_vault_snapshots[label] = {
+                "ts_ms": ts_ms, "positions": positions,
+            }
+
+    def get_hlp_vault_events(self, since_ms: int = 0,
+                             coin: Optional[str] = None,
+                             vault_label: Optional[str] = None) -> list[dict]:
+        """Return HLP-vault events since timestamp; optionally filter by coin/vault."""
+        with self._lock:
+            evs = list(self.hlp_vault_events)
+        out = []
+        for ev in evs:
+            if ev["ts"] < since_ms:
+                continue
+            if coin and ev["coin"].upper() != coin.upper():
+                continue
+            if vault_label and ev["vault_label"] != vault_label:
+                continue
+            out.append(ev)
+        return out
+
+    def get_hlp_vault_snapshot(self, label: str) -> dict:
+        """Return latest snapshot for a vault label or empty dict."""
+        with self._lock:
+            return dict(self.hlp_vault_snapshots.get(label, {}))
 
     def get_whale_events(self, since_ms: int = 0, coin: Optional[str] = None) -> list[dict]:
         """Return whale events since timestamp, optionally filtered by coin."""

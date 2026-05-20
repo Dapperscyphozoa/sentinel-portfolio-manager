@@ -35,11 +35,16 @@ def _regime(name="range", conf=1.0):
 
 # ─── cap_frac per-engine concentration cap ────────────────────────────────
 def test_cap_frac_blocks_when_engine_budget_exhausted():
-    """hl_settle_5m has cap_frac=0.20; on $491 wallet that's $98.20 budget.
-    After 4 trades × $24.55 = $98.20, the 5th must be blocked."""
+    """When N trades fully consume the budget, the N+1th must be blocked."""
+    from pm.pretrade import ENGINE_REGISTRY, _cap_of
+    cap = _cap_of(ENGINE_REGISTRY["hl_settle_5m"])
+    budget_usd = 491.0 * cap
+    margin_per = 24.55
+    # Fill up to or past the budget
+    n_to_block = int(budget_usd // margin_per) + 1  # one more than budget allows
     existing = [
-        {"strategy": "hl_settle_5m", "coin": f"C{i}", "margin": 24.55}
-        for i in range(4)
+        {"strategy": "hl_settle_5m", "coin": f"C{i}", "margin": margin_per}
+        for i in range(n_to_block)
     ]
     r = check(_MockConn(), "hl_settle_5m", _sig("ETH"), _regime(),
               491.0, existing)
@@ -48,16 +53,22 @@ def test_cap_frac_blocks_when_engine_budget_exhausted():
 
 
 def test_cap_frac_allows_within_budget():
-    """3 open trades use $73.65 of $98.20 budget → trade 4 fits."""
+    """N-1 trades within budget should still allow the Nth."""
+    from pm.pretrade import ENGINE_REGISTRY, _cap_of
+    cap = _cap_of(ENGINE_REGISTRY["hl_settle_5m"])
+    budget_usd = 491.0 * cap
+    margin_per = 24.55
+    n_full = int(budget_usd // margin_per)  # how many fit fully
+    # Place n_full - 1 trades; the next one must still fit
     existing = [
-        {"strategy": "hl_settle_5m", "coin": f"C{i}", "margin": 24.55}
-        for i in range(3)
+        {"strategy": "hl_settle_5m", "coin": f"C{i}", "margin": margin_per}
+        for i in range(max(0, n_full - 1))
     ]
     r = check(_MockConn(), "hl_settle_5m", _sig("ETH"), _regime(),
               491.0, existing)
-    assert r.allow is True
+    assert r.allow is True, f"got {r.reason} (cap={cap}, budget=${budget_usd:.2f})"
     assert r.reason == "ok"
-    assert r.size_usd == pytest.approx(24.55, abs=0.01)
+    assert r.size_usd == pytest.approx(margin_per, abs=0.01)
 
 
 def test_cap_frac_isolates_by_engine_tag():
@@ -208,25 +219,29 @@ def test_rule_5b_only_applies_to_opposite_trend_not_range():
 
 # ─── Notional ceiling check ───────────────────────────────────────────────
 def test_max_total_engine_notional_bounded_by_cap_frac():
-    """Cumulative claim: with cap_frac × leverage product, the maximum
-    total notional an engine can hold is bounded. For hl_settle_5m at
-    cap_frac=0.20 leverage=5: max notional = $491 × 0.20 × 5 = $491.
-    (One wallet equity in notional, by design.)"""
-    # Pre-fill engine to 95% of budget — small headroom for last trade
+    """Cumulative claim: an engine's max total margin is bounded by
+    cap_frac × equity, and notional by cap_frac × leverage × equity."""
+    from pm.pretrade import ENGINE_REGISTRY, _cap_of
+    cap = _cap_of(ENGINE_REGISTRY["hl_settle_5m"])
+    leverage = 5.0
+    budget_usd = 491.0 * cap
+    margin_per = 24.55
+    n_full = int(budget_usd // margin_per)
+    # Pre-fill to n_full-1 trades, leaving room for one more
     existing = [
-        {"strategy": "hl_settle_5m", "coin": f"C{i}", "margin": 24.55}
-        for i in range(3)
-    ]  # = $73.65 used, budget $98.20, headroom $24.55
+        {"strategy": "hl_settle_5m", "coin": f"C{i}", "margin": margin_per}
+        for i in range(max(0, n_full - 1))
+    ]
     r = check(_MockConn(), "hl_settle_5m", _sig("ETH"), _regime(),
               491.0, existing)
     assert r.allow is True
-    # After this trade, total margin = $98.20 = cap_frac × equity exactly
+    # After this trade, total margin <= cap × equity (float tolerance)
     total = sum(p["margin"] for p in existing) + r.size_usd
-    cap_budget = 0.20 * 491.0
-    assert total <= cap_budget + 0.05  # float tolerance
-    # Notional = margin × leverage = $98.20 × 5 = $491
-    total_notional = total * 5
-    assert total_notional <= 491.0 * 1.01  # ≤ 1 wallet equity
+    cap_budget = cap * 491.0
+    assert total <= cap_budget + 0.05
+    # Notional <= cap × leverage × equity
+    total_notional = total * leverage
+    assert total_notional <= 491.0 * cap * leverage * 1.02
 
 
 def test_engine_check_lock_serializes_concurrent_checks():

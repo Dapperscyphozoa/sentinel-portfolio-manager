@@ -138,6 +138,45 @@ class HLExchange:
             return None
         return truncated
 
+    def _round_px(self, coin: str, px: float) -> Optional[float]:
+        """Round price to HL's per-asset precision.
+
+        HL price precision rules (per docs): up to 5 significant figures
+        AND no more than (6 - szDecimals) decimal places. We truncate
+        toward 0 with a small bias (no off-by-one issues at boundary).
+
+        Returns None on lookup failure.
+        """
+        self._ensure()
+        # _sz_decimals is populated by _round_size on first call; force it.
+        if not hasattr(self, "_sz_decimals") or not self._sz_decimals:
+            try:
+                meta = self._info.meta()
+                self._sz_decimals = {}
+                for asset in (meta or {}).get("universe", []) or []:
+                    name = asset.get("name") or ""
+                    sz = int(asset.get("szDecimals", 4))
+                    if name:
+                        self._sz_decimals[name] = sz
+            except Exception:
+                log.exception("hl meta lookup failed in _round_px")
+                return None
+        if coin not in self._sz_decimals:
+            return None
+        decs = self._sz_decimals[coin]
+        # px decimal places allowed = max(0, 6 - szDecimals)
+        max_decs = max(0, 6 - decs)
+        # Also enforce 5-sigfig cap: shift to 5 sf, then constrain decimals
+        if px <= 0:
+            return None
+        # Step 1: 5 sig figs
+        import math as _m
+        sig_5 = round(px, max(0, 4 - int(_m.floor(_m.log10(abs(px))))))
+        # Step 2: cap decimal places
+        factor = 10 ** max_decs
+        rounded = math.floor(sig_5 * factor) / factor if max_decs > 0 else round(sig_5)
+        return rounded
+
     def market_open(
         self,
         coin: str,
@@ -186,6 +225,115 @@ class HLExchange:
                 side="B" if is_buy else "A",
                 size_coin=size_coin, px=None, raw={}, error=str(e),
             )
+
+    def limit_open_post_only(
+        self,
+        coin: str,
+        is_buy: bool,
+        size_coin: float,
+        limit_px: float,
+        cloid: str,
+        ref_price: float = 0.0,
+    ) -> OrderResult:
+        """Post-only LIMIT entry (tif='Alo' = Add Liquidity Only).
+
+        HL refuses to fill the order if it would cross the spread, so the
+        fill is guaranteed to be MAKER. Saves 30bp per roundtrip (taker 4.5bp
+        → maker 1.5bp × 2 sides) vs market_open.
+
+        Returns:
+            ok=True if order rested OR filled as maker;
+            ok=False with error 'post_only_rejected' if HL refused the order;
+            ok=False with error '...' for any other failure.
+
+        Caller should:
+          - For an unfilled rested order, poll openOrders or use the response
+            to track the order ID, then cancel after WHEN_TIMEOUT_S if not
+            filled and either re-quote or fall through to market_open.
+        """
+        self._ensure()
+        if ref_price > 0:
+            rounded = self._round_size(coin, size_coin, ref_price)
+            if rounded is None:
+                return OrderResult(
+                    ok=False, cloid=cloid, coin=coin,
+                    side="B" if is_buy else "A",
+                    size_coin=size_coin, px=None, raw={},
+                    error="precision_or_min_notional",
+                )
+            size_coin = rounded
+        # Price rounding: HL requires limit_px rounded to per-asset px decimals.
+        rounded_px = self._round_px(coin, limit_px)
+        if rounded_px is None or rounded_px <= 0:
+            return OrderResult(
+                ok=False, cloid=cloid, coin=coin,
+                side="B" if is_buy else "A",
+                size_coin=size_coin, px=limit_px, raw={},
+                error="px_precision",
+            )
+        try:
+            from hyperliquid.utils.types import Cloid
+            cloid_obj = Cloid.from_str(cloid)
+            res = self._exchange.order(
+                name=coin,
+                is_buy=is_buy,
+                sz=size_coin,
+                limit_px=rounded_px,
+                # 'Alo' = Add Liquidity Only — post-only.
+                # HL rejects orders that would cross the spread.
+                order_type={"limit": {"tif": "Alo"}},
+                reduce_only=False,
+                cloid=cloid_obj,
+            )
+            ok = bool(res and res.get("status") == "ok")
+            # Inspect statuses for 'resting' (success) vs 'error' (post-only rejected)
+            error = None
+            if ok:
+                try:
+                    statuses = (res.get("response", {})
+                                  .get("data", {})
+                                  .get("statuses", []) or [])
+                    for st in statuses:
+                        if isinstance(st, dict) and "error" in st:
+                            ok = False
+                            err_msg = st["error"]
+                            # HL message for post-only rejection contains
+                            # 'would immediately execute' or similar
+                            if "immediately" in err_msg.lower() or "post" in err_msg.lower():
+                                error = "post_only_rejected"
+                            else:
+                                error = err_msg
+                            break
+                except Exception:
+                    pass
+            return OrderResult(
+                ok=ok,
+                cloid=cloid,
+                coin=coin,
+                side="B" if is_buy else "A",
+                size_coin=size_coin,
+                px=rounded_px,
+                raw=res or {},
+                error=error if not ok else None,
+            )
+        except Exception as e:
+            return OrderResult(
+                ok=False, cloid=cloid, coin=coin,
+                side="B" if is_buy else "A",
+                size_coin=size_coin, px=rounded_px, raw={}, error=str(e),
+            )
+
+    def cancel(self, coin: str, cloid: str) -> bool:
+        """Cancel a resting order by cloid. Returns True if HL acknowledged."""
+        self._ensure()
+        try:
+            from hyperliquid.utils.types import Cloid
+            cloid_obj = Cloid.from_str(cloid)
+            res = self._exchange.cancel_by_cloid(coin, cloid_obj)
+            return bool(res and res.get("status") == "ok")
+        except Exception:
+            log.exception("cancel by cloid failed: %s/%s", coin, cloid[:14])
+            return False
 
     def market_close(self, coin: str, size_coin: Optional[float] = None, cloid: Optional[str] = None) -> OrderResult:
         self._ensure()

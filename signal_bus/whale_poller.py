@@ -53,42 +53,89 @@ DEFAULT_WHALE_SEEDS = [
 
 
 def _fetch_leaderboard() -> list[str]:
-    """Fetch top wallets by 7d PnL from HL stats-data leaderboard.
+    """Fetch top wallets from HL leaderboard, filtered to VETERAN QUALITY.
 
     The public /info endpoint does NOT expose leaderboard (returns 422).
-    HL publishes it via stats-data GET endpoint instead.
+    HL publishes it via stats-data GET endpoint instead. ~36k rows, ~30MB.
 
-    Returns list of addresses ranked by 7d absolute PnL (largest first).
-    Empty list on failure — poller continues with existing whale list.
+    Filter pipeline (sentinel-curated 2026-05-19):
+      - account value 500k-30M (size sanity)
+      - all-time PnL > $1M (proven veteran — filters new/lucky accounts)
+      - month PnL > 0 (currently winning, not in DD)
+      - week PnL > 0 (no recent collapse)
+      - month volume $5M-$2B (active enough to copy, not a market maker)
+      - month ROI 5%-300% (filters MM at 1% and degens at >500%)
+
+    Ranking: composite = month_ROI × log10(month_vol) × (1 + log10(allTime_PnL / $1M))
+    Rewards: recency × activity × proven track record.
+
+    Returns list of addresses (lowercased) ranked by composite. Empty list
+    on failure — poller continues with existing whale list.
+
+    Override via env:
+      WHALE_MIN_ACCT_USD (default 500_000)
+      WHALE_MIN_ALLTIME_PNL_USD (default 1_000_000)
+      WHALE_MIN_MONTH_VOL_USD (default 5_000_000)
     """
+    import math
+
+    min_acct = float(os.environ.get("WHALE_MIN_ACCT_USD", "500000"))
+    max_acct = float(os.environ.get("WHALE_MAX_ACCT_USD", "30000000"))
+    min_alltime_pnl = float(os.environ.get("WHALE_MIN_ALLTIME_PNL_USD", "1000000"))
+    min_month_vol = float(os.environ.get("WHALE_MIN_MONTH_VOL_USD", "5000000"))
+    max_month_vol = float(os.environ.get("WHALE_MAX_MONTH_VOL_USD", "2000000000"))
+    min_month_roi = float(os.environ.get("WHALE_MIN_MONTH_ROI", "0.05"))
+    max_month_roi = float(os.environ.get("WHALE_MAX_MONTH_ROI", "3.0"))
+
     try:
         r = httpx.get("https://stats-data.hyperliquid.xyz/Mainnet/leaderboard",
-                      timeout=20.0)
+                      timeout=30.0)
         if r.status_code != 200:
             log.warning("leaderboard fetch HTTP %d", r.status_code)
             return []
         d = r.json()
-        # Schema: {"leaderboardRows": [{"ethAddress": ..., "windowPerformances": [...]}]}
         rows = d.get("leaderboardRows", []) or []
-        # Sort by 7d PnL absolute value (windowPerformances format varies; defensive)
-        def _7d_pnl(row: dict) -> float:
-            perfs = row.get("windowPerformances", []) or []
-            for p in perfs:
-                if isinstance(p, list) and len(p) >= 2:
-                    if p[0] == "week" and isinstance(p[1], dict):
-                        try:
-                            return abs(float(p[1].get("pnl", 0) or 0))
-                        except Exception:
-                            return 0.0
-            return 0.0
 
-        sorted_rows = sorted(rows, key=_7d_pnl, reverse=True)
-        addresses = []
-        for row in sorted_rows[:MAX_WHALES_TRACKED]:
+        def _perf(row: dict, window: str) -> dict:
+            for w_p in row.get("windowPerformances", []) or []:
+                if isinstance(w_p, list) and len(w_p) >= 2 and w_p[0] == window:
+                    if isinstance(w_p[1], dict):
+                        return w_p[1]
+            return {}
+
+        def _f(d: dict, k: str) -> float:
+            try: return float(d.get(k, 0) or 0)
+            except (TypeError, ValueError): return 0.0
+
+        scored = []
+        for row in rows:
             addr = row.get("ethAddress")
-            if addr and isinstance(addr, str) and addr.startswith("0x"):
-                addresses.append(addr.lower())
-        log.info("whale leaderboard: %d top wallets fetched", len(addresses))
+            if not (addr and isinstance(addr, str) and addr.startswith("0x")):
+                continue
+            av = _f(row, "accountValue")
+            month = _perf(row, "month")
+            week = _perf(row, "week")
+            all_t = _perf(row, "allTime")
+            mp = _f(month, "pnl")
+            mv = _f(month, "vlm")
+            mr = _f(month, "roi")
+            wp = _f(week, "pnl")
+            ap = _f(all_t, "pnl")
+            # Veteran quality filters
+            if not (min_acct <= av <= max_acct): continue
+            if ap < min_alltime_pnl: continue
+            if mp <= 0 or wp <= 0: continue
+            if not (min_month_vol <= mv <= max_month_vol): continue
+            if not (min_month_roi <= mr <= max_month_roi): continue
+            # Composite score
+            score = (mr * math.log10(max(mv, 1))
+                     * (1 + math.log10(max(ap / 1_000_000, 1.01))))
+            scored.append((score, addr.lower()))
+
+        scored.sort(reverse=True)
+        addresses = [a for _, a in scored[:MAX_WHALES_TRACKED]]
+        log.warning("whale leaderboard: %d veteran-quality wallets from %d rows",
+                    len(addresses), len(rows))
         return addresses
     except Exception:
         log.exception("leaderboard fetch failed")
@@ -96,11 +143,31 @@ def _fetch_leaderboard() -> list[str]:
 
 
 def _fetch_positions(wallet: str) -> dict:
-    """Fetch clearinghouseState for one wallet. Returns {coin: {szi, entry_px, ntl_usd}}."""
+    """Fetch clearinghouseState for one wallet. Returns {coin: {szi, entry_px, ntl_usd}}.
+
+    Costs 2 weight per call (clearinghouseState). Skips silently if WeightBudget
+    is exhausted to avoid 429 storms — caller proceeds to next wallet next cycle.
+    """
+    try:
+        from common.weight_budget import get_budget, WEIGHT_CHEAP
+        budget = get_budget()
+        if not budget.spend(WEIGHT_CHEAP):
+            log.warning("whale_poller: weight budget exhausted, skipping %s this cycle",
+                        wallet[:10])
+            return {}
+    except ImportError:
+        pass  # budget unavailable, proceed without enforcement
     try:
         r = httpx.post(HL_INFO_URL,
                        json={"type": "clearinghouseState", "user": wallet},
                        timeout=10.0)
+        if r.status_code == 429:
+            try:
+                from common.weight_budget import get_budget
+                get_budget().note_429()
+            except ImportError:
+                pass
+            return {}
         if r.status_code != 200:
             return {}
         d = r.json()

@@ -34,10 +34,26 @@ HISTORY_MAX_DAYS = 30            # 30 days of snapshots for z-score baseline
 
 
 def _get_child_vaults() -> list[str]:
-    """Fetch the HLP parent vault's child addresses (refreshed daily)."""
+    """Fetch the HLP parent vault's child addresses (refreshed daily).
+
+    Costs 20 weight (vaultDetails is a 'normal' info endpoint).
+    """
+    try:
+        from common.weight_budget import get_budget, WEIGHT_NORMAL
+        if not get_budget().spend(WEIGHT_NORMAL):
+            log.warning("hlp_poller: weight budget exhausted for vaultDetails")
+            return []
+    except ImportError:
+        pass
     try:
         r = httpx.post(HL_INFO_URL, json={"type": "vaultDetails", "vaultAddress": HLP_PARENT},
                        timeout=15.0)
+        if r.status_code == 429:
+            try:
+                from common.weight_budget import get_budget
+                get_budget().note_429()
+            except ImportError: pass
+            return []
         r.raise_for_status()
         d = r.json()
         children = d.get("relationship", {}).get("data", {}).get("childAddresses", []) or []
@@ -48,14 +64,29 @@ def _get_child_vaults() -> list[str]:
 
 
 def _aggregate_positions(children: list[str]) -> dict:
-    """Aggregate HLP positions across child vaults: {coin: {net_size, net_usd, ts}}."""
+    """Aggregate HLP positions across child vaults: {coin: {net_size, net_usd, ts}}.
+
+    Costs 2 weight per child (clearinghouseState).
+    """
     by_coin: dict[str, dict] = {}
     ts = int(time.time() * 1000)
+    try:
+        from common.weight_budget import get_budget, WEIGHT_CHEAP
+        budget = get_budget()
+    except ImportError:
+        budget = None
     for child in children:
+        if budget is not None and not budget.spend(WEIGHT_CHEAP):
+            log.warning("hlp_poller: weight budget exhausted; partial aggregation")
+            break
         try:
             r = httpx.post(HL_INFO_URL,
                            json={"type": "clearinghouseState", "user": child},
                            timeout=10.0)
+            if r.status_code == 429:
+                if budget is not None:
+                    budget.note_429()
+                continue
             if r.status_code != 200:
                 continue
             d = r.json()

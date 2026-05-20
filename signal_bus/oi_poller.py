@@ -36,10 +36,26 @@ MAX_BACKOFF_S = 300
 
 
 def _fetch_oi_snapshot() -> Optional[dict]:
-    """Pull metaAndAssetCtxs, return {coin: {ts, oi, oi_usd, mark_px}}."""
+    """Pull metaAndAssetCtxs, return {coin: {ts, oi, oi_usd, mark_px}}.
+
+    Costs 20 weight (metaAndAssetCtxs is normal info).
+    """
+    try:
+        from common.weight_budget import get_budget, WEIGHT_NORMAL
+        if not get_budget().spend(WEIGHT_NORMAL):
+            log.warning("oi_poller: weight budget exhausted; skip this cycle")
+            return None
+    except ImportError:
+        pass
     try:
         r = httpx.post(HL_INFO_URL, json={"type": "metaAndAssetCtxs"},
                        timeout=REQUEST_TIMEOUT_S)
+        if r.status_code == 429:
+            try:
+                from common.weight_budget import get_budget
+                get_budget().note_429()
+            except ImportError: pass
+            return None
         r.raise_for_status()
         d = r.json()
     except Exception as e:

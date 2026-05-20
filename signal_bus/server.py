@@ -90,9 +90,15 @@ class Handler(BaseHTTPRequestHandler):
         assert CACHE is not None
 
         if path == "/health":
+            try:
+                from common.weight_budget import get_budget
+                weight_stats = get_budget().stats()
+            except Exception:
+                weight_stats = {}
             return _json_resp(self, 200, {
                 "ok": True,
                 "ts": time.time(),
+                "weight_budget": weight_stats,
                 **CACHE.stats(),
             })
 
@@ -218,6 +224,22 @@ class Handler(BaseHTTPRequestHandler):
         # Whale poller stats / health
         if path == "/whale_stats":
             return _json_resp(self, 200, CACHE.whale_stats)
+
+        # GET /hlp_vault_events?since=<ms>&coin=<optional>&vault=<optional>
+        # Consumed by the hlp_decoder strategy. Vault label is one of
+        # 'master', 'strategy_a', 'strategy_b', 'liquidator'.
+        if path == "/hlp_vault_events":
+            since = int(q.get("since", "0"))
+            coin = q.get("coin")
+            vault = q.get("vault")
+            if coin: coin = coin.upper()
+            return _json_resp(self, 200,
+                              CACHE.get_hlp_vault_events(since, coin, vault))
+
+        # GET /hlp_vault_snapshot/{vault_label}
+        if len(parts) == 2 and parts[0] == "hlp_vault_snapshot":
+            label = parts[1].lower()
+            return _json_resp(self, 200, CACHE.get_hlp_vault_snapshot(label))
 
         # L2 book snapshot (Stage 1 #6)
         if len(parts) == 2 and parts[0] == "l2book":
@@ -436,6 +458,16 @@ def main() -> None:
             log.info("whale poller started")
         except Exception:
             log.warning("whale_poller not started", exc_info=True)
+
+    # HLP sub-vault decoder — observes each of 4 HLP vaults separately.
+    # Consumed by hlp_decoder strategy (different from hlp_fade aggregator).
+    if config.get_bool("HLP_DECODER_POLLER_ENABLED", default=True):
+        try:
+            from signal_bus import hlp_decoder_poller
+            hlp_decoder_poller.start(CACHE)
+            log.info("hlp_decoder poller started")
+        except Exception:
+            log.warning("hlp_decoder_poller not started", exc_info=True)
 
     # OKX liquidations REST poller — WS channel rejected by OKX (error 60018);
     # REST is the only reliable path (2026-05-19 decision). Pushes into the

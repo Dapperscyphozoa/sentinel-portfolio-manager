@@ -81,6 +81,29 @@ class BusClient:
         r.raise_for_status()
         return r.json()
 
+    def hlp_vault_events(self, since_ms: int = 0,
+                         coin: Optional[str] = None,
+                         vault_label: Optional[str] = None) -> list[dict]:
+        """HLP sub-vault delta events (consumed by hlp_decoder).
+        Each event: {ts, vault_label, kind, coin, is_long, ntl_usd, prev_ntl, delta_ntl}.
+        kind ∈ {'OPEN','CLOSE','FLIP','GREW'}.
+        vault_label ∈ {'master','strategy_a','strategy_b','liquidator'}.
+        """
+        params: dict = {"since": since_ms}
+        if coin: params["coin"] = coin
+        if vault_label: params["vault"] = vault_label
+        r = self._client.get(f"{self.base_url}/hlp_vault_events",
+                             params=params, timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
+    def hlp_vault_snapshot(self, vault_label: str) -> dict:
+        """Latest snapshot for one HLP sub-vault: {ts_ms, positions}."""
+        r = self._client.get(f"{self.base_url}/hlp_vault_snapshot/{vault_label}",
+                             timeout=self.timeout)
+        r.raise_for_status()
+        return r.json()
+
     def l2book(self, coin: str) -> dict:
         """Latest HL L2 book snapshot for coin (Stage 1 #6)."""
         r = self._client.get(f"{self.base_url}/l2book/{coin}", timeout=self.timeout)

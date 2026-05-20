@@ -240,6 +240,19 @@ ENGINE_REGISTRY: dict[str, dict] = {
         "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
         "notes": "Anticipate HLP imminent rebalance from NAV-vs-mark divergence rate.",
     },
+    # hlp_decoder — reverse-engineered signal from 4 HLP sub-vaults (master,
+    # strategy_a, strategy_b, liquidator). Three signal kinds toggleable via
+    # env. Cap_frac=0 paper-only until honest backtest passes.
+    "hlp_decoder": {
+        "class": "hlp_subvault_decode",
+        "affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
+        "capital_fraction": 0.00,
+        "bt_pf": 2.50,                 # council est; pending honest backtest
+        "bt_n": 0,
+        "min_n_for_gate": 30,
+        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
+        "notes": "World-first: decode HLP's 4 sub-vault positioning. H-LIQ + H-CONSENSUS + H-FADE-MM.",
+    },
    # PROMOTED 2026-05-18 post short-only fix
     # ─── Tier 1 #4: Stop Hunt Rejection ───
     # ACTIVATED 2026-05-18 — council Q5 unblocked: news-spike ATR filter

@@ -134,10 +134,45 @@ class Trader:
                 if self.hl is None:
                     err = "live but no HL exchange wired"
                 else:
-                    res = self.hl.market_open(
-                        coin=sig.coin, is_buy=sig.is_long, size_coin=size_coin, cloid=cloid,
-                        ref_price=sig.ref_price,
-                    )
+                    # ─── Maker-only entry path (sentinel maker-rebate work) ───
+                    # If env STRATEGY_<NAME>_MAKER_ONLY_ENTRY=1, attempt a
+                    # post-only LIMIT first. Saves 30bp/roundtrip vs taker.
+                    # On Tier 0 the saving is 0.045% taker → 0.015% maker per
+                    # side, i.e. -67% fee drag. Fall through to market_open
+                    # on post_only_rejected (would-cross) so we never miss a
+                    # fill outright; configurable per-engine.
+                    maker_only_env = f"STRATEGY_{strategy.NAME.upper()}_MAKER_ONLY_ENTRY"
+                    maker_only = os.environ.get(maker_only_env, "0") == "1"
+                    res = None
+                    if maker_only:
+                        # Quote at the touch (1 tick inside): aggressive enough
+                        # to be likely to fill quickly without crossing.
+                        # We use ref_price as the limit — HL's tif='Alo' rejects
+                        # if it would cross. The runner is allowed to re-fire
+                        # next cycle if rejected.
+                        res = self.hl.limit_open_post_only(
+                            coin=sig.coin, is_buy=sig.is_long,
+                            size_coin=size_coin, limit_px=sig.ref_price,
+                            cloid=cloid, ref_price=sig.ref_price,
+                        )
+                        if not res.ok and res.error == "post_only_rejected":
+                            fallback = os.environ.get(
+                                f"STRATEGY_{strategy.NAME.upper()}_MAKER_FALLBACK_TAKER",
+                                "1") == "1"
+                            if fallback:
+                                log.info("maker-only rejected for %s, "
+                                         "falling through to taker",
+                                         strategy.NAME)
+                                res = self.hl.market_open(
+                                    coin=sig.coin, is_buy=sig.is_long,
+                                    size_coin=size_coin, cloid=cloid,
+                                    ref_price=sig.ref_price,
+                                )
+                    if res is None:
+                        res = self.hl.market_open(
+                            coin=sig.coin, is_buy=sig.is_long, size_coin=size_coin, cloid=cloid,
+                            ref_price=sig.ref_price,
+                        )
                     if not res.ok:
                         err = res.error
                     else:

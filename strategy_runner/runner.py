@@ -190,6 +190,18 @@ def _load_registered() -> None:
     else:
         log.info("uzt_rev skipped (set STRATEGY_UZT_REV_ENABLED=1 to load)")
 
+    # 1.15) hlp_decoder — reverse-engineered signal from 4 HLP sub-vaults.
+    # Consumes hlp_decoder_poller's per-vault deltas. Three signal kinds
+    # (H-LIQ, H-CONSENSUS, H-FADE-MM) selectable via env. Free-rate-cost
+    # engine (poller uses 96 weight/min total). Cap_frac=0 (paper) until
+    # honest backtest validates.
+    try:
+        from .strategies.hlp_decoder import HlpDecoder
+        register(HlpDecoder)
+        log.info("Loaded hlp_decoder: %s", HlpDecoder.NAME)
+    except Exception:
+        log.exception("failed to load hlp_decoder")
+
     # 2) Remaining keepers — liq_cascade (sentinel-born), donchian (post-
     #    sentinel build). cex_dex_arb ARCHIVED 2026-05-19 (look-ahead bias
     #    history, halted, PF 0.00). The 7 earlier legacy ports (fsp, vsq,
