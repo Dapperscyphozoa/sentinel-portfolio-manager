@@ -497,8 +497,12 @@ class E08_dip3d_7_TD_4h_INV(StrategyBase):
     CLOID_PREFIX = "e08i_"
     AFFINITY = ["trend_down"]
     TF = "4h"
-    # Walk-forward-validated universe (TRAIN PF≥1.0 → 7/7 TEST PF≥1.0)
-    UNIVERSE = ["ARB", "GALA", "INJ", "OP", "ORDI", "PYTH", "WIF"]
+    # Walk-forward-validated universe (TRAIN PF≥1.0 AND TEST PF≥1.0, n≥8/half)
+    # 2026-05-20 v1: 7 coins (initial revival)
+    # 2026-05-20 v2: expanded to 15 coins after 60-symbol GREEN sweep — see
+    #                backtests/e08_dip3d7_td_4h_INV_20260520_expansion.md
+    UNIVERSE = ["ARB", "GALA", "INJ", "OP", "ORDI", "PYTH", "WIF",
+                "FIL", "BLUR", "DOT", "SNX", "ENS", "TIA", "LDO", "DYDX"]
     _DROP_PCT = 0.07
     _HOLD_BARS = 8
 
