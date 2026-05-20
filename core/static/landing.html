@@ -1458,6 +1458,83 @@ async function _fetchAllMids() {
   }
 }
 
+// ─── Panel-cache: never blank a populated panel on transient fetch error ───
+// User complaint: panels "drop out and don't stay populated". Cause: every
+// load function overwrote successful renders with "loading…" / "awaiting
+// feed" / $0 on the next failed poll. Fix: persist last-good payloads to
+// localStorage and let renderers hydrate from cache when the live fetch
+// fails or returns empty. Each load function calls safeFetch(url, key) and
+// receives `{ data, fromCache }`; the renderer ignores the call if data
+// is null AND a populated panel is already on screen.
+const _PANEL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;  // 24h — keep last good for a day
+const _PANEL_CACHE_PREFIX = 'spm_panel_v1_';
+
+function _panelCacheGet(key) {
+  try {
+    const raw = localStorage.getItem(_PANEL_CACHE_PREFIX + key);
+    if (!raw) return null;
+    const entry = JSON.parse(raw);
+    if (!entry || typeof entry.ts !== 'number') return null;
+    if (Date.now() - entry.ts > _PANEL_CACHE_TTL_MS) return null;
+    return entry.data;
+  } catch (e) {
+    return null;
+  }
+}
+
+function _panelCacheSet(key, data) {
+  try {
+    localStorage.setItem(_PANEL_CACHE_PREFIX + key, JSON.stringify({
+      ts: Date.now(), data: data,
+    }));
+  } catch (e) {
+    // quota exceeded or disabled — silent; renderer will simply re-fetch
+  }
+}
+
+// Considers a payload "empty" if it's null, undefined, an empty array,
+// or an object with the recognised empty-list shape {items: []} / {data: []}.
+// Empty payloads are still cached (so we don't keep stale forever) but the
+// renderer will keep prior DOM rather than wiping if it already has content.
+function _isEmptyPayload(p) {
+  if (p == null) return true;
+  if (Array.isArray(p) && p.length === 0) return true;
+  if (typeof p === 'object') {
+    if (Array.isArray(p.items) && p.items.length === 0) return true;
+    if (Array.isArray(p.data)  && p.data.length === 0)  return true;
+  }
+  return false;
+}
+
+async function safeFetch(url, cacheKey, opts) {
+  opts = opts || {};
+  const timeoutMs = opts.timeout || 6000;
+  try {
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+    const r = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
+    clearTimeout(tid);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    // Cache successful response (even if logically empty) so subsequent
+    // failures fall back to the most recent state we actually observed.
+    if (cacheKey) _panelCacheSet(cacheKey, data);
+    return { data: data, fromCache: false };
+  } catch (e) {
+    const cached = cacheKey ? _panelCacheGet(cacheKey) : null;
+    if (cached != null) return { data: cached, fromCache: true };
+    return { data: null, fromCache: false, error: e };
+  }
+}
+
+// Marker: which element IDs have ever been populated by a successful render.
+// Renderers check this before overwriting with empty/placeholder content so
+// "loading…" never replaces a successful render — only the first paint.
+const _populatedPanels = new Set();
+function _markPopulated(id) { _populatedPanels.add(id); }
+function _isPopulated(id)   { return _populatedPanels.has(id); }
+
+
 async function _fetchPaperPositions() {
   // Fetch HL allMids + each paper engine /state in parallel.
   const [mids, ...stateResults] = await Promise.all([
@@ -1508,8 +1585,12 @@ async function _fetchPaperPositions() {
 
 async function loadDash() {
     try {
-        const r = await fetch('/dash');
-        const d = await r.json();
+        const { data: d, fromCache } = await safeFetch('/dash', 'dash');
+        if (!d) {
+            // No data + no cache (first ever load failed). Leave initial $0
+            // placeholders so the user knows the panel is bootstrapping.
+            return;
+        }
         const eq = d.equity || 0;
         // Cache for cross-panel reuse (e.g. confluence panel computes %PnL/equity)
         window.__equity = eq;
@@ -1529,6 +1610,7 @@ async function loadDash() {
         const upEl = document.getElementById('hero-upnl');
         upEl.textContent = (upnl>=0?'+$':'-$') + Math.abs(upnl).toFixed(2);
         upEl.className = 'hero-stat-val ' + (upnl>=0?'pos':'neg');
+        _markPopulated('hero-eq');
 
         document.getElementById('session-name').textContent = (d.session?.name || '—').toUpperCase();
         document.getElementById('m-walls').textContent = d.orderbook?.verified_coins || 0;
@@ -1671,93 +1753,115 @@ async function _fetchPaperPendingSignals() {
 }
 
 async function loadSignals() {
-    try {
-        // Live + paper pending in parallel
-        const [r, pendings] = await Promise.all([
-            fetch('/signals').then(x => x.json()).catch(() => ({ items: [] })),
-            _fetchPaperPendingSignals().catch(() => []),
-        ]);
-        const live = r.items || [];
-        const pending = pendings || [];
-        const total = live.length + pending.length;
+    const el = document.getElementById('signals');
+    const meta = document.getElementById('sig-meta');
+    const [{ data: r }, pendings] = await Promise.all([
+        safeFetch('/signals', 'signals'),
+        _fetchPaperPendingSignals().catch(() => []),
+    ]);
+    const live = (r && r.items) || [];
+    const pending = pendings || [];
+    const total = live.length + pending.length;
 
-        const liveRows = live.map(s => {
-            // Server now sends kind='LIVE', ts_str (HH:MM:SS), engine, side (LONG/SHORT)
-            const sideLabel = s.side || (s.is_long ? 'LONG' : 'SHORT');
-            const sideCls = (sideLabel === 'LONG') ? 'pnl-pos' : 'pnl-neg';
-            const eng = s.engine || s.strategy || '';
-            const reason = s.fire_reason || '';
-            return `<div class="pos-row" style="grid-template-columns:64px 1fr auto;font-size:11px">
-                <div class="pos-coin">${s.coin}<br><span style="opacity:0.4;font-size:9px;letter-spacing:0.05em">${eng}</span></div>
-                <div style="opacity:0.85"><span class="stage-tag stage-live" style="margin-right:6px">LIVE</span><span class="${sideCls}">${sideLabel}</span> <span style="opacity:0.55;font-size:10px">${reason}</span></div>
-                <div style="font-size:9px;opacity:0.6">${s.ts_str || ''}</div>
-            </div>`;
-        }).join('');
-
-        const pendRows = pending.map(s => {
-            const px = s.entry != null ? Number(s.entry).toPrecision(5) : '—';
-            const eng = s.engine ? `<br><span style="opacity:0.4;font-size:9px;letter-spacing:0.05em">${s.engine}</span>` : '';
-            // Badge follows the engine's actual mode (kind set in _fetchPaperPendingSignals)
-            const isLive = s.kind === 'LIVE';
-            const rowCls = isLive ? 'pos-row' : 'pos-row is-paper';
-            const tagCls = isLive ? 'stage-tag stage-live' : 'stage-tag stage-paper';
-            return `<div class="${rowCls}" style="grid-template-columns:70px 1fr auto;font-size:11px">
-                <div class="pos-coin">${s.coin}${eng}</div>
-                <div style="opacity:0.8"><span class="${tagCls}" style="margin-right:6px">${s.kind}</span>${s.stage} ${s.side || ''} <span style="opacity:0.5">@ ${px}</span></div>
-                <div style="font-size:9px;opacity:0.55">unfilled</div>
-            </div>`;
-        }).join('');
-
-        document.getElementById('signals').innerHTML =
-            (liveRows + pendRows) ||
-            '<div class="pos-row" style="opacity:0.5">// no live or pending signals</div>';
-        const metaParts = [];
-        if (live.length)    metaParts.push(`${live.length} live`);
-        if (pending.length) metaParts.push(`${pending.length} pending`);
-        document.getElementById('sig-meta').textContent = metaParts.join(' · ') || '0 recent';
-    } catch (e) {
-        document.getElementById('signals').innerHTML = '<div class="pos-row" style="opacity:0.5">// loading</div>';
+    if (total === 0 && _isPopulated('signals')) {
+        // Keep last rendered list; just update meta to reflect quiet period.
+        if (meta) meta.textContent = '0 recent';
+        return;
     }
+    if (total === 0 && !_isPopulated('signals') && !r && !pending.length) {
+        // First load + nothing live + cache miss → show loading once.
+        if (el && !el.innerHTML.trim()) {
+            el.innerHTML = '<div class="pos-row" style="opacity:0.5">// loading</div>';
+        }
+        return;
+    }
+
+    const liveRows = live.map(s => {
+        // Server now sends kind='LIVE', ts_str (HH:MM:SS), engine, side (LONG/SHORT)
+        const sideLabel = s.side || (s.is_long ? 'LONG' : 'SHORT');
+        const sideCls = (sideLabel === 'LONG') ? 'pnl-pos' : 'pnl-neg';
+        const eng = s.engine || s.strategy || '';
+        const reason = s.fire_reason || '';
+        return `<div class="pos-row" style="grid-template-columns:64px 1fr auto;font-size:11px">
+            <div class="pos-coin">${s.coin}<br><span style="opacity:0.4;font-size:9px;letter-spacing:0.05em">${eng}</span></div>
+            <div style="opacity:0.85"><span class="stage-tag stage-live" style="margin-right:6px">LIVE</span><span class="${sideCls}">${sideLabel}</span> <span style="opacity:0.55;font-size:10px">${reason}</span></div>
+            <div style="font-size:9px;opacity:0.6">${s.ts_str || ''}</div>
+        </div>`;
+    }).join('');
+
+    const pendRows = pending.map(s => {
+        const px = s.entry != null ? Number(s.entry).toPrecision(5) : '—';
+        const eng = s.engine ? `<br><span style="opacity:0.4;font-size:9px;letter-spacing:0.05em">${s.engine}</span>` : '';
+        const isLive = s.kind === 'LIVE';
+        const rowCls = isLive ? 'pos-row' : 'pos-row is-paper';
+        const tagCls = isLive ? 'stage-tag stage-live' : 'stage-tag stage-paper';
+        return `<div class="${rowCls}" style="grid-template-columns:70px 1fr auto;font-size:11px">
+            <div class="pos-coin">${s.coin}${eng}</div>
+            <div style="opacity:0.8"><span class="${tagCls}" style="margin-right:6px">${s.kind}</span>${s.stage} ${s.side || ''} <span style="opacity:0.5">@ ${px}</span></div>
+            <div style="font-size:9px;opacity:0.55">unfilled</div>
+        </div>`;
+    }).join('');
+
+    el.innerHTML = (liveRows + pendRows) ||
+        '<div class="pos-row" style="opacity:0.5">// no live or pending signals</div>';
+    const metaParts = [];
+    if (live.length)    metaParts.push(`${live.length} live`);
+    if (pending.length) metaParts.push(`${pending.length} pending`);
+    if (meta) meta.textContent = metaParts.join(' · ') || '0 recent';
+    if (total) _markPopulated('signals');
 }
 
 async function loadWhales() {
-    try {
-        const r = await fetch('/whales');
-        const d = await r.json();
-        const items = d.items || [];
-        document.getElementById('whales').innerHTML = items.map(w => {
-            const sideCls = w.side === 'BUY' ? 'pnl-pos' : 'pnl-neg';
-            return `<div class="pos-row" style="grid-template-columns:60px 50px 1fr;font-size:11px">
-                <div class="pos-coin">${w.coin}</div>
-                <div class="${sideCls}" style="font-weight:600">${w.side}</div>
-                <div style="text-align:right">$${(w.usd/1000).toFixed(0)}k</div>
-            </div>`;
-        }).join('') || '<div class="pos-row" style="opacity:0.5">// no whale prints yet</div>';
-        document.getElementById('whale-meta').textContent = items.length + ' last 5m';
-    } catch (e) {
-        document.getElementById('whales').innerHTML = '<div class="pos-row" style="opacity:0.5">// loading</div>';
+    const el = document.getElementById('whales');
+    const meta = document.getElementById('whale-meta');
+    const { data: d } = await safeFetch('/whales', 'whales');
+    // Only render if we actually got something (live or cached). If d is null
+    // and the panel is already populated, leave it alone — never wipe.
+    if (!d) {
+        if (!_isPopulated('whales') && el && !el.innerHTML.trim()) {
+            el.innerHTML = '<div class="pos-row" style="opacity:0.5">// loading</div>';
+        }
+        return;
     }
+    const items = d.items || [];
+    if (items.length === 0 && _isPopulated('whales')) {
+        // We have live empty data and a previously-populated panel —
+        // update the meta to reflect 0 but keep the last whale list visible.
+        if (meta) meta.textContent = '0 last 5m (stale)';
+        return;
+    }
+    el.innerHTML = items.map(w => {
+        const sideCls = w.side === 'BUY' ? 'pnl-pos' : 'pnl-neg';
+        return `<div class="pos-row" style="grid-template-columns:60px 50px 1fr;font-size:11px">
+            <div class="pos-coin">${w.coin}</div>
+            <div class="${sideCls}" style="font-weight:600">${w.side}</div>
+            <div style="text-align:right">$${(w.usd/1000).toFixed(0)}k</div>
+        </div>`;
+    }).join('') || '<div class="pos-row" style="opacity:0.5">// no whale prints yet</div>';
+    if (meta) meta.textContent = items.length + ' last 5m';
+    if (items.length) _markPopulated('whales');
 }
 
 async function loadNews() {
-    try {
-        const r = await fetch('/news');
-        const d = await r.json();
-        const items = (d.items || []).slice(0,5);
-        document.getElementById('news').innerHTML = items.map(n => {
-            const mag = n.magnitude || 3;
-            return `<div class="news-item">
-                <span class="news-mag mag-${mag}">MAG ${mag}</span>
-                <div class="news-title">${n.title || n.headline || '—'}</div>
-                <div class="news-meta">${n.source || ''} · ${n.direction > 0 ? 'BULL' : n.direction < 0 ? 'BEAR' : 'NEUTRAL'}</div>
-            </div>`;
-        }).join('') || '<div class="news-item" style="opacity:0.5">// awaiting feed</div>';
-    } catch (e) {
-        const el = document.getElementById('news');
-        if (el && (el.innerHTML.includes('loading') || el.innerHTML.includes('offline') || el.innerHTML.includes('awaiting'))) {
-            el.innerHTML = '<div class="news-item" style="opacity:0.5">// awaiting feed</div>';
+    const el = document.getElementById('news');
+    const { data: d } = await safeFetch('/news', 'news');
+    if (!d) {
+        if (!_isPopulated('news') && el && !el.innerHTML.trim()) {
+            el.innerHTML = '<div class="news-item" style="opacity:0.5">// loading</div>';
         }
+        return;
     }
+    const items = (d.items || []).slice(0,5);
+    if (items.length === 0 && _isPopulated('news')) return;  // keep last good
+    el.innerHTML = items.map(n => {
+        const mag = n.magnitude || 3;
+        return `<div class="news-item">
+            <span class="news-mag mag-${mag}">MAG ${mag}</span>
+            <div class="news-title">${n.title || n.headline || '—'}</div>
+            <div class="news-meta">${n.source || ''} · ${n.direction > 0 ? 'BULL' : n.direction < 0 ? 'BEAR' : 'NEUTRAL'}</div>
+        </div>`;
+    }).join('') || '<div class="news-item" style="opacity:0.5">// awaiting feed</div>';
+    if (items.length) _markPopulated('news');
 }
 
 function updateClock() {
@@ -1766,13 +1870,16 @@ function updateClock() {
 }
 
 async function loadOrderbook() {
-    try {
-        const r = await fetch('/orderbook/BTC');
-        const d = await r.json();
-        if (!d.mid) {
-            document.getElementById('ob-heatmap').innerHTML = '<div style="opacity:0.5;padding:40px;text-align:center">// BTC orderbook feeds warming up...</div>';
-            return;
+    const el = document.getElementById('ob-heatmap');
+    const { data: d } = await safeFetch('/orderbook/BTC', 'orderbook_btc');
+    if (!d || !d.mid) {
+        if (!_isPopulated('ob-heatmap') && el) {
+            el.innerHTML = '<div style="opacity:0.5;padding:40px;text-align:center">// BTC orderbook feeds warming up...</div>';
         }
+        // If already populated, leave the last render in place.
+        return;
+    }
+    try {
         const bids = d.bids || [];
         const asks = d.asks || [];
         const mid = d.mid;
@@ -1838,23 +1945,37 @@ async function loadOrderbook() {
         svg += '</svg>';
         document.getElementById('ob-heatmap').innerHTML = svg;
         document.getElementById('ob-meta').textContent = `${d.venues||0} venues · ${bids.length}b / ${asks.length}a · ±${pctTop}% · mid $${mid.toFixed(0)}`;
+        _markPopulated('ob-heatmap');
     } catch (e) {
         console.error(e);
+        // Don't blank the panel — keep last good render.
     }
 }
 
 async function loadHeatmap() {
-    try {
-        // Use /audit/deep which pulls HL fills (persistent across restarts)
-        // Default to 24h window for per-coin WR
-        const r = await fetch('/audit/deep?hours=24&format=json');
-        const d = await r.json();
-        const perCoin = d.per_coin || [];
-        if (perCoin.length === 0) {
-            document.getElementById('heatmap').innerHTML = '<div style="opacity:0.5;padding:20px">// no closed trades in last 24h</div>';
-            document.getElementById('heat-meta').textContent = '0 coins · 0 trades';
-            return;
+    const el = document.getElementById('heatmap');
+    const meta = document.getElementById('heat-meta');
+    // Use /audit/deep which pulls HL fills (persistent across restarts)
+    const { data: d } = await safeFetch('/audit/deep?hours=24&format=json', 'heatmap');
+    if (!d) {
+        if (!_isPopulated('heatmap') && el && !el.innerHTML.trim()) {
+            el.innerHTML = '<div style="opacity:0.5;padding:20px">// loading</div>';
         }
+        return;
+    }
+    const perCoin = d.per_coin || [];
+    if (perCoin.length === 0 && _isPopulated('heatmap')) {
+        // We had trades before, now /audit returns nothing (truncated window).
+        // Keep prior heatmap; just refresh meta.
+        if (meta) meta.textContent = '0 coins · 0 trades (no recent activity)';
+        return;
+    }
+    if (perCoin.length === 0) {
+        el.innerHTML = '<div style="opacity:0.5;padding:20px">// no closed trades in last 24h</div>';
+        if (meta) meta.textContent = '0 coins · 0 trades';
+        return;
+    }
+    try {
         // Sort by WR desc (wins/(wins+losses)), then by n desc
         const rows = perCoin.map(c => {
             const n = c.n || 0;
@@ -1882,8 +2003,10 @@ async function loadHeatmap() {
         }).join('');
         const totalTrades = rows.reduce((sum, s) => sum + s.n, 0);
         document.getElementById('heat-meta').textContent = rows.length + ' coins · ' + totalTrades + ' trades · 24h';
+        _markPopulated('heatmap');
     } catch (e) {
-        document.getElementById('heatmap').innerHTML = `<div style="opacity:0.5;padding:20px">// data unavailable: ${e.message || e}</div>`;
+        // Render error — keep last good render on screen, log only.
+        console.error('heatmap render failed', e);
     }
 }
 
@@ -2899,6 +3022,32 @@ async function loadAttribution() {
     }
 }
 
+// Hydrate from last-good cache BEFORE first fetch so the user never sees
+// $0 / "loading…" placeholders after a page refresh. The fetch loop will
+// then catch up with live values within seconds.
+(function _hydrateFromCache() {
+  try {
+    const cachedDash = _panelCacheGet('dash');
+    if (cachedDash) {
+      const eq = cachedDash.equity || 0;
+      window.__equity = eq;
+      window.__dashCache = { ts: Date.now(), data: cachedDash };
+      const heroEq = document.getElementById('hero-eq');
+      if (heroEq) heroEq.textContent = '$' + eq.toFixed(2);
+      const pos = cachedDash.positions || [];
+      const heroPos = document.getElementById('hero-pos');
+      if (heroPos) heroPos.textContent = pos.length;
+      const upnl = pos.reduce((s, p) => s + (p.upnl || 0), 0);
+      const upEl = document.getElementById('hero-upnl');
+      if (upEl) {
+        upEl.textContent = (upnl >= 0 ? '+$' : '-$') + Math.abs(upnl).toFixed(2);
+        upEl.className = 'hero-stat-val ' + (upnl >= 0 ? 'pos' : 'neg');
+      }
+      if (eq > 0) _markPopulated('hero-eq');
+    }
+  } catch (e) { /* silent */ }
+})();
+
 // Initial paint — immediate but no setInterval bursts at t=0
 loadDash(); loadMacroStrip(); loadEngines(); loadPMRail(); loadEnginesGrid();
 loadAttribution();
@@ -2923,10 +3072,16 @@ poll('attribution', loadAttribution, 20000, 3700);
 // Equity pulse renders /audit/deep.per_hour as a 24-bar SVG (blue=fills,
 // green/red overlay=pnl). Both poll on their own cadence via poll().
 async function loadLivePositions() {
+  const body = document.getElementById('lpos-body');
+  const meta = document.getElementById('lpos-meta');
+  const { data: d } = await safeFetch('/dash', 'dash');
+  if (!d) {
+    if (!_isPopulated('lpos-body') && body && !body.innerHTML.includes('table')) {
+      body.innerHTML = '<div class="lpos-empty">// loading</div>';
+    }
+    return;
+  }
   try {
-    const r = await fetch('/dash', { cache: 'no-store' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const d = await r.json();
     const rows = (d.positions || []).slice().sort((a, b) =>
       Math.abs((b.upnl || 0)) - Math.abs((a.upnl || 0)));
     const body = document.getElementById('lpos-body');
@@ -2971,19 +3126,15 @@ async function loadLivePositions() {
       + '<thead><tr><th>Coin</th><th>Side</th><th class="r">Entry</th>'
       + '<th class="r">Lev</th><th class="r">uPnL</th></tr></thead>'
       + '<tbody>' + trs + '</tbody></table>';
+    _markPopulated('lpos-body');
     if (meta) {
       const sign = totalUpnl > 0 ? '+' : totalUpnl < 0 ? '−' : '';
       meta.textContent = rows.length + ' open · ' + sign + '$' + Math.abs(totalUpnl).toFixed(2);
       meta.style.color = totalUpnl > 0 ? 'var(--gain)' : totalUpnl < 0 ? 'var(--loss)' : '';
     }
   } catch (e) {
-    const body = document.getElementById('lpos-body');
-    // Only overwrite body if it's empty/loading — otherwise keep last good render
-    // through transient fetch errors (mobile network blips, brief Render rolling restarts).
-    if (body && (body.innerHTML.includes('loading') || body.innerHTML.includes('offline'))) {
-      body.innerHTML = '<div class="lpos-empty">// /dash unreachable</div>';
-    }
-    // else: silently keep last render — next poll will refresh
+    // Render exception (not fetch — safeFetch handled that). Keep last good.
+    console.error('lpos render failed', e);
   }
 }
 
