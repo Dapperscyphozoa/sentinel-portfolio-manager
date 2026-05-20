@@ -409,6 +409,33 @@ class Handler(BaseHTTPRequestHandler):
                             runner_by_coin[tr["coin"]] = tr
         except Exception:
             pass
+        # Final fallback: read HL native reduceOnly orders as TP/SL source. The
+        # runner DB can be empty (fresh deploy, schema migration, or
+        # reconciliation gap) but the orders are still live on HL. Without this,
+        # /dash shows tp='-' sl='-' on positions whose stops are actually
+        # active, which looks like the bot has gone unprotected when it hasn't.
+        # For each coin: 2 reduceOnly limit orders typically → the one closer
+        # to mark is TP, the further one is SL (for a short, TP < entry < SL).
+        hl_triggers_by_coin: dict = {}
+        try:
+            user_wallet = os.environ.get("HL_USER_WALLET", "")
+            if user_wallet:
+                with httpx.Client(timeout=4.0) as cli:
+                    r = cli.post(
+                        "https://api.hyperliquid.xyz/info",
+                        json={"type": "openOrders", "user": user_wallet},
+                    )
+                    if r.status_code == 200:
+                        for o in r.json() or []:
+                            if not o.get("reduceOnly"):
+                                continue
+                            c = o.get("coin")
+                            px = float(o.get("limitPx") or 0)
+                            if not c or not px:
+                                continue
+                            hl_triggers_by_coin.setdefault(c, []).append(px)
+        except Exception:
+            pass
         # Positions list — shape landing expects: {upnl, lev, tp, sl, engine, stage, coin, side, size, entry, entry_px, mark_px}
         positions_out = []
         for p in hl_positions or account_pm.get("positions") or []:
@@ -435,15 +462,38 @@ class Handler(BaseHTTPRequestHandler):
             tr = runner_by_coin.get(coin) or {}
             tp_v = tr.get("tp_px") if tr else p.get("tp", "-")
             sl_v = tr.get("sl_px") if tr else p.get("sl", "-")
+            # Position side first (need it to disambiguate which trigger is TP vs SL)
+            sz_signed = float(p.get("size", p.get("szi", 0)) or 0)
+            side_long = sz_signed > 0
+            # HL trigger fallback when runner DB has no record
+            if (tp_v in (None, 0, "-") or sl_v in (None, 0, "-")) and coin in hl_triggers_by_coin:
+                pxs = sorted(hl_triggers_by_coin[coin])
+                if len(pxs) >= 2 and entry_px:
+                    # For LONG: TP > entry, SL < entry. For SHORT: TP < entry, SL > entry.
+                    lower, upper = pxs[0], pxs[-1]
+                    hl_tp = upper if side_long else lower
+                    hl_sl = lower if side_long else upper
+                    if tp_v in (None, 0, "-"):
+                        tp_v = hl_tp
+                    if sl_v in (None, 0, "-"):
+                        sl_v = hl_sl
+                elif len(pxs) == 1 and entry_px:
+                    # Single trigger — only one side set. Best-guess: if it's
+                    # protective for this position, it's the SL.
+                    px = pxs[0]
+                    is_sl = (side_long and px < entry_px) or (not side_long and px > entry_px)
+                    if is_sl and sl_v in (None, 0, "-"):
+                        sl_v = px
+                    elif not is_sl and tp_v in (None, 0, "-"):
+                        tp_v = px
             engine_v = tr.get("strategy") if tr else p.get("engine", p.get("strategy", "-"))
             # Compute mark-based unrealizedPnl if HL didn't give us one and we have both prices
-            sz_signed = float(p.get("size", p.get("szi", 0)) or 0)
             upnl_v = float(p.get("upnl", p.get("unrealizedPnl", 0)) or 0)
             if upnl_v == 0 and mark_px and entry_px and sz_signed:
                 upnl_v = (mark_px - entry_px) * sz_signed
             positions_out.append({
                 "coin": coin,
-                "side": "LONG" if sz_signed > 0 else "SHORT",
+                "side": "LONG" if side_long else "SHORT",
                 "size": abs(sz_signed),
                 "entry": entry_px,        # landing reads p.entry
                 "entry_px": entry_px,     # keep alias for any other consumer
