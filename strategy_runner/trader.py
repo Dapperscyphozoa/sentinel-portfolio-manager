@@ -527,7 +527,7 @@ class Trader:
         # reconciled_off_book stays as the canonical lifecycle terminus but the
         # closure is booked for attribution.
         self.conn.execute(
-            "INSERT INTO closures(cloid,strategy,coin,is_long,open_ts,close_ts,"
+            "INSERT OR IGNORE INTO closures(cloid,strategy,coin,is_long,open_ts,close_ts,"
             "open_px,close_px,size_coin,pnl_usd,fees_usd,close_reason,extras_json) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
@@ -960,7 +960,7 @@ class Trader:
         pnl = gross_pnl - total_fees
         self.conn.execute("UPDATE trades SET status='closed' WHERE cloid=?", (cloid,))
         self.conn.execute(
-            "INSERT INTO closures(cloid,strategy,coin,is_long,open_ts,close_ts,open_px,close_px,size_coin,"
+            "INSERT OR IGNORE INTO closures(cloid,strategy,coin,is_long,open_ts,close_ts,open_px,close_px,size_coin,"
             "pnl_usd,fees_usd,close_reason,extras_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (cloid, strategy, coin, int(is_long), float(trade_row["open_ts"]), ts,
              open_px, close_px, size_coin, pnl, total_fees, reason,

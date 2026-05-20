@@ -86,7 +86,19 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/closures":
             n = int(q.get("limit", "1000"))
             since = float(q.get("since", "0"))
-            rows = CONN.execute("SELECT * FROM closures WHERE close_ts>=? ORDER BY id DESC LIMIT ?", (since, n)).fetchall()
+            strategy_f = q.get("strategy", "")
+            coin_f = q.get("coin", "")
+            sql = "SELECT * FROM closures WHERE close_ts>=?"
+            params = [since]
+            if strategy_f:
+                sql += " AND strategy=?"
+                params.append(strategy_f)
+            if coin_f:
+                sql += " AND coin=?"
+                params.append(coin_f)
+            sql += " ORDER BY id DESC LIMIT ?"
+            params.append(n)
+            rows = CONN.execute(sql, params).fetchall()
             return _json(self, 200, [dict(r) for r in rows])
         if path == "/attribution":
             # Per-engine attribution: n, wr, pf, expectancy, gross_pnl, fees, net_pnl

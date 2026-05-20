@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS closures (
     extras_json     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_closures_strategy_ts ON closures(strategy, close_ts);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_closures_cloid_unique ON closures(cloid);
 
 CREATE TABLE IF NOT EXISTS halts (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -157,6 +158,40 @@ def init_db(db_path: str) -> sqlite3.Connection:
                 raise
     except sqlite3.OperationalError:
         pass  # fresh DB — no trades table yet
+    # Pre-schema migration: dedupe closures.cloid before adding UNIQUE index.
+    # Bug found 2026-05-20: both book_closure_from_fills() (trader.py:530) and
+    # _close() (trader.py:963) can write the same cloid → ~2x dupes corrupting
+    # every per-engine PF/WR calculation. Keep the earliest row (lowest id),
+    # discard later duplicates.
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(closures)").fetchall()}
+        if cols:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                dupes = conn.execute(
+                    "SELECT cloid, COUNT(*) AS n FROM closures "
+                    "GROUP BY cloid HAVING n > 1"
+                ).fetchall()
+                removed = 0
+                for r in dupes:
+                    cur = conn.execute(
+                        "DELETE FROM closures WHERE cloid=? "
+                        "AND id NOT IN (SELECT MIN(id) FROM closures WHERE cloid=?)",
+                        (r["cloid"], r["cloid"]),
+                    )
+                    removed += cur.rowcount or 0
+                conn.execute("COMMIT")
+                if removed:
+                    import logging as _lg
+                    _lg.getLogger(__name__).warning(
+                        "init_db: deduped closures — removed %d duplicate rows across %d cloids",
+                        removed, len(dupes),
+                    )
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
+    except sqlite3.OperationalError:
+        pass
     conn.executescript(SCHEMA)
     # Idempotent column migrations
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(trades)").fetchall()}
