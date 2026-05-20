@@ -107,3 +107,33 @@ def test_tick_first_successful_poll_emits_no_events():
     assert cache.add_hlp_vault_event.call_count == 0
     # Snapshot published for ALL 4 vaults (master, strategy_a, strategy_b, liquidator)
     assert cache.set_hlp_vault_snapshot.call_count == len(P.HLP_VAULTS)
+
+
+def test_tick_empty_vault_baseline_does_not_repeat():
+    """Vault that returns empty positions on every poll establishes baseline
+    on first poll. After that, no events emitted and _has_baseline stays
+    True (no false 'first snapshot' re-trigger). This was a live bug
+    2026-05-21: master and liquidator vaults legitimately have {}
+    positions; the OLD `if not prev:` check returned True forever for
+    empty vaults, re-firing the 'first snapshot' path every 5s.
+    """
+    from unittest.mock import MagicMock
+    cache = MagicMock()
+    poller = P.HlpDecoderPoller(cache)
+    # Initial state: all vaults need a baseline
+    assert not any(poller._has_baseline.values())
+
+    # All 4 vaults return empty positions
+    with patch.object(P, "_fetch_vault_positions", return_value={}):
+        poller._tick()
+    # After one tick, ALL vaults have established baseline
+    assert all(poller._has_baseline.values()), \
+        f"some vaults still need baseline: {poller._has_baseline}"
+
+    # Run two more ticks — no events should fire (vault stays empty)
+    with patch.object(P, "_fetch_vault_positions", return_value={}):
+        poller._tick()
+        poller._tick()
+    assert cache.add_hlp_vault_event.call_count == 0
+    # _has_baseline must NOT have been reset
+    assert all(poller._has_baseline.values())

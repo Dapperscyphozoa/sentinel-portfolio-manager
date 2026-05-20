@@ -186,6 +186,12 @@ class HlpDecoderPoller(threading.Thread):
         self._stop = threading.Event()
         # Per-vault prev snapshot for delta detection
         self._prev_snapshots: dict = {label: {} for label in HLP_VAULTS}
+        # Separate from prev_snapshots so we can distinguish "first poll
+        # never happened" (no baseline) from "first poll returned empty"
+        # (valid baseline, position set is {}). Without this, a vault that
+        # legitimately holds zero positions would re-emit "first snapshot"
+        # messages every tick (the H5 mid-fix had this bug — caught live).
+        self._has_baseline: dict = {label: False for label in HLP_VAULTS}
 
     def stop(self) -> None:
         self._stop.set()
@@ -206,20 +212,20 @@ class HlpDecoderPoller(threading.Thread):
                 # Fetch failed (budget/429/error). Do NOT overwrite the
                 # previous snapshot — would emit false OPEN events for
                 # every existing position on next successful poll
-                # (sentinel H5 — Qwen3 235B 95% CRITICAL, 6/6 voters).
+                # (sentinel H5 — 6/6 voters CRITICAL).
                 continue
-            prev = self._prev_snapshots.get(label, {})
-            # If this is the first successful poll (prev is empty), don't
-            # emit events for every current position — that's the baseline,
-            # not new opens. Only persist the snapshot and let future ticks
-            # detect deltas against it.
-            if not prev:
+            if not self._has_baseline[label]:
+                # First successful poll for this label. Empty or populated,
+                # this IS the baseline — do not emit events for the existing
+                # state, only deltas going forward.
                 self._prev_snapshots[label] = curr
+                self._has_baseline[label] = True
                 self.cache.set_hlp_vault_snapshot(label, curr,
                                                   int(time.time() * 1000))
                 log.info("hlp_decoder: first snapshot for vault=%s (%d positions)",
                          label, len(curr))
                 continue
+            prev = self._prev_snapshots[label]
             events = _detect_events(prev, curr, label)
             for ev in events:
                 log.warning("hlp_decoder: vault=%s kind=%s coin=%s long=%s ntl=$%.0f",
