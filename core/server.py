@@ -336,9 +336,20 @@ class Handler(BaseHTTPRequestHandler):
         equity_val = None
         regime_str = None
         try:
+            # Prefer signal_bus HL account (same source /dash uses) — has live WS value.
+            hl_acct = self._hl_account_full() or {}
+            equity_val = float(hl_acct.get("value") or 0) or None
+        except Exception:
+            pass
+        if equity_val is None:
+            try:
+                pm = self._pm_data() or {}
+                acct = pm.get("account", {}) or {}
+                equity_val = float(acct.get("value") or 0) or None
+            except Exception:
+                pass
+        try:
             pm = self._pm_data() or {}
-            acct = pm.get("account", {}) or {}
-            equity_val = float(acct.get("value") or 0) or None
             regime_obj = pm.get("regime") or {}
             if isinstance(regime_obj, dict):
                 regime_str = regime_obj.get("regime")
