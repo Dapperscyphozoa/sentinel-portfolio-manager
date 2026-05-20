@@ -4,44 +4,54 @@ Unlike hlp_fade (which uses HLP's aggregate NET position via z-score),
 this strategy decodes the BEHAVIOR of each sub-vault separately.
 
 The 4 known HLP sub-vaults (public addresses):
-  master       0xdfc24b07…  net aggregate (info only)
-  strategy_a   0x010461c1…  MM, short bias historically
-  strategy_b   0x31ca8395…  MM, long bias historically
+  master       0xdfc24b07…  net aggregate (always ~0 — A+B+Liq sum to zero)
+  strategy_a   0x010461c1…  paired-book half (one side of MM)
+  strategy_b   0x31ca8395…  paired-book half (other side of MM)
   liquidator   0x2e3d94f0…  takes whale-liq opposite side
 
-SIGNAL HYPOTHESES (each toggleable via env):
+EMPIRICAL FINDING 2026-05-21 (operator verified on live data):
+  Strategy A and Strategy B are NOT independent strategies. They are a
+  SINGLE delta-neutral MM book run as paired accounts. On a snapshot of
+  183 common coins, 171/183 were exactly opposite-direction (e.g. A LONG
+  BTC $2.963M while B SHORT BTC $2.965M; ETH A +$2.002M / B -$2.003M).
+  0 of 183 coins showed same-direction holding > $50k each.
 
-  H-LIQ (most informative, default-on):
-    The Liquidator opens a NEW position > $1M notional. This means a major
-    whale just got force-closed. Liquidations cluster — fire trades in the
-    SAME direction as the Liquidator (joining the post-cascade momentum).
+  This kills H-CONSENSUS as originally defined — they're DESIGNED never
+  to agree. Default-off via env. The replacement is H-PAIR-SIZE: monitor
+  abnormal growth in their PAIRED book size on a coin (size of |A| + |B|
+  on a single coin = HLP's TOTAL EXPOSURE to that coin's flow).
+
+SIGNAL HYPOTHESES:
+
+  H-LIQ (default-on, only structurally-valid hypothesis at present):
+    The Liquidator opens a NEW position > $1M notional. A major whale
+    just got force-closed. Liquidations cluster — fire trades in the
+    SAME direction as the Liquidator.
     Env: HLP_DECODER_H_LIQ_ENABLED=1
          HLP_DECODER_H_LIQ_MIN_USD=1000000
 
-  H-CONSENSUS (medium-frequency, default-on):
-    Strategy A AND Strategy B BOTH shift in the same direction within a
-    short window (default 5min). MMs normally hedge each other — same-
-    direction shifts mean both detected directional flow worth exposure.
-    Trade WITH their consensus direction.
-    Env: HLP_DECODER_H_CONSENSUS_ENABLED=1
-         HLP_DECODER_H_CONSENSUS_WINDOW_MS=300000
+  H-CONSENSUS (DEPRECATED — keeping for empirical verification only):
+    Would have fired if Strategy A and B both shift same direction within
+    a window. Empirical: never happens. Default OFF.
+    Env: HLP_DECODER_H_CONSENSUS_ENABLED=0 (was 1 pre-empirical)
 
-  H-FADE-MM (low-frequency, default-off):
-    Strategy A or B's position notional > 80th percentile of its 7d
-    distribution → MM is loaded; fade their direction. EXPERIMENTAL —
-    requires per-vault history before enabling.
+  H-PAIR-SIZE (paper-only, new — replacement for H-CONSENSUS):
+    HLP's TOTAL exposure to a coin = |strategy_a notional| + |strategy_b
+    notional|. When this grows abnormally large in a short window, retail
+    flow on that coin is intense — fade the flow direction (which is the
+    OPPOSITE of HLP's net inventory drift in either Strategy A or B).
+    Requires per-coin history before reliable; cap_frac=0 paper-only.
+    Env: HLP_DECODER_H_PAIR_SIZE_ENABLED=0 (paper)
+
+  H-FADE-MM (deferred):
+    Conceptually similar to H-PAIR-SIZE but operates on net inventory
+    drift between A and B. Kept here for later research; default-off.
     Env: HLP_DECODER_H_FADE_MM_ENABLED=0
 
-EXIT RULES (uniform across all three signal kinds):
-  SL: -8% spot (close to HLP_FADE_SL_PCT but slightly tighter since these
-       are higher-conviction signals)
-  TP: +4% spot (faster targets — cascade-momentum doesn't sustain long)
-  Max hold: 12h
-
-UNIVERSE: same liquid universe as hl_settle_5m so we have execution depth.
+EXIT RULES:
+  SL: -8% spot, TP: +4%, Max hold: 12h.
 
 PROMOTION PATH: cap_frac=0 paper-only until n>=20 trades with PF>=1.5.
-After paper validation, operator promotes via registry edit.
 """
 from __future__ import annotations
 
@@ -55,7 +65,9 @@ from ._base import Signal, StrategyBase
 HD_LOOKBACK_MS = int(os.environ.get("HLP_DECODER_LOOKBACK_MS", "120000"))   # 2 min
 HD_H_LIQ_ENABLED = os.environ.get("HLP_DECODER_H_LIQ_ENABLED", "1") == "1"
 HD_H_LIQ_MIN_USD = float(os.environ.get("HLP_DECODER_H_LIQ_MIN_USD", "1000000"))
-HD_H_CONSENSUS_ENABLED = os.environ.get("HLP_DECODER_H_CONSENSUS_ENABLED", "1") == "1"
+# H-CONSENSUS deprecated — A/B are designed delta-neutral, never agree on direction.
+# Default OFF (was ON). Kept enabled only if operator overrides for research.
+HD_H_CONSENSUS_ENABLED = os.environ.get("HLP_DECODER_H_CONSENSUS_ENABLED", "0") == "1"
 HD_H_CONSENSUS_WINDOW_MS = int(os.environ.get("HLP_DECODER_H_CONSENSUS_WINDOW_MS", "300000"))
 HD_H_FADE_MM_ENABLED = os.environ.get("HLP_DECODER_H_FADE_MM_ENABLED", "0") == "1"
 HD_SL_PCT = float(os.environ.get("HLP_DECODER_SL_PCT", "0.08"))
