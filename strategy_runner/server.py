@@ -96,13 +96,22 @@ class Handler(BaseHTTPRequestHandler):
             # operator-driven or bug-recovery (force_close*, backfill,
             # reconciled_off_book, force_closed_unverified). Use this flag
             # for any promotion/demotion decision; raw view is for audit.
+            #
+            # ?include_archived=1 → include engines listed in
+            # common.closures.ARCHIVED_ENGINES. Default excludes them so the
+            # dashboard attribution panel doesn't keep surfacing dead engines
+            # whose historical closures still sit in the table.
             since = float(q.get("since", "0"))
             clean_only = q.get("clean_only", "").lower() in ("1", "true", "yes")
+            include_archived = q.get("include_archived", "").lower() in ("1", "true", "yes")
+            from common.closures import is_archived_engine
             rows = CONN.execute(
                 "SELECT strategy, coin, pnl_usd, fees_usd, close_reason, "
                 "(close_ts - open_ts) AS hold_s "
                 "FROM closures WHERE close_ts>=?", (since,)
             ).fetchall()
+            if not include_archived:
+                rows = [r for r in rows if not is_archived_engine(r["strategy"])]
             if clean_only:
                 from common.closures import is_clean_closure
                 rows = [r for r in rows if is_clean_closure(r["close_reason"])]

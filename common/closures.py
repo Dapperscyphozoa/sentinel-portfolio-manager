@@ -32,6 +32,21 @@ NOISY_EXACT: frozenset[str] = frozenset({
 })
 
 
+# Engines fully retired — file archived from strategies/, registry entry removed.
+# Historical closures persist in the closures table but must NOT surface in
+# dashboard attribution panels, promotion gates, or any live decision logic.
+# Add to this set the moment an engine is decommissioned; never re-add a
+# resurrected engine here (resurrection ⇒ new closures stream, no need to hide).
+ARCHIVED_ENGINES: frozenset[str] = frozenset({
+    "e08_dip3d7_td_4h",             # archived 2026-05-18 (8 force-closed losses, 0 clean exits)
+})
+
+
+def is_archived_engine(name: str | None) -> bool:
+    """True if engine is in the archived set — exclude from dashboard/attribution."""
+    return bool(name) and name in ARCHIVED_ENGINES
+
+
 def is_clean_closure(close_reason: str | None) -> bool:
     """Return True if the closure represents a strategy-driven exit.
 

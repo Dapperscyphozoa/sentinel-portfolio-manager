@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from common.closures import is_clean_closure, clean_metrics, NOISY_PREFIXES, NOISY_EXACT
+from common.closures import is_clean_closure, clean_metrics, NOISY_PREFIXES, NOISY_EXACT, is_archived_engine, ARCHIVED_ENGINES
 
 
 # ─── is_clean_closure ─────────────────────────────────────────────────────
@@ -152,3 +152,22 @@ def test_noisy_prefixes_have_expected_values():
 def test_noisy_exact_includes_backfill():
     assert "backfill" in NOISY_EXACT
     assert "reconciled_off_book" in NOISY_EXACT
+
+
+# ─── is_archived_engine ───────────────────────────────────────────────────
+def test_archived_engine_recognised():
+    assert is_archived_engine("e08_dip3d7_td_4h")
+
+def test_live_engines_not_archived():
+    for e in ("hl_settle_5m", "fmom", "uzt_rev", "ict_confluence_4h", "hlp_fade"):
+        assert not is_archived_engine(e), f"{e!r} should NOT be archived"
+
+def test_archived_engine_none_safe():
+    assert not is_archived_engine(None)
+    assert not is_archived_engine("")
+
+def test_archived_set_is_frozen():
+    """ARCHIVED_ENGINES must be immutable — bugs that 'add' to it at runtime
+    would corrupt every other process's view."""
+    with pytest.raises(AttributeError):
+        ARCHIVED_ENGINES.add("some_engine")  # type: ignore[attr-defined]
