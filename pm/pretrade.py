@@ -153,7 +153,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
     # (commit 6c77c8a). Registry entry retained at cap_frac 0.10 by oversight.
     # Removed entirely per SPEC v2.1 §3.10 / Phase 15. Cap_frac sum drops 1.05→0.95
     # which remains inside the ±0.06 invariant tolerance — no redistribution needed.
-    # ─── REVIVED 2026-05-20: e08_dip3d7_td_4h_INV (paper-only on revival) ───
+    # ─── REVIVED 2026-05-20: e08_dip3d7_td_4h_INV (LIVE at $25 notional) ───
     # Original (LONG) was archived 2026-05-19 after -$6.81 bleed.
     # Honest re-test 2026-05-20 (365d × 60 OKX symbols):
     #   - LONG side: 0/252 combos pass OOS PF≥1.0 (confirmed dead)
@@ -162,9 +162,13 @@ ENGINE_REGISTRY: dict[str, dict] = {
     # Thesis: dip in TREND_DOWN = continuation, not exhaustion. Same family
     # of error as lh1 (SPEC §3.5). Ship config drop=0.07 hold=8 sl=tp=0.10,
     # 7-coin universe (ARB GALA INJ OP ORDI PYTH WIF).
-    # Cap_frac 0.00 = paper-only via STRATEGY_E08_DIP3D7_TD_4H_INV_LIVE=0.
-    # Promote to cap_frac 0.03 after n≥20 paper closures with live PF ≥ 1.5.
-    "e08_dip3d7_td_4h_inv": {"affinity": ["trend_down"], "bt_pf": 2.88, "cap_frac": 0.00},
+    # Operator-promoted to LIVE 2026-05-20 at $25 notional per trade:
+    #   size_mult 0.2 → margin 0.05*$491*0.2 ≈ $4.91 → notional $24.55
+    #   cap_frac 0.02 → engine budget ~$9.82 margin → up to 2 concurrent positions
+    # Funded by trimming hl_settle_5m 0.18→0.16 (lowest-cost trim — keeps
+    # its 0.16 = ~$78 budget, still the largest single allocation).
+    "e08_dip3d7_td_4h_inv": {"affinity": ["trend_down"], "bt_pf": 2.88,
+                              "cap_frac": 0.02, "size_mult": 0.2},
     "e17_bb_fade_bt_4h":   {"affinity": ["high_vol", "range"],      "bt_pf":  0.86, "cap_frac": 0.00},
     "donchian":            {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.01, "cap_frac": 0.00},
     "cex_dex_arb":  {"affinity": ["range", "chop"],                  "bt_pf": 0.00, "cap_frac": 0.00},
@@ -178,7 +182,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "fmom":                {"affinity": ["trend_up", "trend_down", "range", "chop"],
                              "bt_pf": 1.75, "cap_frac": 0.00},
     "hl_settle_5m":        {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 1.85, "cap_frac": 0.18},
+                             "bt_pf": 1.85, "cap_frac": 0.16},   # trimmed 0.18→0.16 to fund e08_inv (2026-05-20)
     # Stage 1 NEW ENGINE — paper-only pending honest backtest gate (council priority)
     "hl_cvd_aggressor": {
         "class": "cvd_aggressor_flow",
@@ -455,9 +459,17 @@ def _check_impl(conn, strategy: str, signal: dict, regime: dict,
     # cap_frac is enforced as a per-ENGINE concentration cap below, not
     # as a per-trade multiplier. Each trade is sized identically; cap_frac
     # limits how many concurrent positions an engine can hold.
+    #
+    # Per-engine size_mult override: ENGINE_REGISTRY entry may declare a
+    # size_mult to shrink/grow trades for a specific engine without changing
+    # the global MARGIN_PCT_PER_TRADE. Used for promotion experiments where
+    # a freshly-revived engine ships at smaller notional (e.g. e08_inv at
+    # size_mult=0.2 → ~$25 notional vs default ~$125). Combined multiplicatively
+    # with the regime-affinity half-size rule above.
     leverage = _f("LEVERAGE", 5.0)
     margin_pct = _f("MARGIN_PCT_PER_TRADE", 0.05)
-    margin_usd = margin_pct * account_value_usd * size_mult
+    engine_size_mult = float(eng_cfg.get("size_mult", 1.0))
+    margin_usd = margin_pct * account_value_usd * size_mult * engine_size_mult
 
     # 6a) Per-engine concentration cap (spec §7.1: capital_fraction).
     # Spec ends with "Sum: 1.00 (allocate every dollar)" — cap_frac is the

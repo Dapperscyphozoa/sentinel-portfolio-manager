@@ -58,7 +58,14 @@ SIDE      = SHORT    # the inversion
 REGIME    = TREND_DOWN
 ```
 
-## Lifecycle
+## Lifecycle (UPDATED 2026-05-20)
+
+- **Status: LIVE** at $25 notional per trade (operator directive)
+- size_mult = 0.2 (override default $122.75 notional → $24.55)
+- cap_frac = 0.02 (room for 2 concurrent positions × $4.91 margin each)
+- Funded by trimming hl_settle_5m 0.18 → 0.16
+
+### Original (paper-first) plan
 
 - Stage: PAPER (cap_frac 0.00, STRATEGY_E08_DIP3D7_TD_4H_INV_LIVE=0)
 - Promotion gate: n≥20 paper closures + live PF ≥ 1.5 → cap_frac 0.03
