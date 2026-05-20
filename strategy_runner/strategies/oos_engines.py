@@ -336,10 +336,18 @@ class E17_bb_fade_BT_1d(StrategyBase):
     CLOID_PREFIX = "e17_"
     AFFINITY = ["high_vol", "range"]
     TF = "1d"
-    UNIVERSE = DEFAULT_UNIVERSE
+    # Curated universe (2026-05-20 sweep): full 47-coin DEFAULT had OOS PF 1.12
+    # over 360d. Pruning to coins with backtest PF >= 1.3 (n >= 3) yields
+    # OOS PF 1.71 across 147 OOS trades. Dropped 24 bleeders (BCH, CAKE, DOT,
+    # BNB, FIL, OP, PENDLE, ATOM, TIA, NEO, TON, etc).
+    UNIVERSE = [
+        "COMP", "GMX", "PYTH", "AVAX", "APT", "JUP", "BTC", "ORDI", "AAVE",
+        "LINK", "WIF", "SOL", "WLD", "INJ", "ADA", "CRV", "LTC", "NEAR",
+        "LDO", "UNI", "MEME", "SEI", "ETH",
+    ]
     _BB_PERIOD = 20
     _BB_STD = 2.0
-    _HOLD_BARS = 3
+    _HOLD_BARS = 5  # was 3; 360d sweep showed h=5 robust across all BB params
 
     @classmethod
     def evaluate(cls, coin: str, bus) -> Optional[Signal]:
