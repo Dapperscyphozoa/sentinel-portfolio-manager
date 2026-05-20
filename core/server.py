@@ -319,13 +319,36 @@ class Handler(BaseHTTPRequestHandler):
         }
 
     def _health_for_landing(self) -> dict:
-        """Health shape that landing expects: btc_macro, webhook_security, engine_auto_pause."""
+        """Health shape that landing expects: btc_macro, webhook_security, engine_auto_pause.
+
+        Also exposes equity, regime, commit_live — the dashboard footer reads
+        these here. Without them the strip rendered "equity —" / "regime ?" /
+        "commit —" while /dash had the live values, which is what looked like
+        the dashboard "losing data" intermittently."""
         base = _aggregate_health()
         sr = self._strategy_state()
         engines = sr.get("registry", []) or []
         # CUT engines list — these should show as paused
         cut = {"vsq", "range_fade", "range_bo", "lh1", "fd1", "cex_dex_arb", "precog"}
         eap = {"engines": {e["name"]: {"paused": e["name"] in cut} for e in engines}}
+        # Live equity + regime — these are cheap (already cached via _pm_data) and
+        # belong on /health so any client polling only /health can render the strip.
+        equity_val = None
+        regime_str = None
+        try:
+            pm = self._pm_data() or {}
+            acct = pm.get("account", {}) or {}
+            equity_val = float(acct.get("value") or 0) or None
+            regime_obj = pm.get("regime") or {}
+            if isinstance(regime_obj, dict):
+                regime_str = regime_obj.get("regime")
+            elif isinstance(regime_obj, str):
+                regime_str = regime_obj
+        except Exception:
+            pass
+        # commit_live: read the deployed SHA exactly once at module import time
+        # (RENDER_GIT_COMMIT is set automatically by Render on every deploy).
+        commit_live = os.environ.get("RENDER_GIT_COMMIT", "")[:7] or None
         return {
             "ok": base.get("core") == "ok",
             "ts": int(time.time() * 1000),
@@ -334,6 +357,9 @@ class Handler(BaseHTTPRequestHandler):
             "btc_macro": self._btc_macro(),
             "webhook_security": {"ok": True, "scheme": "X-PM-Auth", "enabled": True},
             "engine_auto_pause": eap,
+            "equity": equity_val,
+            "regime": regime_str,
+            "commit_live": commit_live,
         }
 
     def _serve_dash(self) -> None:

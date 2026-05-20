@@ -2231,8 +2231,16 @@ async function loadSystems() {
 
 async function loadMacroStrip() {
     try {
-        const r = await fetch('/health');
-        const d = await r.json();
+        // Fetch /health AND /dash in parallel — neither alone has every footer field.
+        // /health: btc_macro, webhook_security, engine_auto_pause, commit_live (when wired)
+        // /dash:   equity, regime (live values that change every poll)
+        // Without the merge, footer renders "equity —" and "regime ?" because the
+        // values just aren't in /health. This was the "data drops out" complaint.
+        const [hr, dr] = await Promise.all([
+            fetch('/health', { cache: 'no-store' }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+            fetch('/dash',   { cache: 'no-store' }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+        ]);
+        const d = hr || {};
         const bm = d.btc_macro || {};
         const ws = d.webhook_security || {};
         const ap = d.engine_auto_pause || {};
@@ -2257,12 +2265,27 @@ async function loadMacroStrip() {
         const pausedBit = pausedList.length > 0
             ? `<span style="color:#f88">paused: ${pausedList.join(',')}</span>`
             : '<span style="opacity:0.6">no_paused</span>';
-        const commit = d.commit_live || '—';
-        const eq = d.equity ? `$${Number(d.equity).toFixed(2)}` : '—';
+        // Commit: prefer health, fall back to dash.commit. Both may surface it.
+        const commit = d.commit_live || d.commit || dr.commit || '—';
+        // Equity from /dash (always live there); fall back to /health if it ever has it
+        const eqVal = (dr.equity != null) ? dr.equity : d.equity;
+        const eq = (eqVal != null) ? `$${Number(eqVal).toFixed(2)}` : '—';
+        // Regime: /dash.regime is an object on this build ({} when unknown).
+        // /dash.risk_ladder.regime is the resolved string ('unknown', 'trend_up', ...).
+        const regimeStr = (typeof dr.regime === 'string' && dr.regime)
+                          ? dr.regime
+                          : (dr.risk_ladder && dr.risk_ladder.regime)
+                          ? dr.risk_ladder.regime
+                          : (d.regime || '?');
         document.getElementById('macro-strip').innerHTML =
-            `// equity ${eq} · regime <span style="color:var(--cyan)">${d.regime||'?'}</span> · BTC ${btcMid} · ${macroBits.join(' · ')} · ${pausedBit} · ${wsBit} · commit <span style="opacity:0.7">${commit}</span>`;
+            `// equity ${eq} · regime <span style="color:var(--cyan)">${regimeStr}</span> · BTC ${btcMid} · ${macroBits.join(' · ')} · ${pausedBit} · ${wsBit} · commit <span style="opacity:0.7">${commit}</span>`;
     } catch(e) {
-        document.getElementById('macro-strip').innerHTML = '// macro: fetch failed';
+        // Keep last good footer instead of overwriting with error text — addresses
+        // the "data drops out" complaint where transient errors blanked the strip.
+        const el = document.getElementById('macro-strip');
+        if (el && (el.innerHTML.includes('fetch failed') || !el.innerHTML.trim())) {
+            el.innerHTML = '// macro: fetch failed';
+        }
     }
 }
 
@@ -2929,8 +2952,13 @@ async function loadLivePositions() {
     const trs = rows.map(p => {
       const u = Number(p.upnl) || 0; totalUpnl += u;
       const cls = u > 0 ? 'pos' : u < 0 ? 'neg' : '';
-      const side = (p.side || '').toUpperCase();
-      const sLab = side === 'L' ? 'LONG' : side === 'S' ? 'SHORT' : '?';
+      // /dash sends side as full word "LONG"/"SHORT"; legacy paths sent "L"/"S".
+      // Accept either form so the badge doesn't render "?" on real positions.
+      const sideRaw = (p.side || '').toUpperCase();
+      const isLong = sideRaw === 'LONG' || sideRaw === 'L' || sideRaw === 'B';
+      const isShort = sideRaw === 'SHORT' || sideRaw === 'S' || sideRaw === 'A';
+      const side = isLong ? 'LONG' : isShort ? 'SHORT' : '';
+      const sLab = side || '?';
       return '<tr>'
         + '<td class="lpos-coin">' + (p.coin || '—') + '</td>'
         + '<td><span class="lpos-side ' + side + '">' + sLab + '</span></td>'
