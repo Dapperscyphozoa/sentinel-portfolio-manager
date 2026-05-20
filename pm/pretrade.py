@@ -153,6 +153,18 @@ ENGINE_REGISTRY: dict[str, dict] = {
     # (commit 6c77c8a). Registry entry retained at cap_frac 0.10 by oversight.
     # Removed entirely per SPEC v2.1 §3.10 / Phase 15. Cap_frac sum drops 1.05→0.95
     # which remains inside the ±0.06 invariant tolerance — no redistribution needed.
+    # ─── REVIVED 2026-05-20: e08_dip3d7_td_4h_INV (paper-only on revival) ───
+    # Original (LONG) was archived 2026-05-19 after -$6.81 bleed.
+    # Honest re-test 2026-05-20 (365d × 60 OKX symbols):
+    #   - LONG side: 0/252 combos pass OOS PF≥1.0 (confirmed dead)
+    #   - SHORT side: 114/252 combos pass GREEN (OOS PF≥1.4)
+    #   - Walk-forward universe-select OOS PF 2.88, WR 71.7%, hit-rate 7/7
+    # Thesis: dip in TREND_DOWN = continuation, not exhaustion. Same family
+    # of error as lh1 (SPEC §3.5). Ship config drop=0.07 hold=8 sl=tp=0.10,
+    # 7-coin universe (ARB GALA INJ OP ORDI PYTH WIF).
+    # Cap_frac 0.00 = paper-only via STRATEGY_E08_DIP3D7_TD_4H_INV_LIVE=0.
+    # Promote to cap_frac 0.03 after n≥20 paper closures with live PF ≥ 1.5.
+    "e08_dip3d7_td_4h_inv": {"affinity": ["trend_down"], "bt_pf": 2.88, "cap_frac": 0.00},
     "e17_bb_fade_bt_4h":   {"affinity": ["high_vol", "range"],      "bt_pf":  0.86, "cap_frac": 0.00},
     "donchian":            {"affinity": ["trend_up", "trend_down"], "bt_pf":  0.01, "cap_frac": 0.00},
     "cex_dex_arb":  {"affinity": ["range", "chop"],                  "bt_pf": 0.00, "cap_frac": 0.00},

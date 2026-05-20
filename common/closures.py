@@ -37,8 +37,12 @@ NOISY_EXACT: frozenset[str] = frozenset({
 # dashboard attribution panels, promotion gates, or any live decision logic.
 # Add to this set the moment an engine is decommissioned; never re-add a
 # resurrected engine here (resurrection ⇒ new closures stream, no need to hide).
+#
+# Note: e08_dip3d7_td_4h (LONG) remains archived. The revived inverted
+# variant is e08_dip3d7_td_4h_INV — different engine name, different closures
+# stream, so it appears in the dashboard normally without unarchiving the dead.
 ARCHIVED_ENGINES: frozenset[str] = frozenset({
-    "e08_dip3d7_td_4h",             # archived 2026-05-18 (8 force-closed losses, 0 clean exits)
+    "e08_dip3d7_td_4h",             # LONG variant — archived 2026-05-18, replaced by *_inv (2026-05-20)
 })
 
 

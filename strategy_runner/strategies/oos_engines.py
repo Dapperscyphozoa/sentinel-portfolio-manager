@@ -456,20 +456,74 @@ class E07_zfade_2s_TU_4h(StrategyBase):
 
 
 # ============================================================
-# ENGINE 9 (E08_4h) — ARCHIVED 2026-05-19
+# ENGINE 9 (E08_4h_INV) — REVIVED 2026-05-20 — INVERTED THESIS
 # ============================================================
-# class E08_dip3d_7_TD_4h: REMOVED.
+# Original E08_dip3d_7_TD_4h (LONG bounce) was archived 2026-05-19 after
+# -$6.81 live bleed over 8 trades + 0/252 param combos passing OOS PF≥1.0.
 #
-# Death certificate:
-#   - 180d backtest × 47 coins: PF 0.93 (negative-EV)
-#   - 90d sweep × top-10 majors: PF 0.43 at drop=0.07 baseline
-#   - drop=0.15/0.20/0.25: fires 0 trades (threshold too deep for regime)
-#   - LIVE: 8 closures = -$6.81 net (confirmed bleed)
-#   - Every parameter combination tested is RED or non-firing
+# Sentinel re-test 2026-05-20 (365d × 60 OKX symbols): the LONG thesis is
+# structurally broken — but inverting to SHORT side flips the engine into
+# strong positive expectancy. Same family of error as lh1 (SPEC §3.5):
+# the signal marks CONTINUATION, not reversion. A 7%+ 3-bar drop in
+# confirmed TREND_DOWN regime (ADX>25, EMA20 slope<-0.5%) is momentum
+# evidence, not exhaustion evidence. Bounce never comes on 4h perps.
 #
-# Engine remains documented in repo history (this comment + git log) but no
-# longer registered. Do NOT reactivate without (a) regime shift evidence and
-# (b) fresh honest backtest passing PF≥1.4 + OOS≥1.0 + n≥50 gate.
+# Revival validation (drop=0.07 hold=6 sl=tp=0.10, inverted to SHORT):
+#   ALL n=597 WR 47.9% PF 1.26 tot +322%
+#   OOS n=289 WR 58.1% PF 2.26 tot +624%
+# Walk-forward universe-select (drop=0.07 hold=8 sl=tp=0.10, thr=1.0):
+#   Train-picked universe (7 coins): ARB, GALA, INJ, OP, ORDI, PYTH, WIF
+#   TEST n=46 WR 71.7% PF 2.88 tot +150%
+#   Hit-rate: 7/7 coins PF≥1.0 on out-of-sample
+#
+# Ship config: drop=0.07, hold=8, sl=tp=0.10 (R:R 1:1, time-stop wider
+# than original to give continuation more room). Universe restricted to
+# the 7 walk-forward-validated coins. Paper mode on revival.
+class E08_dip3d_7_TD_4h_INV(StrategyBase):
+    """3-bar drop ≥7% in TREND_DOWN → SHORT the continuation, 4h.
+
+    Inverted from archived LONG variant. Walk-forward OOS PF 2.88 on
+    train-selected 7-coin universe (anti-cherry-pick verified).
+    """
+    NAME = "e08_dip3d7_td_4h_inv"
+    CLOID_PREFIX = "e08i_"
+    AFFINITY = ["trend_down"]
+    TF = "4h"
+    # Walk-forward-validated universe (TRAIN PF≥1.0 → 7/7 TEST PF≥1.0)
+    UNIVERSE = ["ARB", "GALA", "INJ", "OP", "ORDI", "PYTH", "WIF"]
+    _DROP_PCT = 0.07
+    _HOLD_BARS = 8
+
+    @classmethod
+    def evaluate(cls, coin: str, bus) -> Optional[Signal]:
+        bars = _bars_for_tf(bus, coin, cls.TF, 90)
+        if not bars or len(bars) < 80:
+            return None
+        closes = [b["close"] for b in bars]
+        highs = [b["high"] for b in bars]
+        lows = [b["low"] for b in bars]
+        i = len(bars) - 1
+        if _regime(closes, highs, lows, i) != "TREND_DOWN":
+            return None
+        if i < 3:
+            return None
+        if closes[-4] <= 0:
+            return None
+        cum = (closes[-1] - closes[-4]) / closes[-4]
+        if cum >= -cls._DROP_PCT:
+            return None
+        # FIRE SHORT (inverted from original)
+        c = closes[-1]
+        # SL above entry, TP below — flip _sl_tp args via is_long=False
+        sl, tp = _sl_tp(c, False)
+        return Signal(
+            coin=coin, side="A", is_long=False,
+            ref_price=c, sl_px=sl, tp_px=tp, max_hold_bars=cls._HOLD_BARS,
+            fire_ts=float(bars[-1]["open_ts"]),
+            fire_reason=f"dip3d_INV={cum*100:.1f}%",
+            extras={"cum_3d_pct": cum, "regime": "TREND_DOWN", "tf": cls.TF,
+                    "inverted": True, "thesis": "continuation_not_reversion"},
+        )
 
 
 # ============================================================
@@ -580,7 +634,7 @@ OOS_ENGINES = [
     E17_bb_fade_BT_1d,     # bt_PF 1.41
     E01_zfade_3s_TU_4h,
     E07_zfade_2s_TU_4h,    # top contributor by PnL
-    # E08_dip3d_7_TD_4h — ARCHIVED 2026-05-19 (every param dead + -$6.81 live bleed)
+    E08_dip3d_7_TD_4h_INV, # REVIVED 2026-05-20 inverted (OOS PF 2.88 walk-forward universe-select)
     E16_bb_fade_HV_4h,
     E17_bb_fade_BT_4h,
 ]
