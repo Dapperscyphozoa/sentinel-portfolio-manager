@@ -151,3 +151,79 @@ services:
     value: /var/data
   - key: HTTP_PORT
     value: '10000'
+
+# ────────────────────────── POLY STACK (Render) ──────────────────────────
+# Only the governance services run on Render. The latency-sensitive
+# poly-signal-bus, poly-runner, and poly-signer run on AWS us-east-1
+# (see aws-userdata.sh). Render deploys MUST NOT include the bus/runner/
+# signer — they would lose to the latency pack.
+
+- type: web
+  name: poly-pm
+  runtime: python
+  region: oregon
+  plan: starter
+  branch: sentinel-poly
+  buildCommand: pip install -r requirements.txt
+  startCommand: python -m poly_pm.server
+  healthCheckPath: /health
+  disk:
+    name: poly-data
+    mountPath: /var/data
+    sizeGB: 1
+  envVars:
+  - key: STATE_DIR
+    value: /var/data
+  - key: HTTP_PORT
+    value: '10102'
+  - key: POLY_LIVE
+    value: '0'                   # gate: must be 0 until validation gate passes
+  - key: POLY_BUS_URL
+    sync: false                  # e.g. http://<aws-vm-public-ip>:10100
+  - key: POLY_RUNNER_URL
+    sync: false                  # e.g. http://<aws-vm-public-ip>:10101
+  - key: HALT_TOKEN
+    sync: false
+  - key: CL_PRED_STAGE
+    value: paper
+  - key: EG_STAGE
+    value: paper
+  - key: MM_STAGE
+    value: paper
+  - key: XA_STAGE
+    value: paper
+  - key: RE_STAGE
+    value: canary
+
+- type: web
+  name: poly-monitor
+  runtime: python
+  region: oregon
+  plan: starter
+  branch: sentinel-poly
+  buildCommand: pip install -r requirements.txt
+  startCommand: python -m poly_monitor.server
+  healthCheckPath: /health
+  disk:
+    name: poly-data
+    mountPath: /var/data
+    sizeGB: 1
+  envVars:
+  - key: STATE_DIR
+    value: /var/data
+  - key: HTTP_PORT
+    value: '10103'
+  - key: POLY_BUS_URL
+    sync: false
+  - key: POLY_RUNNER_URL
+    sync: false
+  - key: HALT_TOKEN
+    sync: false
+  - key: DRAWDOWN_HALT_PCT
+    value: '0.25'
+  - key: CL_HEALTH_MEDIAN_BPS_MAX
+    value: '10'
+  - key: CL_HEALTH_P95_BPS_MAX
+    value: '25'
+  - key: MM_MAX_INVENTORY_USD
+    value: '100'

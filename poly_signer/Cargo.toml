@@ -1,0 +1,32 @@
+[package]
+name = "poly-signer"
+version = "0.1.0"
+edition = "2021"
+description = "Polymarket CTF Exchange EIP-712 order signer (Unix-socket IPC microservice)"
+license = "Proprietary"
+
+[dependencies]
+ethers = { version = "2.0", features = ["eip712", "abigen", "rustls"] }
+ethers-derive-eip712 = "1.0"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+hex = "0.4"
+rand = "0.8"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = 3
+
+[[bin]]
+name = "poly-signer"
+path = "src/main.rs"
