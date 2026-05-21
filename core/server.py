@@ -49,12 +49,32 @@ PM_PORT         = 10003
 MONITOR_PORT    = 10004
 PUBLIC_PORT     = int(os.environ.get("HTTP_PORT", "10000"))
 
-# Wire inter-service URLs to localhost BEFORE importing subsystems
-os.environ["SIGNAL_BUS_URL"] = f"http://localhost:{SIGNAL_BUS_PORT}"
+# ─────────────────── External bus support (2026-05-21) ───────────────────
+# When EXTERNAL_BUS_URL is set, skip the in-process signal_bus subsystem and
+# route all bus calls to the external service URL instead. This isolates the
+# bus's heavy boot tasks (cold_load + OKX REST backfill + 4× WS handshakes)
+# into a separate Render service, so they can't starve core's public HTTP
+# listener via GIL/CPU contention during deploys.
+#
+# Operator architectural change: original SPEC.md §2.1 called for 4 separate
+# services; consolidated to one core for simplicity; bus subsystem turned out
+# to be heavy enough that consolidation caused 502 cycling on every deploy.
+# Splitting bus back out restores the original design partially.
+_EXT_BUS = os.environ.get("EXTERNAL_BUS_URL", "").strip().rstrip("/")
+EXTERNAL_BUS = bool(_EXT_BUS)
+SIGNAL_BUS_BASE = _EXT_BUS if EXTERNAL_BUS else f"http://localhost:{SIGNAL_BUS_PORT}"
+
+# Wire inter-service URLs BEFORE importing subsystems. SIGNAL_BUS_URL is read
+# by common/bus_client.py — point it at the right base (localhost or external).
+os.environ["SIGNAL_BUS_URL"] = SIGNAL_BUS_BASE
 os.environ["PM_URL"]         = f"http://localhost:{PM_PORT}"
 
 
 def _start_signal_bus():
+    # Skip entirely if external bus is configured — nothing to spawn locally.
+    if EXTERNAL_BUS:
+        log.info("EXTERNAL_BUS_URL=%s — skipping in-process signal_bus", SIGNAL_BUS_BASE)
+        return
     os.environ["HTTP_PORT"] = str(SIGNAL_BUS_PORT)
     try:
         from signal_bus import server as sb_server
@@ -116,11 +136,14 @@ def _wait_for_port_bind(port: int, timeout: float = 30.0) -> bool:
 
 
 # ─────────────────── Public proxy / aggregator ───────────────────
+# Map of (path prefix) → (base URL, strip prefix). Base URL can be either
+# localhost:PORT (default) or an external HTTPS URL (when EXTERNAL_BUS_URL is
+# set for the bus). _proxy() handles both transparently.
 _PROXY_MAP = {
-    "/signal_bus": (SIGNAL_BUS_PORT, "/signal_bus"),
-    "/strategy":   (STRATEGY_PORT,   "/strategy"),
-    "/pm":         (PM_PORT,         "/pm"),
-    "/monitor":    (MONITOR_PORT,    "/monitor"),
+    "/signal_bus": (SIGNAL_BUS_BASE,                       "/signal_bus"),
+    "/strategy":   (f"http://localhost:{STRATEGY_PORT}",   "/strategy"),
+    "/pm":         (f"http://localhost:{PM_PORT}",         "/pm"),
+    "/monitor":    (f"http://localhost:{MONITOR_PORT}",    "/monitor"),
 }
 
 _HEALTH_CACHE: dict = {"ts": 0, "data": None}
@@ -157,16 +180,20 @@ def _aggregate_health() -> dict:
     if _HEALTH_CACHE["data"] and now - _HEALTH_CACHE["ts"] < _HEALTH_TTL_S:
         return _HEALTH_CACHE["data"]
     out: dict = {"core": "ok", "ts": int(now * 1000), "subsystems": {}}
+    # When external bus is configured, target its URL directly; otherwise localhost.
     targets = [
-        ("signal_bus", SIGNAL_BUS_PORT),
-        ("strategy_runner", STRATEGY_PORT),
-        ("pm", PM_PORT),
-        ("monitor", MONITOR_PORT),
+        ("signal_bus", SIGNAL_BUS_BASE),
+        ("strategy_runner", f"http://localhost:{STRATEGY_PORT}"),
+        ("pm", f"http://localhost:{PM_PORT}"),
+        ("monitor", f"http://localhost:{MONITOR_PORT}"),
     ]
-    with httpx.Client(timeout=5.0) as cli:
-        for name, port in targets:
+    # External bus hits over network — bump timeout from 5s → 10s for that one
+    bus_timeout = 10.0 if EXTERNAL_BUS else 5.0
+    with httpx.Client() as cli:
+        for name, base in targets:
+            t = bus_timeout if name == "signal_bus" else 5.0
             try:
-                r = cli.get(f"http://localhost:{port}/health")
+                r = cli.get(f"{base}/health", timeout=t)
                 if r.status_code == 200:
                     out["subsystems"][name] = {"status": "ok",
                                                 "data": (r.json() if r.headers.get("content-type","").startswith("application/json") else r.text[:200])}
@@ -235,7 +262,7 @@ class Handler(BaseHTTPRequestHandler):
     def _signal_bus_health(self) -> dict:
         try:
             with httpx.Client(timeout=5.0) as cli:
-                r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/health")
+                r = cli.get(f"{SIGNAL_BUS_BASE}/health")
                 if r.status_code == 200:
                     return r.json()
         except Exception:
@@ -246,7 +273,7 @@ class Handler(BaseHTTPRequestHandler):
         """Get FULL HL account with positions via signal_bus cache."""
         try:
             with httpx.Client(timeout=5.0) as cli:
-                r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/hl/account")
+                r = cli.get(f"{SIGNAL_BUS_BASE}/hl/account")
                 if r.status_code == 200:
                     return r.json()
         except Exception:
@@ -256,7 +283,7 @@ class Handler(BaseHTTPRequestHandler):
     def _hl_positions(self) -> list:
         try:
             with httpx.Client(timeout=5.0) as cli:
-                r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/hl/positions")
+                r = cli.get(f"{SIGNAL_BUS_BASE}/hl/positions")
                 if r.status_code == 200:
                     return r.json()
         except Exception:
@@ -301,7 +328,7 @@ class Handler(BaseHTTPRequestHandler):
         btc_mid = 0.0
         try:
             with httpx.Client(timeout=5.0) as cli:
-                r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/markprice/BTC")
+                r = cli.get(f"{SIGNAL_BUS_BASE}/markprice/BTC")
                 if r.status_code == 200:
                     mp = r.json() or {}
                     btc_mid = float(mp.get("hl_mid") or mp.get("binance_mid") or 0)
@@ -446,7 +473,7 @@ class Handler(BaseHTTPRequestHandler):
             if not mark_px:
                 try:
                     with httpx.Client(timeout=1.5) as cli:
-                        rr = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/markprice/{coin}")
+                        rr = cli.get(f"{SIGNAL_BUS_BASE}/markprice/{coin}")
                         if rr.status_code == 200:
                             mp = rr.json() or {}
                             mark_px = float(mp.get("hl_mid") or mp.get("binance_mid") or 0)
@@ -1110,7 +1137,7 @@ class Handler(BaseHTTPRequestHandler):
             "signals":     (f"http://localhost:{STRATEGY_PORT}/signals?limit=100", 5.0),
             "state":       (f"http://localhost:{STRATEGY_PORT}/state", 5.0),
             "attribution": (f"http://localhost:{STRATEGY_PORT}/attribution?since=0", 8.0),
-            "account":     (f"http://localhost:{SIGNAL_BUS_PORT}/hl/account", 3.0),
+            "account":     (f"{SIGNAL_BUS_BASE}/hl/account", 3.0),
         }
         results: dict = {}
         with ThreadPoolExecutor(max_workers=6) as ex:
@@ -1690,8 +1717,9 @@ class Handler(BaseHTTPRequestHandler):
         setattr(Handler, cache_key, {"payload": payload, "ts": time.time()})
         self._json(200, payload)
 
-    def _proxy(self, target_port: int, strip_prefix: str) -> None:
-        """Forward request to localhost:target_port."""
+    def _proxy(self, base_url: str, strip_prefix: str) -> None:
+        """Forward request to base_url. base_url is either localhost:PORT or
+        an external HTTPS URL (e.g., bus on a separate Render service)."""
         path = self.path
         if path.startswith(strip_prefix):
             path = path[len(strip_prefix):] or "/"
@@ -1703,7 +1731,7 @@ class Handler(BaseHTTPRequestHandler):
         for h in ("X-PM-Auth", "X-Halt-Token", "X-Sniper-Auth", "Content-Type"):
             if h in self.headers:
                 fwd_headers[h] = self.headers[h]
-        url = f"http://localhost:{target_port}{path}"
+        url = f"{base_url}{path}"
         try:
             with httpx.Client(timeout=30.0) as cli:
                 r = cli.request(method, url, content=body, headers=fwd_headers)
@@ -1809,9 +1837,9 @@ class Handler(BaseHTTPRequestHandler):
                     "/enforce", "/experiment", "/violations"):
             return self._serve_landing()
         # Route to subsystem
-        for prefix, (port, strip) in _PROXY_MAP.items():
+        for prefix, (base, strip) in _PROXY_MAP.items():
             if path == prefix or path.startswith(prefix + "/"):
-                self._proxy(port, strip)
+                self._proxy(base, strip)
                 return
         self._json(404, {"error": "not found", "path": path})
 
@@ -1824,9 +1852,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/sentinel/deep":
                 return self._handle_deep_research()
             return self._proxy_sentinel(path)
-        for prefix, (port, strip) in _PROXY_MAP.items():
+        for prefix, (base, strip) in _PROXY_MAP.items():
             if path == prefix or path.startswith(prefix + "/"):
-                self._proxy(port, strip)
+                self._proxy(base, strip)
                 return
         self._json(404, {"error": "not found", "path": path})
 
@@ -2024,15 +2052,21 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
-    log.info("core service starting — public port %d, internal %d/%d/%d/%d",
-             PUBLIC_PORT, SIGNAL_BUS_PORT, STRATEGY_PORT, PM_PORT, MONITOR_PORT)
+    log.info("core service starting — public port %d, internal pm:%d sr:%d mon:%d, bus=%s",
+             PUBLIC_PORT, PM_PORT, STRATEGY_PORT, MONITOR_PORT,
+             ("EXTERNAL: " + SIGNAL_BUS_BASE) if EXTERNAL_BUS else f"localhost:{SIGNAL_BUS_PORT}")
     # Serialize subsystem startup. Each subsystem's main() blocks on
     # serve_forever, so we can't wait for the thread function to return —
     # instead we wait for its TCP port to accept connections, then move on.
     # This eliminates the os.environ["HTTP_PORT"] race that previously left
     # signal_bus's HTTP listener silently unbound.
-    subsystems = [
-        ("signal_bus",      _start_signal_bus,      SIGNAL_BUS_PORT, 45.0),
+    #
+    # When EXTERNAL_BUS is set, we skip signal_bus entirely — _start_signal_bus
+    # is a no-op and we omit the port wait. Bus is reached over the network.
+    subsystems = []
+    if not EXTERNAL_BUS:
+        subsystems.append(("signal_bus", _start_signal_bus, SIGNAL_BUS_PORT, 45.0))
+    subsystems += [
         ("pm",              _start_pm,              PM_PORT,         15.0),
         ("strategy_runner", _start_strategy_runner, STRATEGY_PORT,   15.0),
         ("monitor",         _start_monitor,         MONITOR_PORT,    15.0),
