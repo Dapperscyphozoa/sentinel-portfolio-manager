@@ -2968,14 +2968,22 @@ async function loadEnginesGrid() {
 
 // Per-engine attribution: WR, PF, expectancy, fee drag.
 // 2026-05-21: Updated to:
-//   1. Use clean_only=1 (filter backfill/reconciled noise — matches BT methodology)
+//   1. Use clean_only=1 + since=POST_BUG_TS (filter out reconciler-bug-era data)
 //   2. Show LIVE/PAPER badge per engine (cross-ref /strategy/health registry)
 //   3. Include registered engines with no closures yet (the 9 newly-LIVE engines)
+//
+// POST_BUG_TS = first live timestamp of commit 0d7aa11 (reconciler-skips-paper fix).
+// All closures BEFORE this epoch are bug-contaminated: paper trades were stomped
+// after 60s of HL having no position, artificially closing them before SL/TP
+// could fire via mark-price polling. Numbers from that era are not real signal.
+// 2026-05-21 06:08:50 UTC = epoch 1779343730.
+const POST_BUG_TS = 1779343730;
+
 async function loadAttribution() {
     try {
-        // Pull clean attribution + registry state in parallel
+        // Pull clean+post-bug attribution + registry state in parallel
         const [attrR, regR] = await Promise.all([
-            fetch('/strategy/attribution?clean_only=1'),
+            fetch(`/strategy/attribution?clean_only=1&since=${POST_BUG_TS}`),
             fetch('/strategy/health'),
         ]);
         if (!attrR.ok) return;
@@ -2995,8 +3003,13 @@ async function loadAttribution() {
             'oi_concentration', 'hlp_fade', 'e09_pump3d10_td_1d',
         ]);
 
+        // Format the post-bug cutoff as a compact "May 21" style label for the header.
+        const postBugD = new Date(POST_BUG_TS * 1000);
+        const postBugDate = postBugD.toLocaleDateString('en-US',
+            {month: 'short', day: 'numeric', timeZone: 'UTC'});
+
         document.getElementById('attr-meta').textContent =
-            `${total.n} clean · ${(total.wr*100).toFixed(1)}% WR · ${total.net_pnl >= 0 ? '+' : ''}$${total.net_pnl.toFixed(2)} net`;
+            `${total.n} since ${postBugDate} · ${(total.wr*100).toFixed(1)}% WR · ${total.net_pnl >= 0 ? '+' : ''}$${total.net_pnl.toFixed(2)} net`;
 
         const body = document.getElementById('attribution-body');
 
