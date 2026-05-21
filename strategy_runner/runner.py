@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Type
 
@@ -302,8 +303,20 @@ def scan_once(bus: BusClient, pm: PMClient, on_signal, trader=None) -> int:
         enabled_count += 1
         s = stats.setdefault(strat.NAME, {"eval": 0, "none": 0, "sig": 0,
                                             "locked": 0, "denied": 0, "err": 0})
+        # 2026-05-22: per-engine coin denylist via env var <NAME_UPPER>_COIN_DENYLIST
+        # Comma-separated coin symbols. Lets operator deny bleeding coins per engine
+        # at runtime without code changes. Read once per scan cycle for efficiency.
+        # Empty string = no denylist (default). Coins matched case-insensitively.
+        _deny_env = os.environ.get(f"{strat.NAME.upper()}_COIN_DENYLIST", "")
+        _denyset = (
+            {c.strip().upper() for c in _deny_env.split(",") if c.strip()}
+            if _deny_env else set()
+        )
         for coin in strat.UNIVERSE:
             s["eval"] += 1
+            if _denyset and coin.upper() in _denyset:
+                s["none"] += 1
+                continue
             try:
                 sig = strat.evaluate(coin, bus)
             except Exception:
