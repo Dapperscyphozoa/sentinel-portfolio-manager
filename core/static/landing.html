@@ -6,7 +6,7 @@
 <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
 <meta http-equiv="Pragma" content="no-cache">
 <meta http-equiv="Expires" content="0">
-<title>PSYCHO PM TERMINAL</title>
+<title>SENTINEL · PM TERMINAL</title>
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;800&family=Cormorant+Garamond:ital,wght@0,300;0,600;1,400&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -16,7 +16,7 @@
     --chrome: #c8ccd4;
     --bone: #d9d6cd;
     --blood: #c1272d;
-    --acid: #3b82f6;          /* was #3b82f6 (acid green) — now electric blue (PSYCHO PM v2 theme) */
+    --acid: #3b82f6;          /* was #3b82f6 (acid green) — now electric blue (SENTINEL v1 theme) */
     --acid-bright: #60a5fa;   /* lighter blue for highlights/hover */
     --acid-deep: #1d4ed8;     /* darker for shadows */
     --heat: #b8ff2f;          /* preserved lime for orderbook bids + WR heatmap (semantic green for "good") */
@@ -302,7 +302,7 @@ body::after {
             </svg>
         </div>
         <div>
-            <div class="logo-text">PSYCHO PM</div>
+            <div class="logo-text">SENTINEL</div>
             <div class="logo-sub">TERMINAL · CYBER · V1.0</div>
         </div>
     </div>
@@ -326,7 +326,7 @@ body::after {
 .precog-nav .nav-tag{font-size:9px;color:#64748b;letter-spacing:0.25em;opacity:0.6;padding-left:6px}
 @media(max-width:700px){.precog-nav{padding:8px 10px;gap:4px}.precog-nav .nav-brand{font-size:13px;width:100%;padding:0 0 6px 0;margin:0 0 4px 0;border-right:none;border-bottom:1px solid rgba(200,204,212,0.1)}.precog-nav a{padding:5px 7px;font-size:9px;letter-spacing:0.15em}.precog-nav .nav-tag{width:100%;padding:6px 0 0 0;text-align:center}}
 
-/* ═══ PSYCHO PM TERMINAL — FIXED RHS DATA RAIL (always-on, full-height) ═══
+/* ═══ SENTINEL · FIXED RHS DATA RAIL (always-on, full-height) ═══
    Rail is hoisted out of pm-layout grid into a fixed-position sidebar so it
    fills the RHS for the WHOLE page, not just the dashboard cards section.
    pm-layout is now single-column; body gets right-padding equal to rail
@@ -736,7 +736,7 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
     <div class="hero-text">
         <div class="hero-kicker">// portfolio manager · multi-engine terminal</div>
         <h1 class="hero-title">
-            psycho<br>
+            sentinel<br>
             <em>pm</em><br>
             <span class="blood">terminal</span>
         </h1>
@@ -1396,7 +1396,7 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
 
 <!-- FOOTER -->
 <div class="footer">
-    <div>PSYCHO PM TERMINAL // CYBER·PSYCHO // HYPERLIQUID</div>
+    <div>SENTINEL · PORTFOLIO MANAGER · HYPERLIQUID</div>
     <div id="foot-updated">Updated —</div>
 </div>
 
@@ -1763,7 +1763,43 @@ async function loadSignals() {
     ]);
     const live = (r && r.items) || [];
     const pending = pendings || [];
-    const total = live.length + pending.length;
+
+    // 2026-05-21: Dedup live signals by (engine, coin) — keep most recent only.
+    // Without this, a setup that holds across multiple scan cycles produces
+    // N duplicate rows for the same (engine, coin). Operator wants one row
+    // per pair, showing the freshest fire.
+    // Server sends signals newest-first; we walk in order and keep the first
+    // (engine, coin) we see, then ALSO show a small badge if there were more
+    // recent re-fires hidden behind it.
+    const liveDedupMap = new Map();
+    const liveDupCount = new Map();
+    for (const s of live) {
+        const key = `${s.engine || s.strategy || '?'}|${s.coin || '?'}`;
+        if (!liveDedupMap.has(key)) {
+            liveDedupMap.set(key, s);
+            liveDupCount.set(key, 0);
+        } else {
+            liveDupCount.set(key, (liveDupCount.get(key) || 0) + 1);
+        }
+    }
+    const liveDeduped = Array.from(liveDedupMap.values());
+
+    // Same dedup pass on pending — a paper engine firing on every scan would
+    // otherwise show 50 pending rows for one coin.
+    const pendDedupMap = new Map();
+    const pendDupCount = new Map();
+    for (const s of pending) {
+        const key = `${s.engine || '?'}|${s.coin || '?'}`;
+        if (!pendDedupMap.has(key)) {
+            pendDedupMap.set(key, s);
+            pendDupCount.set(key, 0);
+        } else {
+            pendDupCount.set(key, (pendDupCount.get(key) || 0) + 1);
+        }
+    }
+    const pendDeduped = Array.from(pendDedupMap.values());
+
+    const total = liveDeduped.length + pendDeduped.length;
 
     if (total === 0 && _isPopulated('signals')) {
         // Keep last rendered list; just update meta to reflect quiet period.
@@ -1778,28 +1814,38 @@ async function loadSignals() {
         return;
     }
 
-    const liveRows = live.map(s => {
+    const liveRows = liveDeduped.map(s => {
         // Server now sends kind='LIVE', ts_str (HH:MM:SS), engine, side (LONG/SHORT)
         const sideLabel = s.side || (s.is_long ? 'LONG' : 'SHORT');
         const sideCls = (sideLabel === 'LONG') ? 'pnl-pos' : 'pnl-neg';
         const eng = s.engine || s.strategy || '';
         const reason = s.fire_reason || '';
+        const dupKey = `${eng}|${s.coin || '?'}`;
+        const dupN = liveDupCount.get(dupKey) || 0;
+        const dupBadge = dupN > 0
+            ? `<span style="margin-left:6px;padding:0 4px;font-size:9px;font-weight:600;color:var(--oxide);border:1px solid var(--oxide);opacity:0.7">+${dupN}</span>`
+            : '';
         return `<div class="pos-row" style="grid-template-columns:64px 1fr auto;font-size:11px">
             <div class="pos-coin">${s.coin}<br><span style="opacity:0.4;font-size:9px;letter-spacing:0.05em">${eng}</span></div>
-            <div style="opacity:0.85"><span class="stage-tag stage-live" style="margin-right:6px">LIVE</span><span class="${sideCls}">${sideLabel}</span> <span style="opacity:0.55;font-size:10px">${reason}</span></div>
+            <div style="opacity:0.85"><span class="stage-tag stage-live" style="margin-right:6px">LIVE</span><span class="${sideCls}">${sideLabel}</span> <span style="opacity:0.55;font-size:10px">${reason}</span>${dupBadge}</div>
             <div style="font-size:9px;opacity:0.6">${s.ts_str || ''}</div>
         </div>`;
     }).join('');
 
-    const pendRows = pending.map(s => {
+    const pendRows = pendDeduped.map(s => {
         const px = s.entry != null ? Number(s.entry).toPrecision(5) : '—';
         const eng = s.engine ? `<br><span style="opacity:0.4;font-size:9px;letter-spacing:0.05em">${s.engine}</span>` : '';
         const isLive = s.kind === 'LIVE';
         const rowCls = isLive ? 'pos-row' : 'pos-row is-paper';
         const tagCls = isLive ? 'stage-tag stage-live' : 'stage-tag stage-paper';
+        const dupKey = `${s.engine || '?'}|${s.coin || '?'}`;
+        const dupN = pendDupCount.get(dupKey) || 0;
+        const dupBadge = dupN > 0
+            ? `<span style="margin-left:6px;padding:0 4px;font-size:9px;font-weight:600;color:var(--oxide);border:1px solid var(--oxide);opacity:0.7">+${dupN}</span>`
+            : '';
         return `<div class="${rowCls}" style="grid-template-columns:70px 1fr auto;font-size:11px">
             <div class="pos-coin">${s.coin}${eng}</div>
-            <div style="opacity:0.8"><span class="${tagCls}" style="margin-right:6px">${s.kind}</span>${s.stage} ${s.side || ''} <span style="opacity:0.5">@ ${px}</span></div>
+            <div style="opacity:0.8"><span class="${tagCls}" style="margin-right:6px">${s.kind}</span>${s.stage} ${s.side || ''} <span style="opacity:0.5">@ ${px}</span>${dupBadge}</div>
             <div style="font-size:9px;opacity:0.55">unfilled</div>
         </div>`;
     }).join('');
@@ -1807,8 +1853,8 @@ async function loadSignals() {
     el.innerHTML = (liveRows + pendRows) ||
         '<div class="pos-row" style="opacity:0.5">// no live or pending signals</div>';
     const metaParts = [];
-    if (live.length)    metaParts.push(`${live.length} live`);
-    if (pending.length) metaParts.push(`${pending.length} pending`);
+    if (liveDeduped.length)    metaParts.push(`${liveDeduped.length} live`);
+    if (pendDeduped.length) metaParts.push(`${pendDeduped.length} pending`);
     if (meta) meta.textContent = metaParts.join(' · ') || '0 recent';
     if (total) _markPopulated('signals');
 }
@@ -2432,7 +2478,7 @@ function poll(name, fn, intervalMs, offsetMs) {
     setTimeout(() => { tick(); setInterval(tick, intervalMs); }, offsetMs || 0);
 }
 
-// ═══ PSYCHO PM TERMINAL — RHS gate rail ═══
+// ═══ SENTINEL · RHS gate rail ═══
 // Renders precog's internal gate state (signal_engines + guards + venues + sizing)
 // from /engines as a vertical rolling card grid. Replaces the old central
 // 'Multi-Gate Engine Stack' panel — one canonical surface for gate health.
@@ -3129,19 +3175,24 @@ loadDash(); loadMacroStrip(); loadEngines(); loadPMRail(); loadEnginesGrid();
 loadAttribution();
 
 // Staggered offsets keep concurrent fetches small
+// 2026-05-21: Polling intervals backed off across the board to fix 502 cascade.
+// Dashboard was firing ~12 parallel fetches every 5-8s, saturating the public
+// HTTP proxy under load (especially with 8 newly-enabled paper engines + scan
+// loop competing for threads). New cadence: critical data 10-15s, status
+// panels 30-60s. Trade-off: slightly stale numbers vs reliable rendering.
 poll('clock',     updateClock,     1000,   0);
-poll('dash',      loadDash,        6000,   100);
-poll('signals',   loadSignals,     8000,   400);
-poll('whales',    loadWhales,      8000,   700);
-poll('orderbook', loadOrderbook,   6000,   1000);   // was 3s — too aggressive
-poll('heatmap',   loadHeatmap,     30000,  1300);
-poll('news',      loadNews,        60000,  1600);
-poll('macro',     loadMacroStrip,  6000,   1900);
-poll('engines',   loadEngines,     8000,   2200);
-poll('systems',   loadSystems,     12000,  2500);
-poll('pmrail',    loadPMRail,      8000,   2800);
-poll('engines_grid', loadEnginesGrid, 15000, 3100);
-poll('attribution', loadAttribution, 20000, 3700);
+poll('dash',      loadDash,        15000,  100);
+poll('signals',   loadSignals,     15000,  400);
+poll('whales',    loadWhales,      30000,  700);
+poll('orderbook', loadOrderbook,   15000,  1000);
+poll('heatmap',   loadHeatmap,     60000,  1300);
+poll('news',      loadNews,        120000, 1600);
+poll('macro',     loadMacroStrip,  30000,  1900);
+poll('engines',   loadEngines,     30000,  2200);
+poll('systems',   loadSystems,     45000,  2500);
+poll('pmrail',    loadPMRail,      30000,  2800);
+poll('engines_grid', loadEnginesGrid, 60000, 3100);
+poll('attribution', loadAttribution, 60000, 3700);
 
 // ═══ Live Positions + 24h Equity Pulse ═══════════════════════════════════
 // Live positions table mirrors /dash.positions in a compact mono format.
@@ -3269,7 +3320,7 @@ async function loadEquityPulse() {
       + 'font-size="9" font-family="JetBrains Mono">/audit offline</text>';
   }
 }
-poll('lpos',   loadLivePositions, 5000,   3100);
+poll('lpos',   loadLivePositions, 15000,  3100);
 poll('pulse',  loadEquityPulse,   30000,  3400);
 
 // Refresh immediately when tab becomes visible again
