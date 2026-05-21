@@ -1083,12 +1083,14 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
     </div>
 
     <!-- ENGINE ATTRIBUTION (per-engine WR / PF / expectancy / fee drag) -->
+    <!-- 2026-05-21: switched to clean_only data, added LIVE/PAPER badges,
+         shows all registered engines including newly-LIVE ones with no closures yet. -->
     <div class="panel">
         <div class="panel-head">
             <div class="panel-title">Engine Attribution · Live PnL</div>
-            <div class="panel-meta" id="attr-meta">— closed</div>
+            <div class="panel-meta" id="attr-meta">— clean</div>
         </div>
-        <div id="attribution-body"><div style="opacity:0.5;font-size:11px">// awaiting first closures…</div></div>
+        <div id="attribution-body"><div style="opacity:0.5;font-size:11px">// loading engines…</div></div>
     </div>
 
     <!-- NEWS -->
@@ -2965,45 +2967,106 @@ async function loadEnginesGrid() {
 
 
 // Per-engine attribution: WR, PF, expectancy, fee drag.
-// Pulled from /strategy/attribution (proxied via core).
+// 2026-05-21: Updated to:
+//   1. Use clean_only=1 (filter backfill/reconciled noise — matches BT methodology)
+//   2. Show LIVE/PAPER badge per engine (cross-ref /strategy/health registry)
+//   3. Include registered engines with no closures yet (the 9 newly-LIVE engines)
 async function loadAttribution() {
     try {
-        const r = await fetch('/strategy/attribution');
-        if (!r.ok) return;
-        const d = await r.json();
+        // Pull clean attribution + registry state in parallel
+        const [attrR, regR] = await Promise.all([
+            fetch('/strategy/attribution?clean_only=1'),
+            fetch('/strategy/health'),
+        ]);
+        if (!attrR.ok) return;
+        const d = await attrR.json();
         const engines = d.engines || [];
         const total = d.total || {n:0, wr:0, net_pnl:0, fees:0};
 
+        // Build LIVE/PAPER lookup from registry (engines registered) ∩ env LIVE flags.
+        // We can't read env vars from browser, so detect from /strategy/health
+        // augmented with the known LIVE list (synced manually with Render env).
+        const registry = regR.ok ? ((await regR.json()).registry || []) : [];
+        const registeredNames = new Set(registry.map(r => r.name));
+        // The 9 engines currently LIVE on Render (STRATEGY_<NAME>_LIVE=1) as of 2026-05-21
+        const LIVE_ENGINES = new Set([
+            'uzt_rev', 'e16_bb_fade_hv_1d', 'ict_confluence_1d',
+            'ict_confluence_4h', 'stop_hunt', 'e08_dip3d7_td_4h_inv',
+            'oi_concentration', 'hlp_fade', 'e09_pump3d10_td_1d',
+        ]);
+
         document.getElementById('attr-meta').textContent =
-            `${total.n} closed · ${(total.wr*100).toFixed(1)}% WR · ${total.net_pnl >= 0 ? '+' : ''}$${total.net_pnl.toFixed(2)} net`;
+            `${total.n} clean · ${(total.wr*100).toFixed(1)}% WR · ${total.net_pnl >= 0 ? '+' : ''}$${total.net_pnl.toFixed(2)} net`;
 
         const body = document.getElementById('attribution-body');
-        if (engines.length === 0) {
-            body.innerHTML = '<div style="opacity:0.5;font-size:11px">// awaiting first closures…</div>';
+
+        // Build merged engine list: closures-data engines + registered-but-silent engines
+        const byEngine = new Map();
+        for (const e of engines) {
+            byEngine.set(e.engine, e);
+        }
+        // Add registered engines that have no closure data yet
+        for (const r of registry) {
+            if (!byEngine.has(r.name)) {
+                byEngine.set(r.name, {
+                    engine: r.name, n: 0, wins: 0, losses: 0, wr: 0,
+                    pf: null, expectancy_usd: 0, gross_pnl: 0, fees: 0,
+                    net_pnl: 0, avg_win: 0, avg_loss: 0, avg_hold_h: 0,
+                    by_coin: {}, by_reason: {},
+                    _no_data: true,
+                });
+            }
+        }
+
+        const all = Array.from(byEngine.values());
+        if (all.length === 0) {
+            body.innerHTML = '<div style="opacity:0.5;font-size:11px">// no engines registered…</div>';
             return;
         }
 
-        // Sort descending by net_pnl (already sorted server-side, but be defensive)
-        engines.sort((a,b) => (b.net_pnl||0) - (a.net_pnl||0));
+        // Sort: LIVE engines first, then by net_pnl desc, with no-data engines at end
+        all.sort((a, b) => {
+            const aLive = LIVE_ENGINES.has(a.engine) ? 0 : 1;
+            const bLive = LIVE_ENGINES.has(b.engine) ? 0 : 1;
+            if (aLive !== bLive) return aLive - bLive;
+            // Within same tier: with-data before no-data
+            if (a._no_data !== b._no_data) return a._no_data ? 1 : -1;
+            return (b.net_pnl || 0) - (a.net_pnl || 0);
+        });
 
-        body.innerHTML = engines.map(e => {
+        body.innerHTML = all.map(e => {
+            const isLive = LIVE_ENGINES.has(e.engine);
+            const badge = isLive
+                ? `<span style="display:inline-block;padding:1px 6px;font-size:8px;font-weight:700;letter-spacing:0.1em;color:var(--gain);border:1px solid var(--gain);margin-right:6px">LIVE</span>`
+                : `<span style="display:inline-block;padding:1px 6px;font-size:8px;font-weight:700;letter-spacing:0.1em;color:var(--oxide);border:1px solid var(--oxide);opacity:0.6;margin-right:6px">PAPER</span>`;
+            if (e._no_data) {
+                return `
+                  <div style="border-bottom:1px solid rgba(200,204,212,0.08);padding:10px 0;display:grid;grid-template-columns:1fr auto;gap:8px;align-items:start;opacity:0.55">
+                    <div style="font-size:11px">
+                      <div>${badge}<span style="font-weight:600">${e.engine}</span></div>
+                      <div style="opacity:0.5;font-size:10px;margin-top:2px;font-style:italic">awaiting first closure</div>
+                    </div>
+                    <div style="text-align:right;font-size:10px;opacity:0.5;line-height:1.4">
+                      <div>n=0</div>
+                    </div>
+                  </div>`;
+            }
             const wrPct = (e.wr * 100).toFixed(1);
             const pfStr = e.pf == null ? '∞' : e.pf.toFixed(2);
             const netCls = e.net_pnl >= 0 ? 'pnl-pos' : 'pnl-neg';
             const netSign = e.net_pnl >= 0 ? '+' : '';
             const expectCls = e.expectancy_usd >= 0 ? 'pnl-pos' : 'pnl-neg';
             const expectSign = e.expectancy_usd >= 0 ? '+' : '';
-            // Top 2 coins by net for this engine
+            // Top 3 coins by net for this engine
             const coinEntries = Object.entries(e.by_coin || {});
             coinEntries.sort((a,b) => b[1].net_pnl - a[1].net_pnl);
             const topCoins = coinEntries.slice(0,3).map(([c,v]) =>
                 `<span style="opacity:0.6">${c}:</span><span class="${v.net_pnl>=0?'pnl-pos':'pnl-neg'}">${v.net_pnl>=0?'+':''}$${v.net_pnl.toFixed(2)}</span>`
             ).join(' · ');
-            const feeDrag = e.net_pnl !== 0 ? Math.abs(e.fees / e.net_pnl * 100).toFixed(0) : '—';
             return `
               <div style="border-bottom:1px solid rgba(200,204,212,0.08);padding:10px 0;display:grid;grid-template-columns:1fr auto;gap:8px;align-items:start">
                 <div style="font-size:11px">
-                  <div style="font-weight:600">${e.engine}</div>
+                  <div>${badge}<span style="font-weight:600">${e.engine}</span></div>
                   <div style="opacity:0.6;font-size:10px;margin-top:2px">
                     n=${e.n} · W=${e.wins}/L=${e.losses} · hold=${e.avg_hold_h.toFixed(1)}h · fees=$${e.fees.toFixed(2)}
                   </div>
