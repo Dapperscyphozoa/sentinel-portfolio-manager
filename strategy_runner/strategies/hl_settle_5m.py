@@ -62,6 +62,21 @@ HL_SETTLE_TP_PCT = float(os.environ.get("HL_SETTLE_TP_PCT", "0.004"))   # widene
 # break-even WR = 42.9%. Short-only book hit 75% live; cushion is now 32pp.
 HL_SETTLE_MAX_HOLD_MIN = int(os.environ.get("HL_SETTLE_MAX_HOLD_MIN", "30"))
 
+# 2026-05-21: trail-stop mechanic — backtest on 88 clean closures showed
+# incremental ratchet (start +0.30% favorable, +0.02% per step) combined with
+# maker entry flips per-trade EV from -$0.018 to +$0.0004 (BT). Mechanism:
+#   - TP overshoot captured (avg favorable peak +0.51% vs current TP fill +0.39%)
+#   - 6 of 42 historical SLs had favorable wicks past +0.3% that the trail saves
+# When trail enabled, fixed TP is set to a far-away sentinel (effectively no TP);
+# the trail handles all favorable exits. The original SL stays as deep-gap safety net.
+HL_SETTLE_TRAIL_ENABLED = os.environ.get("HL_SETTLE_TRAIL_ENABLED", "1") == "1"
+HL_SETTLE_TRAIL_START_PCT = float(os.environ.get("HL_SETTLE_TRAIL_START_PCT", "0.30"))   # % favorable
+HL_SETTLE_TRAIL_INCREMENT_PCT = float(os.environ.get("HL_SETTLE_TRAIL_INCREMENT_PCT", "0.02"))  # % per ratchet step
+# When trail is enabled, push fixed TP target to this far sentinel so it never fires
+# (the trail handles all favorable exits). Override to a real number to keep a
+# backup TP that competes with the trail.
+HL_SETTLE_TRAIL_TP_SENTINEL_PCT = float(os.environ.get("HL_SETTLE_TRAIL_TP_SENTINEL_PCT", "0.05"))  # 5% favorable
+
 # Sniper conversion 2026-05-18 (council audit n=55 live):
 # LONG WR 38.7% (12/31) vs SHORT WR 75.0% (18/24). 36pp direction asymmetry.
 # Mechanism: alt-crypto bias is bearish/sideways during sample → mechanical
@@ -281,6 +296,29 @@ class HLSettle5m(StrategyBase):
             sl_px = ref_px * (1 + HL_SETTLE_SL_PCT)
             tp_px = ref_px * (1 - HL_SETTLE_TP_PCT)
 
+        # When trail is enabled, push the fixed TP far out of reach. The trail
+        # handles all favorable exits via ratcheting the local sl_px upward;
+        # fixed TP would otherwise fire at +0.4% and cut the trail short.
+        if HL_SETTLE_TRAIL_ENABLED:
+            if is_long:
+                tp_px = ref_px * (1 + HL_SETTLE_TRAIL_TP_SENTINEL_PCT)
+            else:
+                tp_px = ref_px * (1 - HL_SETTLE_TRAIL_TP_SENTINEL_PCT)
+
+        sig_extras = {
+            "settle_phase": "pre" if in_pre else "post",
+            "to_next_settle_min": to_next,
+            "since_last_settle_min": since_last,
+            "rate_now": rate_now,
+            "maker_only": HL_SETTLE_MAKER_ONLY,
+        }
+        if HL_SETTLE_TRAIL_ENABLED:
+            # trail config consumed by common.trail_stop.apply_trail in position_loop
+            sig_extras["trail"] = {
+                "start_pct": HL_SETTLE_TRAIL_START_PCT,
+                "increment_pct": HL_SETTLE_TRAIL_INCREMENT_PCT,
+            }
+
         # 1m TF — max_hold expressed in bars
         max_hold_bars = HL_SETTLE_MAX_HOLD_MIN
 
@@ -294,11 +332,5 @@ class HLSettle5m(StrategyBase):
             max_hold_bars=max_hold_bars,
             fire_ts=time.time() * 1000,
             fire_reason=f"settle_{reason_tag}",
-            extras={
-                "settle_phase": "pre" if in_pre else "post",
-                "to_next_settle_min": to_next,
-                "since_last_settle_min": since_last,
-                "rate_now": rate_now,
-                "maker_only": HL_SETTLE_MAKER_ONLY,
-            },
+            extras=sig_extras,
         )

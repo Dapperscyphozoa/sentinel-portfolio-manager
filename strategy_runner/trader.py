@@ -859,8 +859,30 @@ class Trader:
                 continue
             px = float(px)
             is_long = bool(r["is_long"])
+            # ─── Trail-stop ratchet (no-op if strategy didn't request trail) ───
+            # Updates trades.sl_px upward as favorable progresses; the existing
+            # hit_sl check below then fires when price retraces to the trail level.
+            try:
+                from common.trail_stop import apply_trail
+                new_sl_px = apply_trail(self.conn, r, px)
+                if new_sl_px is not None:
+                    # Re-read updated sl_px so the local check uses the new level
+                    fresh = self.conn.execute(
+                        "SELECT sl_px FROM trades WHERE cloid=?", (r["cloid"],)
+                    ).fetchone()
+                    if fresh is not None:
+                        # Mutate the local row dict-like by rebinding sl_px reference
+                        # SQLite Row is read-only, so use the fresh value directly
+                        r_sl_px = float(fresh["sl_px"])
+                    else:
+                        r_sl_px = float(r["sl_px"])
+                else:
+                    r_sl_px = float(r["sl_px"])
+            except Exception:
+                log.exception("trail apply failed for %s/%s", r["strategy"], r["coin"])
+                r_sl_px = float(r["sl_px"])
             hit_tp = (is_long and px >= r["tp_px"]) or (not is_long and px <= r["tp_px"])
-            hit_sl = (is_long and px <= r["sl_px"]) or (not is_long and px >= r["sl_px"])
+            hit_sl = (is_long and px <= r_sl_px) or (not is_long and px >= r_sl_px)
             # Timeout = max_hold_bars × seconds-per-bar (TF-aware).
             # Bug fix 2026-05-17: prior code used max_hold_bars * 3600 unconditionally,
             # which is correct only for 1h strategies. Daily engines holding "5 bars"
@@ -889,7 +911,19 @@ class Trader:
 
             if not (hit_tp or hit_sl or timed_out or strat_close):
                 continue
-            reason = "tp" if hit_tp else "sl" if hit_sl else "timeout" if timed_out else strat_reason
+            # Classify SL hits as "trail" when trail_active flag is set on the
+            # trade — keeps analytics distinct (trail exits aren't true SL events).
+            sl_reason = "sl"
+            if hit_sl:
+                try:
+                    ex_now = json.loads((self.conn.execute(
+                        "SELECT extras_json FROM trades WHERE cloid=?", (r["cloid"],)
+                    ).fetchone() or {"extras_json": "{}"})["extras_json"] or "{}")
+                    if ex_now.get("trail_active"):
+                        sl_reason = "trail"
+                except Exception:
+                    pass
+            reason = "tp" if hit_tp else sl_reason if hit_sl else "timeout" if timed_out else strat_reason
             self._close(r, px, reason, now)
             closed += 1
         return closed
