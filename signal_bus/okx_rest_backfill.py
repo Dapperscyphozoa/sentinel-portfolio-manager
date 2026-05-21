@@ -68,15 +68,47 @@ def _backfill_one(coin: str, tf: str, bars: int = 200) -> list[dict]:
 def backfill_all(coins: Iterable[str], cache: Cache,
                  tfs: Iterable[str] = ("1m", "5m", "15m", "1h", "4h", "1d"),
                  bars: int = 200) -> int:
-    """Synchronous bulk backfill. Returns total bars loaded."""
+    """Concurrent bulk backfill. Returns total bars loaded.
+
+    2026-05-21: previously serial — 24 coins × 6 TFs × ~1.5s/combo = 3.6min total,
+    but every Render deploy restarts the bus mid-backfill, leaving coins past
+    #14 with zero historical bars. Solution: parallelize across coins (max 4
+    concurrent workers; OKX REST 20/sec/IP soft limit easily survives this).
+    Per-coin all-TF batch keeps progress meaningful per worker, so even if
+    interrupted, complete-coin units have been written.
+    """
+    import concurrent.futures as cf
+    coins = list(coins)
+    tfs = tuple(tfs)
     total = 0
-    for coin in coins:
+
+    def _backfill_coin_all_tfs(coin: str) -> int:
+        n = 0
         for tf in tfs:
-            arr = _backfill_one(coin, tf, bars)
+            try:
+                arr = _backfill_one(coin, tf, bars)
+            except Exception:
+                log.exception("backfill %s/%s crashed", coin, tf)
+                continue
             if not arr:
                 continue
-            for b in arr:
-                cache.push_kline(coin, tf, b)
-            total += len(arr)
-            log.info("backfilled %s/%s: %d bars", coin, tf, len(arr))
+            try:
+                for b in arr:
+                    cache.push_kline(coin, tf, b)
+                n += len(arr)
+                log.info("backfilled %s/%s: %d bars", coin, tf, len(arr))
+            except Exception:
+                log.exception("backfill push %s/%s crashed", coin, tf)
+        return n
+
+    with cf.ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(_backfill_coin_all_tfs, c): c for c in coins}
+        for f in cf.as_completed(futs):
+            coin = futs[f]
+            try:
+                n = f.result()
+                total += n
+                log.info("backfill done for %s: %d bars total", coin, n)
+            except Exception:
+                log.exception("backfill thread crashed for %s", coin)
     return total

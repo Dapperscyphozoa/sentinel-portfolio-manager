@@ -46,7 +46,7 @@ OIC_PROXIMITY_PCT = float(os.environ.get("OIC_PROXIMITY_PCT", "0.01"))
 OIC_SL_PCT = float(os.environ.get("OIC_SL_PCT", "0.012"))
 OIC_TP_PCT = float(os.environ.get("OIC_TP_PCT", "0.030"))
 OIC_MAX_HOLD_BARS = int(os.environ.get("OIC_MAX_HOLD_BARS", "12"))
-OIC_MIN_OI_SAMPLES = int(os.environ.get("OIC_MIN_OI_SAMPLES", "2000"))
+OIC_MIN_OI_SAMPLES = int(os.environ.get("OIC_MIN_OI_SAMPLES", "200"))  # 2026-05-21: lowered from 2000 — bus OI deque maxlen=720, so 2000 made it PERMANENTLY non-firing
 
 
 DEFAULT_UNIVERSE = [

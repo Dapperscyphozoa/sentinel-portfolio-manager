@@ -102,6 +102,43 @@ class Handler(BaseHTTPRequestHandler):
                 **CACHE.stats(),
             })
 
+        # /admin/backfill — manually trigger OKX REST backfill for any subset of
+        # subscribed coins. Lets the operator (or session) recover from deploy
+        # interruptions without waiting for next deploy. Query params:
+        #   coins=BTC,ETH,...  (comma-separated, default all subscribed)
+        #   bars=1000          (per coin/tf)
+        # Returns: {"total": N, "coins": [...]}
+        # Idempotent — re-running just refreshes the cache.
+        if path == "/admin/backfill":
+            coins_q = q.get("coins", "")
+            bars_q = int(q.get("bars", "1000"))
+            if coins_q:
+                target_coins = [c.strip().upper() for c in coins_q.split(",") if c.strip()]
+            else:
+                # Use the same subscribed-symbol list the bus boots with
+                syms = (config.get("BINANCE_SYMBOLS", "") or "").split(",")
+                target_coins = []
+                for s in syms:
+                    s = s.strip()
+                    if not s:
+                        continue
+                    for sfx in ("USDT", "USDC", "BUSD"):
+                        if s.endswith(sfx):
+                            target_coins.append(s[: -len(sfx)])
+                            break
+                    else:
+                        target_coins.append(s)
+            try:
+                from signal_bus import okx_rest_backfill
+                n = okx_rest_backfill.backfill_all(target_coins, CACHE, bars=bars_q)
+                return _json_resp(self, 200, {
+                    "ok": True, "total_bars": n, "coins": target_coins,
+                    "bars_per_combo": bars_q,
+                })
+            except Exception as e:
+                log.exception("admin backfill failed")
+                return _json_resp(self, 500, {"error": str(e)})
+
         if path == "/":
             return _json_resp(self, 200, {"service": "signal-bus", "ok": True})
 

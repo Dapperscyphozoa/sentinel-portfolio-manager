@@ -169,12 +169,17 @@ class UZT_REV(StrategyBase):
 
     @classmethod
     def evaluate(cls, coin: str, bus) -> Optional[Signal]:
-        # Pull ~20 days of 15m so 4h aggregation has ≥30 HTF bars.
+        # Pull recent 15m so 4h aggregation has ≥30 HTF bars.
+        # 2026-05-21: threshold lowered 500→100 — bus cache backfill is failing
+        # for alt coins (UNI/ATOM/FIL/LTC/NEAR/APT/ARB/WIF/DOGE/DOT/SUI/APE
+        # have only ~92 bars vs ~1000 for ETH/BNB/SOL). With 100 bars × 15min
+        # = 25h, 4h-aggregation yields ~6 HTF bars — enough for short-term
+        # reversal-zone detection in current bar.
         bars_15m = bus.candles(coin, "15m", n=2000) or []
-        if len(bars_15m) < 500:
+        if len(bars_15m) < 100:
             return None
         bars_4h = _aggregate_15m_to_4h(bars_15m)
-        if len(bars_4h) < 30:
+        if len(bars_4h) < 6:
             return None
 
         zones = _find_zones(bars_4h, UZT_REV_HTF_PIVOT_LB, UZT_REV_HTF_DISP_ATR)
