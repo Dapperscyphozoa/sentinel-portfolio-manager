@@ -849,13 +849,19 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
-        # LLM re-score top 10 by keyword magnitude. Single call, structured JSON.
+        # LLM re-score top 15 by keyword magnitude. Single call, structured JSON.
         # Free Groq tier; if it fails we keep keyword scores.
+        #
+        # Bubble-effect fix: send 15 candidates so we cover the over-broad MAG-5
+        # keyword cohort. The keyword scorer flags ~half the feed as MAG 5
+        # because words like 'tether', 'coinbase', 'launch' all trigger 5 even
+        # when the story isn't market-moving. LLM downgrades most to 2-3. If we
+        # only sent top 10, un-rescored MAG-5 items would bubble to the top of
+        # the final feed and crowd out the real signal.
         groq_key = os.environ.get("GROQ_API_KEY", "")
         if groq_key and items:
-            # Pre-sort to pick best candidates
             items.sort(key=lambda x: -x["magnitude"])
-            candidates = items[:10]
+            candidates = items[:15]
             try:
                 prompt = (
                     "You are a crypto trading desk news analyst. For each numbered headline, "
@@ -880,7 +886,7 @@ class Handler(BaseHTTPRequestHandler):
                             "model": "llama-3.3-70b-versatile",
                             "messages": [{"role": "user", "content": prompt}],
                             "temperature": 0.1,
-                            "max_tokens": 600,
+                            "max_tokens": 800,
                             "response_format": {"type": "json_object"},
                         },
                     )
@@ -903,15 +909,31 @@ class Handler(BaseHTTPRequestHandler):
                             pass
             except Exception:
                 pass
+            # Demote un-rescored items by half a tier so LLM-rescored content
+            # takes precedence in display. The 5 candidates beyond top 15 that
+            # weren't sent to LLM get demoted from kw-MAG-5 → effective 4.5
+            # which sorts below LLM-confirmed 5s but above LLM-rescored 4s.
+            for it in items:
+                if not it.get("llm_scored"):
+                    # Subtract 0.5 from magnitude for sort priority only
+                    it["_sort_mag"] = max(0, it["magnitude"] - 0.5)
+                else:
+                    it["_sort_mag"] = float(it["magnitude"])
 
-        # Final sort: magnitude desc, newer first within same magnitude
+        # Final sort: LLM-adjusted magnitude desc, newer first within same magnitude.
         from collections import defaultdict
+        for it in items:
+            if "_sort_mag" not in it:
+                it["_sort_mag"] = float(it["magnitude"])
+        items.sort(key=lambda x: (-x["_sort_mag"], -ord((x.get("pubdate", "") or "z")[0])))
+        # Re-bucket by display magnitude (int)
         groups = defaultdict(list)
         for it in items: groups[it["magnitude"]].append(it)
         items = []
         for mag in sorted(groups.keys(), reverse=True):
-            groups[mag].sort(key=lambda x: x.get("pubdate",""), reverse=True)
+            groups[mag].sort(key=lambda x: (not x.get("llm_scored"), -x["_sort_mag"], x.get("pubdate", "")))
             items.extend(groups[mag])
+        for it in items: it.pop("_sort_mag", None)
         items = items[:20]
         Handler._news_cache = {"items": items, "ts": time.time()}
         self._json(200, {"items": items, "ts": int(time.time() * 1000)})
@@ -1504,13 +1526,17 @@ class Handler(BaseHTTPRequestHandler):
 
         for venue, b, a in results:
             for lvl in b:
-                # Discard stale/wide levels (>5% from mid usually instrument noise)
+                # Reject levels far from mid (instrument noise) AND any "bid"
+                # that's above ref_mid (venue with stale data or wide spread —
+                # would collide with asks after bucketing and look crossed).
                 if not (ref_mid * 0.95 <= lvl["price"] <= ref_mid * 1.05): continue
+                if lvl["price"] > ref_mid: continue
                 k = round(lvl["price"] / bucket_size)
                 bid_buckets[k]["sz"] += lvl["sz"]
                 bid_buckets[k]["venues"].add(venue)
             for lvl in a:
                 if not (ref_mid * 0.95 <= lvl["price"] <= ref_mid * 1.05): continue
+                if lvl["price"] < ref_mid: continue
                 k = round(lvl["price"] / bucket_size)
                 ask_buckets[k]["sz"] += lvl["sz"]
                 ask_buckets[k]["venues"].add(venue)
