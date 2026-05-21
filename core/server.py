@@ -770,16 +770,16 @@ class Handler(BaseHTTPRequestHandler):
           - The Block RSS (institutional + regulatory)
           - CoinTelegraph RSS (alts + tech)
 
-        Magnitude heuristic (no API needed):
-          5: SEC|ETF|Fed|hack|exploit|crash|seized|approved|ban|launch
-          4: rally|surge|plunge|hit + $XXm/$XXb numbers|partnership|listed
-          3: rose|fell|update|integration|merger
-          2: weekly recap|opinion|analysis
-          1: anything else
+        Two-stage scoring:
+          1. Keyword heuristic — fast, deterministic, no network. Sorts and
+             pre-ranks all items so the worst case (LLM unavailable) is
+             still a usable feed.
+          2. LLM re-score — top 10 candidates re-evaluated by Groq's
+             llama-3.3-70b-versatile. Returns magnitude/direction JSON
+             per headline. Free tier (GROQ_API_KEY). Failures fall back
+             to keyword scores silently.
 
-        Direction heuristic: bull/bear keyword scan over title only.
-
-        Cached 5 min — RSS feeds update slowly, no need to hammer.
+        Cached 5min total — RSS updates slowly, no need to hit LLM more.
         """
         cache = getattr(Handler, "_news_cache", None)
         if cache and (time.time() - cache.get("ts", 0) < 300):
@@ -802,14 +802,13 @@ class Handler(BaseHTTPRequestHandler):
         MID_MAG = {"rally","surge","plunge","partnership","listed","sue","fine",
                    "merger","raise","funding","investor"}
 
-        def score(title: str) -> tuple:
+        def kw_score(title: str) -> tuple:
             t = (title or "").lower()
             mag = 1
             for k in MID_MAG:
                 if k in t: mag = max(mag, 4); break
             for k in HIGH_MAG:
                 if k in t: mag = 5; break
-            # Bump 2 → 3 for "rose/fell/update/integration" style middle ground
             if mag == 1 and any(k in t for k in ("rose","fell","update","integrat","merger")):
                 mag = 3
             bull = sum(1 for k in BULL if k in t)
@@ -829,7 +828,6 @@ class Handler(BaseHTTPRequestHandler):
                         r = cli.get(url)
                         if r.status_code != 200:
                             continue
-                        # RSS 2.0 — items in channel/item
                         root = ET.fromstring(r.text)
                         for item in root.iter("item"):
                             title = (item.findtext("title") or "").strip()
@@ -837,7 +835,7 @@ class Handler(BaseHTTPRequestHandler):
                             pubd  = (item.findtext("pubDate") or "").strip()
                             if not title:
                                 continue
-                            mag, direction = score(title)
+                            mag, direction = kw_score(title)
                             items.append({
                                 "title": title[:140],
                                 "source": source,
@@ -850,10 +848,63 @@ class Handler(BaseHTTPRequestHandler):
                         continue
         except Exception:
             pass
-        # Sort by magnitude desc, then by pubdate desc (newer first within same mag).
-        # RFC822 string sort isn't ideal but RSS dates within a day usually sort right.
-        items.sort(key=lambda x: (-x["magnitude"], -hash(x.get("pubdate","")) ))
-        # Stable secondary: drop pubdate hash trick — sort newest by string desc within same mag
+
+        # LLM re-score top 10 by keyword magnitude. Single call, structured JSON.
+        # Free Groq tier; if it fails we keep keyword scores.
+        groq_key = os.environ.get("GROQ_API_KEY", "")
+        if groq_key and items:
+            # Pre-sort to pick best candidates
+            items.sort(key=lambda x: -x["magnitude"])
+            candidates = items[:10]
+            try:
+                prompt = (
+                    "You are a crypto trading desk news analyst. For each numbered headline, "
+                    "score MAGNITUDE (1-5) and DIRECTION (-1 bearish / 0 neutral / 1 bullish) "
+                    "for crypto markets in the next 24 hours.\n\n"
+                    "MAGNITUDE rubric:\n"
+                    "5 = market-moving (ETF flows, Fed/SEC action, major hack >$50M, exchange collapse, regulation)\n"
+                    "4 = significant (partnerships, large fundraises, big listings, notable price levels broken)\n"
+                    "3 = moderate (protocol updates, mid-tier integrations, sector rotations)\n"
+                    "2 = minor (small projects, opinion pieces, scheduled events)\n"
+                    "1 = noise (recaps, listicles, generic content)\n\n"
+                    "Reply ONLY with JSON: {\"scores\": [{\"i\": N, \"m\": magnitude, \"d\": direction}, ...]}\n\n"
+                    "Headlines:\n" +
+                    "\n".join(f"{i+1}. {c['title']}" for i, c in enumerate(candidates))
+                )
+                with httpx.Client(timeout=6.0) as cli:
+                    r = cli.post(
+                        "https://api.groq.com/openai/v1/chat/completions",
+                        headers={"Authorization": f"Bearer {groq_key}",
+                                 "Content-Type": "application/json"},
+                        json={
+                            "model": "llama-3.3-70b-versatile",
+                            "messages": [{"role": "user", "content": prompt}],
+                            "temperature": 0.1,
+                            "max_tokens": 600,
+                            "response_format": {"type": "json_object"},
+                        },
+                    )
+                    if r.status_code == 200:
+                        content = (r.json()
+                                   .get("choices", [{}])[0]
+                                   .get("message", {})
+                                   .get("content", ""))
+                        try:
+                            parsed = json.loads(content)
+                            for s in parsed.get("scores", []):
+                                idx = int(s.get("i", 0)) - 1
+                                if 0 <= idx < len(candidates):
+                                    m = int(s.get("m", candidates[idx]["magnitude"]))
+                                    d = int(s.get("d", candidates[idx]["direction"]))
+                                    candidates[idx]["magnitude"] = max(1, min(5, m))
+                                    candidates[idx]["direction"] = max(-1, min(1, d))
+                                    candidates[idx]["llm_scored"] = True
+                        except (json.JSONDecodeError, ValueError, TypeError):
+                            pass
+            except Exception:
+                pass
+
+        # Final sort: magnitude desc, newer first within same magnitude
         from collections import defaultdict
         groups = defaultdict(list)
         for it in items: groups[it["magnitude"]].append(it)
@@ -1277,44 +1328,227 @@ class Handler(BaseHTTPRequestHandler):
                                      "detail": str(e), "url": url})
 
     def _serve_orderbook(self, coin: str) -> None:
-        """L2 orderbook heatmap source. Renderer (landing.html loadOrderbook)
-        expects each level shaped {price, sz, usd}; tuple [px, sz] from the
-        previous version made the heatmap render blank. We also surface a
-        venues count for the panel header.
+        """Multi-venue L2 orderbook heatmap aggregator.
 
-        Source: HL info.l2Book — top 50 levels each side. usd = price * sz.
+        Renderer (landing.html loadOrderbook) expects each level shaped
+        {price, sz, usd, venues}. Header reads `venues` count.
+
+        Venues queried in parallel (5s budget total):
+          HL, OKX, Bybit, Coinbase, Kraken, Bitget, Binance.
+        Each maps symbol per its own convention. Failures are silent so a
+        single down venue doesn't blank the panel — degrades to whatever's
+        live. From the Anthropic build container: HL/OKX/CB/Kraken/Bitget
+        return 200; Binance/Bybit are geo-blocked. From Render egress the
+        mix may differ.
+
+        Aggregation: levels bucketed to nearest 0.01% of mid price so
+        OKX's $77820.4 and HL's $77820.0 collapse to the same bucket.
+        Size sums in base asset across venues; usd = bucket_price × total_sz.
+        `venues` is the count of distinct exchanges contributing — top-of-book
+        gets all venues; deep levels typically only the largest venues.
+
+        Cached 3s — heatmap polls every 6s. Halves outbound API hits.
         """
         coin = coin.upper()
-        try:
-            with httpx.Client(timeout=4.0) as cli:
-                r = cli.post("https://api.hyperliquid.xyz/info",
-                             json={"type": "l2Book", "coin": coin})
-                if r.status_code == 200:
-                    data = r.json() or {}
-                    levels = data.get("levels", [[], []])
-                    def lvl(side):
-                        out = []
-                        for x in side[:50]:
-                            try:
-                                px = float(x["px"]); sz = float(x["sz"])
-                            except (KeyError, ValueError, TypeError):
-                                continue
-                            if px <= 0 or sz <= 0:
-                                continue
-                            out.append({"price": px, "sz": sz, "usd": round(px * sz, 2)})
-                        return out
-                    bids = lvl(levels[0]) if len(levels) > 0 else []
-                    asks = lvl(levels[1]) if len(levels) > 1 else []
-                    mid = (bids[0]["price"] + asks[0]["price"]) / 2 if bids and asks else 0
-                    return self._json(200, {
-                        "coin": coin, "mid": mid,
-                        "bids": bids, "asks": asks,
-                        "venues": 1,            # HL only — extend when bus exposes multi-venue book
-                        "ts": int(time.time() * 1000),
-                    })
-        except Exception:
-            pass
-        self._json(200, {"coin": coin, "mid": 0, "bids": [], "asks": [], "venues": 0})
+        cache_key = f"_ob_cache_{coin}"
+        cache = getattr(Handler, cache_key, None)
+        if cache and (time.time() - cache.get("ts", 0) < 3):
+            return self._json(200, cache["payload"])
+
+        # Per-venue fetchers — each returns (venue_name, [{price, sz}], [{price, sz}]) or None
+        def fetch_hl(c, cli):
+            r = cli.post("https://api.hyperliquid.xyz/info",
+                         json={"type": "l2Book", "coin": c}, timeout=2.5)
+            if r.status_code != 200: return None
+            data = r.json() or {}
+            lvls = data.get("levels", [[], []])
+            def L(side):
+                out = []
+                for x in side[:50]:
+                    try:
+                        out.append({"price": float(x["px"]), "sz": float(x["sz"])})
+                    except (KeyError, ValueError, TypeError): pass
+                return out
+            bids = L(lvls[0]) if len(lvls) > 0 else []
+            asks = L(lvls[1]) if len(lvls) > 1 else []
+            return ("HL", bids, asks)
+
+        def fetch_okx(c, cli):
+            r = cli.get("https://www.okx.com/api/v5/market/books",
+                        params={"instId": f"{c}-USDT-SWAP", "sz": "50"}, timeout=2.5)
+            if r.status_code != 200: return None
+            data = (r.json() or {}).get("data", [])
+            if not data: return None
+            d = data[0]
+            def L(rows):
+                out = []
+                for r0 in rows[:50]:
+                    try:
+                        out.append({"price": float(r0[0]), "sz": float(r0[1])})
+                    except (IndexError, ValueError, TypeError): pass
+                return out
+            return ("OKX", L(d.get("bids", [])), L(d.get("asks", [])))
+
+        def fetch_bybit(c, cli):
+            r = cli.get("https://api.bybit.com/v5/market/orderbook",
+                        params={"category": "linear", "symbol": f"{c}USDT", "limit": 50}, timeout=2.5)
+            if r.status_code != 200: return None
+            d = (r.json() or {}).get("result", {})
+            def L(rows):
+                out = []
+                for r0 in rows[:50]:
+                    try:
+                        out.append({"price": float(r0[0]), "sz": float(r0[1])})
+                    except (IndexError, ValueError, TypeError): pass
+                return out
+            return ("Bybit", L(d.get("b", [])), L(d.get("a", [])))
+
+        def fetch_coinbase(c, cli):
+            r = cli.get(f"https://api.exchange.coinbase.com/products/{c}-USD/book",
+                        params={"level": "2"}, timeout=2.5)
+            if r.status_code != 200: return None
+            d = r.json() or {}
+            def L(rows):
+                out = []
+                for r0 in rows[:50]:
+                    try:
+                        # CB: [price, size, num-orders]
+                        out.append({"price": float(r0[0]), "sz": float(r0[1])})
+                    except (IndexError, ValueError, TypeError): pass
+                return out
+            return ("Coinbase", L(d.get("bids", [])), L(d.get("asks", [])))
+
+        def fetch_kraken(c, cli):
+            sym = "XBTUSD" if c == "BTC" else f"{c}USD"
+            r = cli.get("https://api.kraken.com/0/public/Depth",
+                        params={"pair": sym, "count": 50}, timeout=2.5)
+            if r.status_code != 200: return None
+            res = (r.json() or {}).get("result", {})
+            if not res: return None
+            # Kraken returns {pair_name: {bids, asks}}
+            pair_data = next(iter(res.values()), {})
+            def L(rows):
+                out = []
+                for r0 in rows[:50]:
+                    try:
+                        # Kraken: [price_str, vol_str, timestamp]
+                        out.append({"price": float(r0[0]), "sz": float(r0[1])})
+                    except (IndexError, ValueError, TypeError): pass
+                return out
+            return ("Kraken", L(pair_data.get("bids", [])), L(pair_data.get("asks", [])))
+
+        def fetch_bitget(c, cli):
+            r = cli.get("https://api.bitget.com/api/v2/mix/market/merge-depth",
+                        params={"symbol": f"{c}USDT", "productType": "USDT-FUTURES", "limit": "50"}, timeout=2.5)
+            if r.status_code != 200: return None
+            d = (r.json() or {}).get("data", {})
+            def L(rows):
+                out = []
+                for r0 in (rows or [])[:50]:
+                    try:
+                        out.append({"price": float(r0[0]), "sz": float(r0[1])})
+                    except (IndexError, ValueError, TypeError): pass
+                return out
+            return ("Bitget", L(d.get("bids", [])), L(d.get("asks", [])))
+
+        def fetch_binance(c, cli):
+            r = cli.get("https://fapi.binance.com/fapi/v1/depth",
+                        params={"symbol": f"{c}USDT", "limit": 50}, timeout=2.5)
+            if r.status_code != 200: return None
+            d = r.json() or {}
+            def L(rows):
+                out = []
+                for r0 in rows[:50]:
+                    try:
+                        out.append({"price": float(r0[0]), "sz": float(r0[1])})
+                    except (IndexError, ValueError, TypeError): pass
+                return out
+            return ("Binance", L(d.get("bids", [])), L(d.get("asks", [])))
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        results = []
+        fetchers = [fetch_hl, fetch_okx, fetch_bybit, fetch_coinbase,
+                    fetch_kraken, fetch_bitget, fetch_binance]
+        with httpx.Client(timeout=3.0) as cli:
+            with ThreadPoolExecutor(max_workers=7) as ex:
+                futs = [ex.submit(fn, coin, cli) for fn in fetchers]
+                for fut in as_completed(futs, timeout=4.5):
+                    try:
+                        r = fut.result(timeout=0.5)
+                        if r: results.append(r)
+                    except Exception:
+                        pass
+
+        if not results:
+            return self._json(200, {"coin": coin, "mid": 0, "bids": [], "asks": [], "venues": 0})
+
+        # Reference mid: median of top-of-book midpoints across venues
+        venue_mids = []
+        for _, b, a in results:
+            if b and a:
+                venue_mids.append((b[0]["price"] + a[0]["price"]) / 2)
+        venue_mids.sort()
+        ref_mid = venue_mids[len(venue_mids)//2] if venue_mids else 0
+        if ref_mid <= 0:
+            return self._json(200, {"coin": coin, "mid": 0, "bids": [], "asks": [], "venues": 0})
+
+        # Bucket size = 0.01% of mid. At BTC $77,820 → $7.78 buckets. Tight
+        # enough that walls cluster meaningfully, loose enough to merge tick
+        # differences across venues (Coinbase ticks $0.01, HL $1, OKX $0.1).
+        bucket_pct = 0.0001
+        bucket_size = max(ref_mid * bucket_pct, 0.0001)
+
+        from collections import defaultdict
+        bid_buckets: dict = defaultdict(lambda: {"sz": 0.0, "venues": set()})
+        ask_buckets: dict = defaultdict(lambda: {"sz": 0.0, "venues": set()})
+
+        for venue, b, a in results:
+            for lvl in b:
+                # Discard stale/wide levels (>5% from mid usually instrument noise)
+                if not (ref_mid * 0.95 <= lvl["price"] <= ref_mid * 1.05): continue
+                k = round(lvl["price"] / bucket_size)
+                bid_buckets[k]["sz"] += lvl["sz"]
+                bid_buckets[k]["venues"].add(venue)
+            for lvl in a:
+                if not (ref_mid * 0.95 <= lvl["price"] <= ref_mid * 1.05): continue
+                k = round(lvl["price"] / bucket_size)
+                ask_buckets[k]["sz"] += lvl["sz"]
+                ask_buckets[k]["venues"].add(venue)
+
+        def to_levels(buckets, side_is_bid: bool):
+            rows = []
+            for k, v in buckets.items():
+                price = k * bucket_size
+                rows.append({
+                    "price": round(price, 8),
+                    "sz": round(v["sz"], 6),
+                    "usd": round(price * v["sz"], 2),
+                    "venues": sorted(v["venues"]),
+                })
+            # Bids descending, asks ascending; top 30 each
+            rows.sort(key=lambda x: -x["price"] if side_is_bid else x["price"])
+            return rows[:30]
+
+        bids_out = to_levels(bid_buckets, True)
+        asks_out = to_levels(ask_buckets, False)
+
+        venues_count = len(results)
+        venues_list = sorted([v for v, _, _ in results])
+
+        # Recompute mid from aggregated top-of-book
+        mid = (bids_out[0]["price"] + asks_out[0]["price"]) / 2 if bids_out and asks_out else ref_mid
+
+        payload = {
+            "coin": coin,
+            "mid": round(mid, 8),
+            "bids": bids_out,
+            "asks": asks_out,
+            "venues": venues_count,
+            "venue_list": venues_list,
+            "ts": int(time.time() * 1000),
+        }
+        setattr(Handler, cache_key, {"payload": payload, "ts": time.time()})
+        self._json(200, payload)
 
     def _proxy(self, target_port: int, strip_prefix: str) -> None:
         """Forward request to localhost:target_port."""
