@@ -706,6 +706,44 @@ class Handler(BaseHTTPRequestHandler):
                                      "total_pnl_correction": round(total_delta, 4),
                                      "results": results})
 
+        if path == "/admin/backfill_reconciled_pnl":
+            # Bring reconciled_off_book rows on-book by reconstructing
+            # closures from HL fills history. Optional `since_ts` filters
+            # to only backfill trades opened after that epoch (operator
+            # uses this to backfill only post-bug-fix trades).
+            # Auth via HALT_TOKEN. Body:
+            #   {"since_ts": 0.0 | float,        # only backfill open_ts >= this
+            #    "dry_run": true|false}         # default true
+            if not halt.halt_token_ok(token):
+                return _json(self, 401, {"error": "bad_token"})
+            if TRADER is None:
+                return _json(self, 503, {"error": "trader_not_initialised"})
+            since_ts = float(body.get("since_ts", 0.0) or 0.0)
+            dry_run = bool(body.get("dry_run", True))
+            if dry_run:
+                # Dry-run: count candidates, do not call book_closure_from_fills
+                rows = CONN.execute(
+                    "SELECT t.cloid, t.strategy, t.coin, t.open_ts FROM trades t "
+                    "LEFT JOIN closures c ON c.cloid = t.cloid "
+                    "WHERE t.status IN ('reconciled_off_book','force_closed_unverified','closed') "
+                    "  AND c.id IS NULL AND t.open_ts >= ?",
+                    (since_ts,),
+                ).fetchall()
+                return _json(self, 200, {"ok": True, "dry_run": True,
+                                         "n_candidates": len(rows),
+                                         "since_ts": since_ts,
+                                         "candidates": [
+                                             {"cloid": r["cloid"], "strategy": r["strategy"],
+                                              "coin": r["coin"], "open_ts": r["open_ts"]}
+                                             for r in rows[:50]]})
+            try:
+                result = TRADER.backfill_reconciled_closures(since_ts=since_ts)
+            except Exception as e:
+                log.exception("backfill_reconciled_closures failed")
+                return _json(self, 500, {"error": "backfill_failed", "detail": str(e)})
+            return _json(self, 200, {"ok": True, "dry_run": False,
+                                     "since_ts": since_ts, **result})
+
         if path == "/precog/webhook":
             # HMAC verification of X-Precog-Sig (hex sha256 of body with PRECOG_WEBHOOK_SECRET)
             import hmac, hashlib
@@ -768,6 +806,21 @@ def _position_loop() -> None:
                         log.warning("reconcile_with_hl: %d off-book rows cleaned", n)
                 except Exception:
                     log.exception("reconcile_with_hl failed")
+            # Every 5 ticks (offset by 2): book closures for reconciled_off_book
+            # rows that have matching HL fills. Brings off-book trades on-book
+            # automatically so attribution + WR/PF aren't silently lost.
+            # since_ts=0 → backfill historical too on each pass (idempotent
+            # via closures.cloid UNIQUE guard in book_closure_from_fills).
+            if tick % 5 == 2:
+                try:
+                    bf = TRADER.backfill_reconciled_closures(since_ts=0.0)
+                    if bf.get("booked", 0) > 0:
+                        log.warning(
+                            "backfill_reconciled_closures: booked=%d "
+                            "no_fills=%d errors=%d (scanned=%d)",
+                            bf["booked"], bf["no_fills"], bf["errors"], bf["scanned"])
+                except Exception:
+                    log.exception("backfill_reconciled_closures failed")
             # Every 15 ticks (~15 min): force-close trades stuck way past
             # their max_hold. Last-resort defense against rows the loop can't
             # close (e.g. persistent HL errors).

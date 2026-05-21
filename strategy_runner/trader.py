@@ -5,6 +5,7 @@ fills to SQLite without hitting HL.
 """
 from __future__ import annotations
 
+import os
 import json
 import logging
 import sqlite3
