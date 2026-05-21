@@ -34,6 +34,7 @@ def _regime(name="range", conf=1.0):
 
 
 # ─── cap_frac per-engine concentration cap ────────────────────────────────
+@pytest.mark.skip(reason="per-engine cap_frac enforcement removed 2026-05-21 per operator")
 def test_cap_frac_blocks_when_engine_budget_exhausted():
     """When N trades fully consume the budget, the N+1th must be blocked."""
     from pm.pretrade import ENGINE_REGISTRY, _cap_of
@@ -52,6 +53,7 @@ def test_cap_frac_blocks_when_engine_budget_exhausted():
     assert "engine_cap_frac_exhausted" in r.reason
 
 
+@pytest.mark.skip(reason="per-engine cap_frac enforcement removed 2026-05-21 per operator")
 def test_cap_frac_allows_within_budget():
     """N-1 trades within budget should still allow the Nth."""
     from pm.pretrade import ENGINE_REGISTRY, _cap_of
@@ -71,6 +73,7 @@ def test_cap_frac_allows_within_budget():
     assert r.size_usd == pytest.approx(margin_per, abs=0.01)
 
 
+@pytest.mark.skip(reason="per-engine cap_frac enforcement removed 2026-05-21 per operator")
 def test_cap_frac_isolates_by_engine_tag():
     """Other engines' open positions don't count against this engine's budget."""
     # 5 trades from a DIFFERENT engine — should not exhaust hl_settle_5m
@@ -222,6 +225,7 @@ def test_rule_5b_only_applies_to_opposite_trend_not_range():
 
 
 # ─── Notional ceiling check ───────────────────────────────────────────────
+@pytest.mark.skip(reason="per-engine cap_frac enforcement removed 2026-05-21 per operator")
 def test_max_total_engine_notional_bounded_by_cap_frac():
     """Cumulative claim: an engine's max total margin is bounded by
     cap_frac × equity, and notional by cap_frac × leverage × equity."""

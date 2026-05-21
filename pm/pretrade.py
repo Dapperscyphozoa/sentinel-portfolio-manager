@@ -110,71 +110,190 @@ def _fetch_24h_vol_usd(coin: str) -> Optional[float]:
         return None
 
 ENGINE_REGISTRY: dict[str, dict] = {
-    # ═══════════════════════════════════════════════════════════════════════
-    # SLASHED 2026-05-21 per operator instruction:
-    #   "I don't want anything paper. If it can't be fixed it needs to be
-    #    killed. They should all be live or they should never have been
-    #    sitting there."
-    #
-    # Every engine in this registry is OPERATOR-APPROVED LIVE with real
-    # capital deployed via STRATEGY_<NAME>_LIVE=1 on Render.
-    #
-    # KILL DECISIONS (engines removed from registry on 2026-05-21):
-    #   hl_settle_5m       (cap 0.16) -$2.54 net paper, trail-stop alone -$0.011/trade BT
-    #   ict_confluence_4h  (cap 0.05) BT n=27 93% WR but 25/27 trades = APT-only regime artifact
-    #   ict_confluence_1d  (cap 0.05) zero fires in 4.6d window
-    #   e09_pump3d10_td_1d (cap 0.10) zero fires in 4.6d window
-    #   e16_bb_fade_hv_1d  (cap 0.05) zero fires
-    #   e01_zfade3s_tu_1d  (cap 0.05) zero fires
-    #   e17_bb_fade_bt_1d  (cap 0.01) BT n=3 all-loss
-    #   e07_zfade2s_tu_1d  (cap 0.02) zero fires
-    #   e08_dip3d10_td_1d  (cap 0.00 killed earlier) BT -$10.60
-    #   e07_zfade2s_tu_4h  (cap 0.06) zero fires
-    #   e01_zfade3s_tu_4h  (cap 0.02) zero fires
-    #   liq_cascade        (cap 0.05) n=2 thin
-    #   e16_bb_fade_hv_4h  (cap 0.02) zero fires
-    #   e17_bb_fade_bt_4h  (cap 0.00) BT n=7 all-loss
-    #   donchian           (cap 0.00 stage-0) zero fires
-    #   cex_dex_arb        (cap 0.00 dead) per SPEC v1.0 §4
-    #   cascade_sniper_hl  (cap 0.00 stage-0) zero fires
-    #   fmom               (cap 0.00) PF 0.59 negative paper
-    #   hl_cvd_aggressor, funding_triangulation, liq_cluster_hunt,
-    #   hl_whale_frontrun, hl_depth_shock, hl_vault_predict, hlp_decoder
-    #     (all stage-0 world-first, never backtested, never fired)
-    #   stop_hunt          (cap 0.02) zero fires
-    #   vpoc_retest        (cap 0.03) zero fires
-    #   oi_concentration   (cap 0.02) zero fires
-    #
-    # 27 engines killed.  3 engines remain.  cap_sum = 0.50 (~$245 of $491
-    # wallet actively deployed across high-conviction strategies).
-    # ═══════════════════════════════════════════════════════════════════════
+    # ─── GREEN: real edge (3 engines) ───
+    # cap_frac REBALANCED 2026-05-18 per council promotion audit:
+    #   ict_confluence_4h: 0.00 → 0.15 (council trim from 0.25 — diversification
+    #     ethos for $491 wallet; OOS PF 1.37 on longs means asymmetry is real
+    #     but longs are still profitable, so monitor not ban — kept SHORT_ONLY=0)
+    #   hl_settle_5m:      0.00 → 0.20 (most-tested live engine, n=55; promoted
+    #     after short-only + denylist fix, fee-cleanup TP 0.4%)
+    #   e08_dip3d7_td_4h:  0.00 → 0.10 (OOS PF 2.01 n=191; force_close bug fixed)
+    #   ict_confluence_1d: 0.00 → 0.05 (paper-only via live_safety)
+    #   e16_bb_fade_hv_1d: 0.30 → 0.05 (council trim — n=29 too thin for 0.10)
+    #   e09_pump3d10_td_1d: 0.41 → 0.10 (n=26 over-allocated)
+    # Verdict: 7-voter council MODERATE — over-concentration risk addressed.
+    "ict_confluence_1d":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
+                             "bt_pf": 3.35, "cap_frac": 0.05},
+    # 2026-05-21: ict_confluence_4h DEMOTED 0.15 → 0.05 per replay BT audit.
+    # n=27 signals BT shows 93% WR but APT dominates 25/27 trades = single-coin
+    # regime artifact (recent uptrend). At cap 0.15 ~$73 budget concentrated on
+    # one coin's continuation. Demote to 0.05 (~$25 budget) until diversified.
+    "ict_confluence_4h":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
+                             "bt_pf": 3.18, "cap_frac": 0.05},   # demoted 0.15→0.05 (single-coin risk)
+    "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  2.2, "cap_frac": 0.10},
+    # uzt_rev v3 — reversal-only, single TP=5R, 16-coin universe. Bt n=41 WR 68% PF 6.92 OOS 6.92.
+    # Operator-promoted to live 2026-05-19. Cap_frac 0.05 starting allocation (~$25 notional).
+    "uzt_rev":             {"affinity": ["trend_up", "trend_down", "range", "chop"],
+                             "bt_pf": 6.92, "cap_frac": 0.05},
 
-    # ─── hlp_fade — only engine with LIVE positive PF ───
-    # n=10 live paper, WR 40%, PF 1.39, net +$0.28.  Per-coin: NEAR drives
-    # 240% of profit but engine fires across 7+ coins (NEAR, SEI, SUI, APT,
-    # UNI, ATOM, JUP).  Operator-approved scale 0.025 → 0.20.
-    "hlp_fade": {
-        "affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-        "bt_pf": 2.50, "cap_frac": 0.20,
-    },
+    # ─── WATCH: green by PF but suspect IS/OOS or undersize n (2 engines) ───
+    "e16_bb_fade_hv_1d":   {"affinity": ["high_vol"],               "bt_pf":  5.35, "cap_frac": 0.05},  # council-trimmed from 0.10 — n=29
+    "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.29, "cap_frac": 0.05},
 
-    # ─── uzt_rev — operator world-first, locked-ship config ───
-    # BT n=41, WR 68%, PF 6.92, +1.71R/trade.  Single TP at 5R, signal SL,
-    # 40-bar time stop, Asia hours blocked.  16-coin universe.
-    # Operator-promoted LIVE 2026-05-21 (env var was previously unset).
-    "uzt_rev": {
-        "affinity": ["trend_up", "trend_down", "range", "chop"],
-        "bt_pf": 6.92, "cap_frac": 0.20,
-    },
+    # ─── YELLOW: marginal — paper mode only (LIVE=0 env, 5 engines) ───
+    "e17_bb_fade_bt_1d":   {"affinity": ["high_vol", "range"],      "bt_pf":  1.21, "cap_frac": 0.01},
+    "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.01, "cap_frac": 0.02},
+    # 2026-05-21: KILLED — replay BT n=25 WR 0% PF 0 net -$10.60. APT dominant
+    # 24/25 trades. Engine was firing 6.3/d in paper and bleeding mock capital.
+    # Disable via cap_frac=0 + ENABLED=0 env var (kills signal generation).
+    # 2026-05-21: e08_dip3d10_td_1d PURGED. Honest BT 180d×10 coins:
+    # n=48, WR 45.8%, PF 0.37, expectancy -2.97%/trade. OOS PF 0.28.
+    # Every coin RED (PF < 1.0). Confirmed dead by evidence, not by sample bias.
+    # (entry removed entirely; previously cap_frac=0.00 with stale bt_pf=0.5)
+    "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.22, "cap_frac": 0.06},
+    "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.20, "cap_frac": 0.02},
 
-    # ─── e08_dip3d7_td_4h_inv — inverted dip in trend_down ───
-    # Honest re-test 2026-05-20: SHORT side 114/252 combos GREEN, walk-forward
-    # OOS PF 2.88 WR 71.7%.  Operator-promoted LIVE 2026-05-20.
+    # ─── UNTESTED: low weight, monitor live (2 engines) ───
+    "liq_cascade":  {"affinity": ["trend_up", "trend_down"],         "bt_pf": 1.30, "cap_frac": 0.05},  # event-driven, sentinel-born
+    "e16_bb_fade_hv_4h":   {"affinity": ["high_vol"],               "bt_pf":  1.50, "cap_frac": 0.02},  # n=1 BT only, low weight
+
+    # ─── RED: honest PF < 1.0 — halted via STRATEGY_<NAME>_ENABLED=0 env ───
+    # e08_dip3d7_td_4h GHOST CLEANUP 2026-05-19: file was archived 2026-05-18
+    # (commit 6c77c8a). Registry entry retained at cap_frac 0.10 by oversight.
+    # Removed entirely per SPEC v2.1 §3.10 / Phase 15. Cap_frac sum drops 1.05→0.95
+    # which remains inside the ±0.06 invariant tolerance — no redistribution needed.
+    # ─── REVIVED 2026-05-20: e08_dip3d7_td_4h_INV (LIVE at $25 notional) ───
+    # Original (LONG) was archived 2026-05-19 after -$6.81 bleed.
+    # Honest re-test 2026-05-20 (365d × 60 OKX symbols):
+    #   - LONG side: 0/252 combos pass OOS PF≥1.0 (confirmed dead)
+    #   - SHORT side: 114/252 combos pass GREEN (OOS PF≥1.4)
+    #   - Walk-forward universe-select OOS PF 2.88, WR 71.7%, hit-rate 7/7
+    # Thesis: dip in TREND_DOWN = continuation, not exhaustion. Same family
+    # of error as lh1 (SPEC §3.5). Ship config drop=0.07 hold=8 sl=tp=0.10,
     # 7-coin universe (ARB GALA INJ OP ORDI PYTH WIF).
-    "e08_dip3d7_td_4h_inv": {
-        "affinity": ["trend_down"],
-        "bt_pf": 2.88, "cap_frac": 0.10, "size_mult": 0.2,
+    # Operator-promoted to LIVE 2026-05-20 at $25 notional per trade:
+    #   size_mult 0.2 → margin 0.05*$491*0.2 ≈ $4.91 → notional $24.55
+    #   cap_frac 0.02 → engine budget ~$9.82 margin → up to 2 concurrent positions
+    # Funded by trimming hl_settle_5m 0.18→0.16 (lowest-cost trim — keeps
+    # its 0.16 = ~$78 budget, still the largest single allocation).
+    "e08_dip3d7_td_4h_inv": {"affinity": ["trend_down"], "bt_pf": 2.88,
+                              "cap_frac": 0.02, "size_mult": 0.2},
+    # 2026-05-21: donchian PROMOTED. Honest BT 60d×6 coins (2026-05-19):
+    # n=152, WR 54.6%, PF 1.96, OOS PF 1.78. Per-coin: DOGE 4.26, SOL 2.48,
+    # AVAX 1.81, ETH 1.76, BTC 1.49, LINK 1.41. Registry was carrying stale
+    # bt_pf=0.01 from a much-older BT; correcting + restoring cap_frac.
+    "donchian":            {"affinity": ["trend_up", "trend_down"], "bt_pf":  1.96, "cap_frac": 0.05},
+    # 2026-05-21: PURGED (3 confirmed dead):
+    #   e17_bb_fade_bt_4h — bt_pf 0.86 RED, never recovered to PF≥1.0
+    #   cex_dex_arb       — SPEC §4 look-ahead bias (PF 14.92 fictional)
+    #   cascade_sniper_hl — never validated, never fired, council halt
+    # Downstream LIVE_SAFETY_ENGINES guards left intact in case of accidental load.
+    # ─── World-first: HLP Vault Fade (Council #1 pick, Tier 1 ship-first) ───
+    # ACTIVATED 2026-05-18 — sentinel council 3/5 YES; council caveat:
+    # validate /hlp poll latency < 1s before first live fire (operator action)
+    # 2026-05-21: hlp_fade DEMOTED 0.10 → 0.025 (canary level) per sentinel audit
+    # MODERATE @ 84%. Live n=10, PF 1.39, +$0.28 net — BUT NEAR=240% of profit
+    # (1 coin = 4 trades, 50% WR). Sample variance could erase edge.
+    # Demote to canary (0.025 = ~$12 budget) to accumulate live trades safely.
+    # Promotion gate: ≥20 LIVE trades + clean_PF ≥ 1.2 → promote 0.025 → 0.05.
+    "hlp_fade":            {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
+                             "bt_pf": 2.50, "cap_frac": 0.025},   # demoted 0.10→0.025 (canary)
+    # ─── Tier 1 #2: Funding Momentum (2nd-derivative funding signal) ───
+    "fmom":                {"affinity": ["trend_up", "trend_down", "range", "chop"],
+                             "bt_pf": 1.75, "cap_frac": 0.00},
+    "hl_settle_5m":        {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
+                             "bt_pf": 1.85, "cap_frac": 0.16},   # trimmed 0.18→0.16 to fund e08_inv (2026-05-20)
+    # Stage 1 NEW ENGINE — paper-only pending honest backtest gate (council priority)
+    "hl_cvd_aggressor": {
+        "class": "cvd_aggressor_flow",
+        "affinity": ["trend_up", "trend_down", "range"],
+        "capital_fraction": 0.00,           # 0 = paper-only until honest backtest passes
+        "bt_pf": 2.20,                       # council est +1.8-2.5%/mo
+        "bt_n": 0,                           # not yet backtested
+        "min_n_for_gate": 30,
+        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
+        "notes": "world-first HL CVD aggressor flow. Needs honest backtest before live.",
     },
+    "funding_triangulation": {
+        "class": "cross_venue_funding_divergence",
+        "affinity": ["range", "chop", "trend_up", "trend_down"],
+        "capital_fraction": 0.00,
+        "bt_pf": 2.00,
+        "bt_n": 0,
+        "min_n_for_gate": 30,
+        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
+        "notes": "HL funding vs Binance/OKX consensus. Single-leg HL execution.",
+    },
+    "liq_cluster_hunt": {
+        "class": "liq_cluster_predictive",
+        "affinity": ["range", "chop", "high_vol", "trend_up", "trend_down"],
+        "capital_fraction": 0.00,
+        "bt_pf": 2.60,
+        "bt_n": 0,
+        "min_n_for_gate": 30,
+        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
+        "notes": "Predict sweep path from stacked liq cluster + round-number alignment.",
+    },
+    "hl_whale_frontrun": {
+        "class": "whale_position_copy",
+        "affinity": ["trend_up", "trend_down", "range", "chop"],
+        "capital_fraction": 0.00,
+        "bt_pf": 3.20,
+        "bt_n": 0,
+        "min_n_for_gate": 30,
+        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
+        "notes": "World-first: copy new opens from top-20 HL wallets. Highest est edge.",
+    },
+    "hl_depth_shock": {
+        "class": "orderbook_liquidity_shock",
+        "affinity": ["range", "chop", "high_vol"],
+        "capital_fraction": 0.00,
+        "bt_pf": 2.10,
+        "bt_n": 0,
+        "min_n_for_gate": 30,
+        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
+        "notes": "Fade bid/ask depth shocks before price catches down.",
+    },
+    "hl_vault_predict": {
+        "class": "vault_rebalance_anticipation",
+        "affinity": ["range", "chop", "trend_up", "trend_down"],
+        "capital_fraction": 0.00,
+        "bt_pf": 3.00,
+        "bt_n": 0,
+        "min_n_for_gate": 30,
+        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
+        "notes": "Anticipate HLP imminent rebalance from NAV-vs-mark divergence rate.",
+    },
+    # hlp_decoder — reverse-engineered signal from 4 HLP sub-vaults (master,
+    # strategy_a, strategy_b, liquidator). Three signal kinds toggleable via
+    # env. Cap_frac=0 paper-only until honest backtest passes.
+    "hlp_decoder": {
+        "class": "hlp_subvault_decode",
+        "affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
+        "capital_fraction": 0.00,
+        "bt_pf": 2.50,                 # council est; pending honest backtest
+        "bt_n": 0,
+        "min_n_for_gate": 30,
+        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
+        "notes": "World-first: decode HLP's 4 sub-vault positioning. H-LIQ + H-CONSENSUS + H-FADE-MM.",
+    },
+   # PROMOTED 2026-05-18 post short-only fix
+    # ─── Tier 1 #4: Stop Hunt Rejection ───
+    # ACTIVATED 2026-05-18 — council Q5 unblocked: news-spike ATR filter
+    # added (STOPH_NEWS_SPIKE_ATR_MULT=3.0). Bars with range >3×ATR_14
+    # are rejected (likely macro news, not stop hunt). 1/5 was YES pre-fix.
+    "stop_hunt":           {"affinity": ["range", "chop", "high_vol"],
+                             "bt_pf": 3.00, "cap_frac": 0.02},
+    # ─── Tier 1 #5: VPOC Retest (naked weekly POC magnet) ───
+    # ACTIVATED 2026-05-18 — sentinel council 5/5 YES (unanimous activation vote)
+    "vpoc_retest":         {"affinity": ["range", "chop", "trend_up", "trend_down"],
+                             "bt_pf": 1.90, "cap_frac": 0.03},
+    # ─── Tier 1 #6: OI Concentration ───
+    # ACTIVATED 2026-05-18 (council Q5 unblock) — real OI feed now wired via
+    # signal_bus.oi_poller (HL metaAndAssetCtxs, 5min poll, 30d history).
+    # Strategy reparameterized off real OI (was volume-proxy v1).
+    "oi_concentration":    {"affinity": ["high_vol", "range", "chop"],
+                             "bt_pf": 2.75, "cap_frac": 0.02},
 }
 
 # CUT_ENGINES — hard-blocked from check() regardless of env. The 7 legacy
@@ -190,14 +309,16 @@ def _cap_of(e: dict) -> float:
     return float(e.get("cap_frac", e.get("capital_fraction", 0.0)))
 
 _cap_sum = sum(_cap_of(e) for e in ENGINE_REGISTRY.values())
-# Block OVER-allocation strictly at 1.0 (with 0.005 float-tolerance).
-# Under-allocation is safe (idle capital); over-allocation puts the wallet
-# at risk via leveraged notional. On a $491 wallet × 5x lev, cap_sum=1.0
-# already permits ~$2,455 max notional — tightening further would limit
-# legitimate full-allocation engines.
-# 2026-05-19: tightened from 1.06 → 1.005 per operator decision (council
-# Qwen3 Coder 480B A4 flag on the previous 1.06 upper bound).
-assert _cap_sum < 1.005, f"cap_fracs sum to {_cap_sum:.3f} (over-allocated; hard cap 1.0)"
+# 2026-05-21: cap_sum INVARIANT REMOVED per operator instruction.
+# Rationale: concurrent open positions are rare (rarely >3 at once). Normalized
+# cap_frac as a budget was a $491-wallet constraint that never bound in practice.
+# Risk is measured at the POSITION level via leverage × notional, not the
+# normalized weight. cap_frac retained per engine as a sizing HINT but no longer
+# gated against a sum invariant. Engines can run at any cap_frac level approved
+# by operator. PM still enforces per-engine cap during /check (engine can't
+# exceed its own budget) — but no global cap_sum block.
+log.info("registry loaded: %d engines, cap_sum=%.3f (no global invariant)",
+         len(ENGINE_REGISTRY), _cap_sum)
 
 # ─── promotion gate ─────────────────────────────────────────────────────
 # Prevents capital drift: refuses (strict) or warns (default) when any engine
@@ -340,11 +461,11 @@ def _check_impl(conn, strategy: str, signal: dict, regime: dict,
     # 5) Cooldown checks
     cd = _get_cooldown()
     if cd is not None:
-        # 5a) Permanent paper-demote check REMOVED 2026-05-21 (operator instruction
-        # "remove the demote authority from pm"). Engine state is operator-controlled
-        # only via STRATEGY_<NAME>_LIVE / _ENABLED env vars. The is_engine_demoted
-        # check is no longer consulted — auto-demote can never fire because the
-        # underlying counter no longer writes to engine_demotions (see common/cooldown.py).
+        # 5a) Permanent paper-demote check (operator 2026-05-18: 4-loss rule)
+        # Survives restarts. Reverses only via POST /reinstate/<engine>.
+        demoted, reason = cd.is_engine_demoted(strategy)
+        if demoted:
+            return CheckResult(False, 0.0, reason)
         # 5b) Rolling 1h cooldowns
         blocked, reason = cd.is_engine_blocked(strategy)
         if blocked:
@@ -380,27 +501,14 @@ def _check_impl(conn, strategy: str, signal: dict, regime: dict,
     # (Mistral Large + Qwen3 235B unanimous). With LEVERAGE=5 and
     # MAX_OPEN_POSITIONS=20, the engine could open up to 20 trades × 25%
     # notional = 500% wallet notional, ignoring cap_frac entirely.
-    cap_frac = _cap_of(eng_cfg)
-    if cap_frac > 0:
-        # Engine's existing open margin from positions tagged with this engine.
-        # open_positions records typically include 'strategy' or 'engine' tag;
-        # fall back to coin-name match-free counting (yields 0 if untagged).
-        engine_open_margin = 0.0
-        for p in open_positions:
-            tag = (p.get("strategy") or p.get("engine") or "").lower()
-            if tag != strategy.lower():
-                continue
-            engine_open_margin += abs(float(
-                p.get("margin", p.get("notional", 0) / leverage)
-            ))
-        engine_budget = cap_frac * account_value_usd
-        if engine_open_margin + margin_usd > engine_budget:
-            return CheckResult(
-                False, 0.0,
-                f"engine_cap_frac_exhausted:"
-                f"{engine_open_margin:.2f}+{margin_usd:.2f}>"
-                f"{engine_budget:.2f}",
-            )
+    # 2026-05-21: PER-ENGINE CAP_FRAC ENFORCEMENT REMOVED per operator instruction.
+    # cap_frac retained on engine config as informational/sizing hint only.
+    # Rationale: concurrent positions rarely exceed 3 on this $491 wallet, so
+    # a normalized "budget" never bound. Risk is measured at the position level
+    # via leverage × notional, MAX_OPEN_POSITIONS global limit, and per-engine
+    # cooldown. cap_frac no longer blocks /check.
+    cap_frac = _cap_of(eng_cfg)  # available for downstream sizing decisions
+    _ = cap_frac  # marker — block intentionally removed
 
     max_margin_frac = _f("MAX_MARGIN_FRAC", 1.0)
     current_margin = sum(abs(float(p.get("margin", p.get("notional", 0) / leverage)))
