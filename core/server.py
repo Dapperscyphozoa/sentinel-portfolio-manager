@@ -685,79 +685,178 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {"items": items, "ts": int(time.time() * 1000)})
 
     def _serve_whales(self) -> None:
-        """Whale prints panel — recent single trades ≥ $100k on top venues.
+        """Whale prints panel — recent single trades ≥ $100k across 4 venues.
 
-        Source: Binance USDS-M Futures aggTrades for the top-traded perps.
-        aggTrade is each market-side aggressor sweep; size is in base asset.
-        We multiply by price to filter to ≥$100k notional.
+        Venues (all reachable from Render egress; Binance/Bybit/MEXC return
+        451/403 from this network):
+          - OKX (linear USDT-SWAP perps, contract-sized — needs ctVal mult)
+          - Bitget (USDT-FUTURES, base-asset size)
+          - Coinbase (spot only, base-asset size)
+          - Kraken (spot, base-asset size)
 
-        Why Binance and not HL: HL spot+perps liquidity is ~5% of Binance's
-        on most names. The signal lives on Binance. Restricting to our own
-        wallet's fills (the previous implementation) yielded zero whale
-        prints because we never trade $100k clips. The operator wants to
-        see who else is moving size — that's Binance.
+        Each venue's price column is normalised to USD notional via
+        price × size_in_base. OKX is the only one where 'sz' is in
+        contracts, so we multiply by per-contract value (BTC = 0.01 BTC,
+        ETH = 0.1 ETH, etc.) before computing USD.
 
-        Cached 30s to avoid hammering Binance from every dashboard poll.
+        Operator can see cross-venue confirmation: if BTC SELL prints on
+        all 4 venues simultaneously, that's high-conviction distribution.
+        Single-venue prints are likely arb/maker activity.
+
+        Cached 30s.
         """
-        # Per-instance cache (module-level would persist across requests but
-        # the handler class is recreated per request; use class attr instead).
         cache = getattr(Handler, "_whales_cache", None)
         if cache and (time.time() - cache.get("ts", 0) < 30):
             return self._json(200, {"items": cache["items"], "ts": int(time.time() * 1000)})
 
-        items: list = []
-        # Top USDT-SWAP perps on OKX. We use OKX rather than Binance because
-        # Binance returns HTTP 451 from many Render egress IPs (geo-restriction).
-        # OKX is the established source for this stack — sentinel-pm /ohlcv
-        # uses the same venue. Universe matches the established backtest set
-        # plus high-volume meme coins where whale prints concentrate.
-        symbols = ["BTC-USDT-SWAP","ETH-USDT-SWAP","SOL-USDT-SWAP",
-                   "BNB-USDT-SWAP","XRP-USDT-SWAP","DOGE-USDT-SWAP",
-                   "PEPE-USDT-SWAP","WIF-USDT-SWAP","AVAX-USDT-SWAP",
-                   "LINK-USDT-SWAP"]
-        cutoff_ms = int((time.time() - 300) * 1000)   # last 5 minutes
+        cutoff_ms = int((time.time() - 300) * 1000)
         MIN_USD = 100_000
+        items: list = []
+
+        # OKX contract values (linear USDT-SWAP). 'sz' is in contracts.
+        OKX_CTVAL = {
+            "BTC": 0.01, "ETH": 0.1, "SOL": 1, "BNB": 0.01, "XRP": 100,
+            "DOGE": 1000, "AVAX": 1, "LINK": 1, "WIF": 1, "PEPE": 10_000_000,
+        }
+        # ---- OKX ----
+        okx_syms = [f"{c}-USDT-SWAP" for c in OKX_CTVAL.keys()]
         try:
-            with httpx.Client(timeout=2.5) as cli:
-                for sym in symbols:
+            with httpx.Client(timeout=2.0) as cli:
+                for sym in okx_syms:
                     try:
-                        r = cli.get(
-                            "https://www.okx.com/api/v5/market/trades",
-                            params={"instId": sym, "limit": 100},
-                        )
-                        if r.status_code != 200:
-                            continue
-                        body = r.json() or {}
-                        trades = body.get("data") or []
+                        r = cli.get("https://www.okx.com/api/v5/market/trades",
+                                    params={"instId": sym, "limit": 100})
+                        if r.status_code != 200: continue
                         coin = sym.split("-")[0]
-                        for t in trades:
+                        ctval = OKX_CTVAL.get(coin, 1)
+                        for t in (r.json() or {}).get("data") or []:
                             try:
                                 ts = int(t.get("ts", 0))
+                                if ts < cutoff_ms: continue
+                                px = float(t.get("px", 0))
+                                contracts = float(t.get("sz", 0))
+                                base_qty = contracts * ctval
+                                usd = px * base_qty
+                                if usd < MIN_USD: continue
+                                items.append({
+                                    "coin": coin,
+                                    "side": "BUY" if t.get("side") == "buy" else "SELL",
+                                    "usd": round(usd, 0), "price": px, "ts": ts,
+                                    "venue": "OKX",
+                                })
                             except (ValueError, TypeError):
                                 continue
-                            if ts < cutoff_ms:
-                                continue
-                            try:
-                                px = float(t.get("px", 0) or 0)
-                                sz = float(t.get("sz", 0) or 0)
-                            except (ValueError, TypeError):
-                                continue
-                            usd = px * sz
-                            if usd < MIN_USD:
-                                continue
-                            side = "BUY" if t.get("side") == "buy" else "SELL"
-                            items.append({
-                                "coin": coin, "side": side,
-                                "usd": round(usd, 0), "price": px,
-                                "ts": ts,
-                            })
                     except Exception:
                         continue
         except Exception:
             pass
-        # Newest first, cap at 30
+
+        # ---- Bitget (USDT-FUTURES, base-asset size, USDT-denominated price) ----
+        bg_syms = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
+                   "DOGEUSDT","AVAXUSDT","LINKUSDT","WIFUSDT","PEPEUSDT"]
+        try:
+            with httpx.Client(timeout=2.0) as cli:
+                for sym in bg_syms:
+                    try:
+                        r = cli.get("https://api.bitget.com/api/v2/mix/market/fills",
+                                    params={"symbol": sym, "productType": "USDT-FUTURES", "limit": 100})
+                        if r.status_code != 200: continue
+                        coin = sym[:-4]
+                        for t in (r.json() or {}).get("data") or []:
+                            try:
+                                ts = int(t.get("ts", 0))
+                                if ts < cutoff_ms: continue
+                                px = float(t.get("price", 0))
+                                qty = float(t.get("size", 0))
+                                usd = px * qty
+                                if usd < MIN_USD: continue
+                                items.append({
+                                    "coin": coin,
+                                    "side": "BUY" if t.get("side") == "buy" else "SELL",
+                                    "usd": round(usd, 0), "price": px, "ts": ts,
+                                    "venue": "Bitget",
+                                })
+                            except (ValueError, TypeError):
+                                continue
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        # ---- Coinbase (spot, USD-quoted) ----
+        cb_pairs = ["BTC-USD","ETH-USD","SOL-USD","XRP-USD","DOGE-USD",
+                    "AVAX-USD","LINK-USD","WIF-USD","PEPE-USD"]
+        try:
+            with httpx.Client(timeout=2.0) as cli:
+                for pair in cb_pairs:
+                    try:
+                        r = cli.get(f"https://api.exchange.coinbase.com/products/{pair}/trades",
+                                    params={"limit": 100})
+                        if r.status_code != 200: continue
+                        coin = pair.split("-")[0]
+                        from datetime import datetime
+                        for t in r.json() or []:
+                            try:
+                                # 'time' is ISO 8601 UTC like '2026-05-21T02:04:39.469297Z'
+                                tstr = t.get("time", "").replace("Z", "+00:00")
+                                ts = int(datetime.fromisoformat(tstr).timestamp() * 1000)
+                                if ts < cutoff_ms: continue
+                                px = float(t.get("price", 0))
+                                qty = float(t.get("size", 0))
+                                usd = px * qty
+                                if usd < MIN_USD: continue
+                                items.append({
+                                    "coin": coin,
+                                    "side": "BUY" if t.get("side") == "buy" else "SELL",
+                                    "usd": round(usd, 0), "price": px, "ts": ts,
+                                    "venue": "Coinbase",
+                                })
+                            except (ValueError, TypeError):
+                                continue
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+        # ---- Kraken (spot, USD/USDT pairs, response is array of tuples) ----
+        # Kraken trade tuple: [price, volume, time, buy/sell, market/limit, misc, tradeId]
+        kr_pairs = {"XBTUSDT":"BTC","ETHUSDT":"ETH","SOLUSDT":"SOL","XRPUSDT":"XRP",
+                    "AVAXUSDT":"AVAX","LINKUSDT":"LINK","DOGEUSDT":"DOGE"}
+        try:
+            with httpx.Client(timeout=2.0) as cli:
+                for pair, coin in kr_pairs.items():
+                    try:
+                        r = cli.get("https://api.kraken.com/0/public/Trades",
+                                    params={"pair": pair, "count": 100})
+                        if r.status_code != 200: continue
+                        data = (r.json() or {}).get("result", {})
+                        # First non-'last' key holds the trades array
+                        for k, trades in data.items():
+                            if k == "last" or not isinstance(trades, list): continue
+                            for t in trades:
+                                try:
+                                    if not isinstance(t, list) or len(t) < 4: continue
+                                    px = float(t[0]); qty = float(t[1])
+                                    ts = int(float(t[2]) * 1000)
+                                    if ts < cutoff_ms: continue
+                                    usd = px * qty
+                                    if usd < MIN_USD: continue
+                                    items.append({
+                                        "coin": coin,
+                                        "side": "BUY" if t[3] == "b" else "SELL",
+                                        "usd": round(usd, 0), "price": px, "ts": ts,
+                                        "venue": "Kraken",
+                                    })
+                                except (ValueError, TypeError, IndexError):
+                                    continue
+                            break  # only first result key
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
         items.sort(key=lambda x: x["ts"], reverse=True)
-        items = items[:30]
+        items = items[:50]
         Handler._whales_cache = {"items": items, "ts": time.time()}
         self._json(200, {"items": items, "ts": int(time.time() * 1000)})
 
@@ -1397,6 +1496,17 @@ class Handler(BaseHTTPRequestHandler):
             asks = L(lvls[1]) if len(lvls) > 1 else []
             return ("HL", bids, asks)
 
+        # OKX contract values (USDT-SWAP linear; sz returned by API is in
+        # contracts, not base asset, so we must multiply by ctVal to get the
+        # base-asset quantity that matches HL/CB/Bitget/Kraken/Binance.
+        # Without this, OKX walls render 10–100× larger than they actually are.)
+        OKX_CTVAL = {"BTC": 0.01, "ETH": 0.1, "SOL": 1, "BNB": 0.01,
+                     "XRP": 100, "DOGE": 1000, "AVAX": 1, "LINK": 1,
+                     "WIF": 1, "PEPE": 10_000_000, "APT": 1, "ARB": 10,
+                     "INJ": 1, "OP": 1, "ORDI": 0.1, "PYTH": 10, "ADA": 100,
+                     "DOT": 1, "LTC": 1, "ATOM": 1, "NEAR": 1, "SUI": 1,
+                     "FIL": 0.1, "UNI": 1}
+
         def fetch_okx(c, cli):
             r = cli.get("https://www.okx.com/api/v5/market/books",
                         params={"instId": f"{c}-USDT-SWAP", "sz": "50"}, timeout=2.5)
@@ -1404,11 +1514,13 @@ class Handler(BaseHTTPRequestHandler):
             data = (r.json() or {}).get("data", [])
             if not data: return None
             d = data[0]
+            ctval = OKX_CTVAL.get(c, 1)
             def L(rows):
                 out = []
                 for r0 in rows[:50]:
                     try:
-                        out.append({"price": float(r0[0]), "sz": float(r0[1])})
+                        # Multiply by ctval to convert contracts → base asset
+                        out.append({"price": float(r0[0]), "sz": float(r0[1]) * ctval})
                     except (IndexError, ValueError, TypeError): pass
                 return out
             return ("OKX", L(d.get("bids", [])), L(d.get("asks", [])))
