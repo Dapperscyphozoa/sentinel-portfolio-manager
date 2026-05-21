@@ -897,7 +897,9 @@ class Handler(BaseHTTPRequestHandler):
                                    .get("content", ""))
                         try:
                             parsed = json.loads(content)
-                            for s in parsed.get("scores", []):
+                            scores = parsed.get("scores", [])
+                            log.info("news_llm groq_returned=%d candidates=%d", len(scores), len(candidates))
+                            for s in scores:
                                 idx = int(s.get("i", 0)) - 1
                                 if 0 <= idx < len(candidates):
                                     m = int(s.get("m", candidates[idx]["magnitude"]))
