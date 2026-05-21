@@ -99,6 +99,14 @@ def backfill_all(coins: Iterable[str], cache: Cache,
                 log.info("backfilled %s/%s: %d bars", coin, tf, len(arr))
             except Exception:
                 log.exception("backfill push %s/%s crashed", coin, tf)
+        # 2026-05-21: per-coin flush so partial backfill survives next deploy.
+        # Without this, if deploy interrupts after coin K of 24, coins 1..K
+        # had memory-only state that gets lost on restart even though they
+        # successfully backfilled.
+        try:
+            cache.flush_klines()
+        except Exception:
+            log.exception("per-coin backfill flush failed for %s", coin)
         return n
 
     with cf.ThreadPoolExecutor(max_workers=4) as ex:

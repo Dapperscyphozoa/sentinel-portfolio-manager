@@ -535,13 +535,36 @@ class Cache:
                 self.hlp_history[r["coin"]].append((r["ts"], r["net_usd"]))
         return len(rows)
 
-    def cold_load(self, hours_klines: int = 24, hours_liqs: int = 24) -> None:
-        """On boot: rehydrate ring buffers from SQLite."""
-        since_kline = int((time.time() - hours_klines * 3600) * 1000)
+    def cold_load(self, hours_klines: int = 24, hours_liqs: int = 24,
+                  klines_per_key: int = KLINE_CAP) -> None:
+        """On boot: rehydrate ring buffers from SQLite.
+
+        2026-05-21: PRIOR BUG — hours_klines=24 capped 1d cache at 1 bar, 4h at
+        6 bars, 1h at 24 bars on every restart. Engines requiring multi-week
+        history (vpoc_retest 850×1h, ict_confluence_1d 60×1d, oi_concentration
+        200 OI samples) were therefore dead-on-arrival until OKX REST backfill
+        completed — which itself got interrupted by every deploy.
+
+        FIX: load up to klines_per_key (default = KLINE_CAP = 1000) MOST RECENT
+        bars per (coin, tf) regardless of age. With weekly flush + persistent
+        SQLite, this means a service restart now keeps the ring buffer saturated
+        instead of starting at 1 bar for 1d TF.
+
+        hours_klines kept as legacy kwarg for callers but ignored when
+        klines_per_key is supplied.
+        """
+        # Per-(coin, tf) most-recent N rows. Use a window function so we only
+        # pull what fits the ring buffer (avoid loading the whole klines table).
         kline_rows = self.db.execute(
-            "SELECT coin,tf,open_ts,open_px,high_px,low_px,close_px,volume FROM klines "
-            "WHERE open_ts >= ? ORDER BY coin, tf, open_ts ASC",
-            (since_kline,),
+            "SELECT coin, tf, open_ts, open_px, high_px, low_px, close_px, volume "
+            "FROM ("
+            "  SELECT coin, tf, open_ts, open_px, high_px, low_px, close_px, volume,"
+            "         ROW_NUMBER() OVER (PARTITION BY coin, tf ORDER BY open_ts DESC) AS rn"
+            "  FROM klines"
+            ") "
+            "WHERE rn <= ? "
+            "ORDER BY coin, tf, open_ts ASC",
+            (klines_per_key,),
         ).fetchall()
         with self._lock:
             for r in kline_rows:

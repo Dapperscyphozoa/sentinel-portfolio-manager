@@ -442,6 +442,15 @@ def main() -> None:
                     n = okx_rest_backfill.backfill_all(coins, CACHE, bars=backfill_bars)
                     log.info("REST backfill complete: %d bars total (target=%d/coin/tf)",
                              n, backfill_bars)
+                    # 2026-05-21: flush immediately so backfilled bars survive
+                    # the next restart. Without this, 4h/1d cache was rebuilt
+                    # from scratch every deploy and engines using those TFs
+                    # were dead-on-arrival.
+                    try:
+                        flushed = CACHE.flush_klines()
+                        log.info("post-backfill flush: %d bars persisted to SQLite", flushed)
+                    except Exception:
+                        log.exception("post-backfill flush failed")
                 except Exception:
                     log.exception("REST backfill failed")
             threading.Thread(target=_do_backfill, daemon=True, name="rest_backfill").start()
