@@ -2408,7 +2408,7 @@ async function loadMacroStrip() {
         // Without the merge, footer renders "equity —" and "regime ?" because the
         // values just aren't in /health. This was the "data drops out" complaint.
         const [hr, dr] = await Promise.all([
-            fetch('/health', { cache: 'no-store' }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
+            fetch('/health/full', { cache: 'no-store' }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
             fetch('/dash',   { cache: 'no-store' }).then(r => r.ok ? r.json() : {}).catch(() => ({})),
         ]);
         const d = hr || {};

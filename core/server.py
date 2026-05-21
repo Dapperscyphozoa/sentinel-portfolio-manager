@@ -1734,6 +1734,18 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/health":
+            # 2026-05-21: SHALLOW probe for Render's healthcheck (5s budget).
+            # Was calling _health_for_landing() which fans out to 4 subsystems
+            # (5s timeout each = up to 20s). When signal_bus was slow, this
+            # exceeded Render's 5s budget → restart loop. Now: respond instantly
+            # with process-liveness only. Detailed health moved to /health/full.
+            self._json(200, {
+                "ok": True,
+                "ts": int(time.time() * 1000),
+                "commit_live": (os.environ.get("RENDER_GIT_COMMIT", "")[:7] or None),
+            })
+            return
+        if path == "/health/full":
             self._json(200, self._health_for_landing())
             return
         if path == "/" or path == "/index.html":
