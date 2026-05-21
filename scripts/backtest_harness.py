@@ -441,7 +441,7 @@ def load_strategy(name: str) -> type[StrategyBase]:
         **{f"e{n:02d}_{x}": ["oos_engines"] for n in (1,7,8,9,16,17)
            for x in ("zfade3s_tu_1d","zfade2s_tu_1d","dip3d10_td_1d","pump3d10_td_1d",
                      "bb_fade_hv_1d","bb_fade_bt_1d","zfade3s_tu_4h","zfade2s_tu_4h",
-                     "dip3d7_td_4h","bb_fade_hv_4h","bb_fade_bt_4h")},
+                     "dip3d7_td_4h","dip3d7_td_4h_inv","bb_fade_hv_4h","bb_fade_bt_4h")},
         "ict_confluence_4h": ["ict_confluence"],
         "ict_confluence_1d": ["ict_confluence"],
         "cascade_sniper_hl": ["cascade_sniper"],
@@ -452,6 +452,18 @@ def load_strategy(name: str) -> type[StrategyBase]:
         "hl_whale_frontrun": ["hl_whale_frontrun"],
         "hl_depth_shock": ["hl_depth_shock"],
         "hl_vault_predict": ["hl_vault_predict"],
+        # 2026-05-22 additions: production engines for honest BT
+        "fmom":               ["fmom"],
+        "hlp_fade":           ["hlp_fade"],
+        "hlp_decoder":        ["hlp_decoder"],
+        "stop_hunt":          ["stop_hunt"],
+        "oi_concentration":   ["oi_concentration"],
+        "vpoc_retest":        ["vpoc_retest"],
+        "donchian":           ["donchian"],
+        "uzt_rev":            ["uzt_rev"],
+        "uzt":                ["uzt"],
+        "liq_cascade":        ["liq_cascade"],
+        "hl_settle_5m":       ["hl_settle_5m"],
     }
     candidates = name_to_modules.get(name, [name])
     last_err: Exception | None = None
