@@ -124,8 +124,12 @@ ENGINE_REGISTRY: dict[str, dict] = {
     # Verdict: 7-voter council MODERATE — over-concentration risk addressed.
     "ict_confluence_1d":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
                              "bt_pf": 3.35, "cap_frac": 0.05},
+    # 2026-05-21: ict_confluence_4h DEMOTED 0.15 → 0.05 per replay BT audit.
+    # n=27 signals BT shows 93% WR but APT dominates 25/27 trades = single-coin
+    # regime artifact (recent uptrend). At cap 0.15 ~$73 budget concentrated on
+    # one coin's continuation. Demote to 0.05 (~$25 budget) until diversified.
     "ict_confluence_4h":   {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 3.18, "cap_frac": 0.15},   # council-trimmed from 0.25
+                             "bt_pf": 3.18, "cap_frac": 0.05},   # demoted 0.15→0.05 (single-coin risk)
     "e09_pump3d10_td_1d":  {"affinity": ["trend_down"],             "bt_pf":  2.2, "cap_frac": 0.10},
     # uzt_rev v3 — reversal-only, single TP=5R, 16-coin universe. Bt n=41 WR 68% PF 6.92 OOS 6.92.
     # Operator-promoted to live 2026-05-19. Cap_frac 0.05 starting allocation (~$25 notional).
@@ -139,8 +143,10 @@ ENGINE_REGISTRY: dict[str, dict] = {
     # ─── YELLOW: marginal — paper mode only (LIVE=0 env, 5 engines) ───
     "e17_bb_fade_bt_1d":   {"affinity": ["high_vol", "range"],      "bt_pf":  1.21, "cap_frac": 0.01},
     "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.01, "cap_frac": 0.02},
-    # Binance re-audit 2026-05-17: these 3 were OKX-false-positives.
-    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  0.5, "cap_frac": 0.02},  # OOS 1.85 — further trimmed for stop_hunt
+    # 2026-05-21: KILLED — replay BT n=25 WR 0% PF 0 net -$10.60. APT dominant
+    # 24/25 trades. Engine was firing 6.3/d in paper and bleeding mock capital.
+    # Disable via cap_frac=0 + ENABLED=0 env var (kills signal generation).
+    "e08_dip3d10_td_1d":   {"affinity": ["trend_down"],             "bt_pf":  0.5, "cap_frac": 0.00},  # killed 2026-05-21 (BT confirmed bleed)
     "e07_zfade2s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.22, "cap_frac": 0.06},
     "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.20, "cap_frac": 0.02},
 
@@ -176,8 +182,13 @@ ENGINE_REGISTRY: dict[str, dict] = {
     # ─── World-first: HLP Vault Fade (Council #1 pick, Tier 1 ship-first) ───
     # ACTIVATED 2026-05-18 — sentinel council 3/5 YES; council caveat:
     # validate /hlp poll latency < 1s before first live fire (operator action)
+    # 2026-05-21: hlp_fade DEMOTED 0.10 → 0.025 (canary level) per sentinel audit
+    # MODERATE @ 84%. Live n=10, PF 1.39, +$0.28 net — BUT NEAR=240% of profit
+    # (1 coin = 4 trades, 50% WR). Sample variance could erase edge.
+    # Demote to canary (0.025 = ~$12 budget) to accumulate live trades safely.
+    # Promotion gate: ≥20 LIVE trades + clean_PF ≥ 1.2 → promote 0.025 → 0.05.
     "hlp_fade":            {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 2.50, "cap_frac": 0.10},
+                             "bt_pf": 2.50, "cap_frac": 0.025},   # demoted 0.10→0.025 (canary)
     # ─── Tier 1 #2: Funding Momentum (2nd-derivative funding signal) ───
     "fmom":                {"affinity": ["trend_up", "trend_down", "range", "chop"],
                              "bt_pf": 1.75, "cap_frac": 0.00},
