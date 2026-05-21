@@ -185,21 +185,12 @@ class CooldownTracker:
                 "INSERT OR REPLACE INTO engine_consec_losses VALUES (?, ?, ?)",
                 (engine, new_count, now),
             )
-            if new_count >= CONSEC_LOSS_ENGINE:
-                # OPERATOR 2026-05-18: 4 consec losses → permanent paper demote
-                # (was 6 → 1h). Operator must POST /reinstate/<engine> to revive.
-                c.execute(
-                    "INSERT OR REPLACE INTO engine_demotions VALUES (?, ?, ?)",
-                    (engine, now, f"{DEMOTE_REASON_4LOSS}={new_count}"),
-                )
-                triggered.append({"type": "engine_demote", "engine": engine,
-                                  "demoted_ts": now,
-                                  "reason": f"{DEMOTE_REASON_4LOSS}={new_count}",
-                                  "permanent": True})
-                c.execute(
-                    "INSERT OR REPLACE INTO engine_consec_losses VALUES (?, ?, ?)",
-                    (engine, 0, now),
-                )
+            # 2026-05-21: AUTO-DEMOTE REMOVED. Operator instruction "remove the
+            # demote authority from pm". Previously: 4 consec losses → permanent
+            # paper demote requiring /reinstate. Counter still tracked for
+            # observability but no longer triggers automatic state change.
+            # Engine state (live / disabled) is operator-controlled only via
+            # STRATEGY_<NAME>_LIVE and STRATEGY_<NAME>_ENABLED env vars.
         else:
             c.execute(
                 "INSERT OR REPLACE INTO engine_consec_losses VALUES (?, ?, ?)",
