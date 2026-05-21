@@ -17,6 +17,33 @@ log = logging.getLogger("runner")
 
 REGISTRY: list[Type[StrategyBase]] = []
 
+# Per-(engine, coin) most-recent signal fire timestamp. Used by scan_once to
+# suppress duplicate signal rows when an engine's setup persists across many
+# scan cycles. Lives in memory only (acceptable — restart clears cooldowns,
+# which is the safe direction; we'd rather re-fire after restart than be
+# silently muted from a stale cooldown).
+_SIGNAL_FIRE_LAST: dict[tuple[str, str], float] = {}
+
+
+def _tf_to_seconds(tf: str) -> int:
+    """Convert engine TF tag ('1m','5m','15m','1h','4h','1d') to seconds.
+    Used to scale signal-cooldown to engine timeframe.
+    Unknown TF → conservative 5min default (so cooldown never goes below floor).
+    """
+    if not tf:
+        return 300
+    tf = tf.lower().strip()
+    try:
+        if tf.endswith("m"):
+            return int(tf[:-1]) * 60
+        if tf.endswith("h"):
+            return int(tf[:-1]) * 3600
+        if tf.endswith("d"):
+            return int(tf[:-1]) * 86400
+    except (ValueError, IndexError):
+        pass
+    return 300
+
 
 def register(*classes: Type[StrategyBase]) -> None:
     for c in classes:
@@ -286,6 +313,29 @@ def scan_once(bus: BusClient, pm: PMClient, on_signal, trader=None) -> int:
             if sig is None:
                 s["none"] += 1
                 continue
+
+            # ─── Per-(engine, coin) signal cooldown (2026-05-21) ───
+            # Operator: don't generate duplicate signals on the same (engine,
+            # coin) when the setup persists across multiple scan cycles. Without
+            # this, e17_bb_fade_bt_4h/SUI was producing 5 signal rows over 25min
+            # while the BB-break condition held, polluting the signals table
+            # and the dashboard.
+            #
+            # Cooldown = max(4 bars of engine TF, 5 min). On a 4h-TF engine,
+            # this is 16 hours; on 1m engine, 5 min minimum floor. Cooldown is
+            # purely about signal-row dedup — coin-lock at trader.open already
+            # blocks the actual order. This just stops repeated row writes.
+            now_s = time.time()
+            cd_key = (strat.NAME, coin)
+            tf_sec = _tf_to_seconds(getattr(strat, "TF", "5m"))
+            cooldown_s = max(tf_sec * 4, 300)
+            last_fire = _SIGNAL_FIRE_LAST.get(cd_key, 0.0)
+            if now_s - last_fire < cooldown_s:
+                s.setdefault("cooldown", 0)
+                s["cooldown"] += 1
+                continue
+            _SIGNAL_FIRE_LAST[cd_key] = now_s
+
             s["sig"] += 1
             # ─── 1_GLOBAL coin-lock pre-check (synchronous, in-process) ───
             # Skip the (HTTP) pm.check round-trip entirely if coin is already
@@ -327,7 +377,24 @@ def scan_once(bus: BusClient, pm: PMClient, on_signal, trader=None) -> int:
             "scan_engine %s eval=%d none=%d sig=%d locked=%d denied=%d err=%d",
             name, s["eval"], s["none"], s["sig"], s["locked"], s["denied"], s["err"],
         )
+    # Stash last-scan stats for admin endpoint visibility (2026-05-21).
+    # Goes-silent post-fix debugging — without this we have no way to tell
+    # if engines are evaluating but returning None vs not running at all.
+    global LAST_SCAN_STATS
+    LAST_SCAN_STATS = {
+        "ts": time.time(),
+        "registry": len(REGISTRY),
+        "enabled": enabled_count,
+        "disabled": disabled_count,
+        "halted": halted_count,
+        "allowed_fires": n,
+        "per_engine": stats,
+    }
     return n
+
+
+# Module-level tracker for /admin/scan_stats endpoint
+LAST_SCAN_STATS: dict = {"ts": 0, "registry": 0, "enabled": 0, "per_engine": {}}
 
 
 def registry_info() -> list[dict]:
