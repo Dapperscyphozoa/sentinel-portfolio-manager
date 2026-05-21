@@ -378,7 +378,7 @@ class Trader:
             if (p.get("coin") and float(p.get("szi", 0) or 0) != 0)
         }
         local_open = self.conn.execute(
-            "SELECT id, coin, strategy, open_ts FROM trades WHERE status='open'"
+            "SELECT id, coin, strategy, open_ts, extras_json FROM trades WHERE status='open'"
         ).fetchall()
         if not local_open:
             return 0
@@ -392,6 +392,19 @@ class Trader:
         for r in local_open:
             coin = (r["coin"] or "").upper()
             if r["open_ts"] >= age_cutoff:
+                continue
+            # ─── Skip paper trades ───
+            # Paper trades (live=False in extras_json) never place an order on HL,
+            # so HL having no position is the EXPECTED state — not a ghost.
+            # Reconciler was previously stomping paper trades before their local
+            # SL/TP could fire via mark-price tracking, artificially truncating
+            # paper attribution to fast-closing subset only.
+            try:
+                ex = json.loads(r["extras_json"] or "{}")
+                is_paper = (isinstance(ex, dict) and ex.get("live") is False)
+            except (TypeError, ValueError):
+                is_paper = False
+            if is_paper:
                 continue
             if coin in live_coins:
                 # coin reappeared on HL → clear pending-reconcile if any

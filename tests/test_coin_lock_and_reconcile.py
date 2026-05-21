@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import json
 import tempfile
 import time
 import pytest
@@ -20,13 +21,14 @@ def _fresh_db():
 
 
 def _insert_trade(conn, *, cloid, coin, status, open_ts=None, max_hold_bars=8,
-                   strategy="test", open_px=100.0, size_coin=0.1):
+                   strategy="test", open_px=100.0, size_coin=0.1, extras=None):
+    extras_json = json.dumps(extras) if extras is not None else '{"tf":"4h"}'
     conn.execute(
         "INSERT INTO trades(cloid,strategy,coin,side,is_long,open_ts,open_px,"
         "size_usd,size_coin,sl_px,tp_px,max_hold_bars,status,extras_json) "
         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (cloid, strategy, coin, "A", 0, open_ts or time.time(), open_px,
-         10.0, size_coin, 101.0, 99.0, max_hold_bars, status, '{"tf":"4h"}'),
+         10.0, size_coin, 101.0, 99.0, max_hold_bars, status, extras_json),
     )
 
 
@@ -710,3 +712,47 @@ def test_sweep_pending_leaves_fresh_rows():
         "SELECT status FROM trades WHERE cloid='fresh'"
     ).fetchone()
     assert row["status"] == "pending"
+
+
+# ─── reconcile skips paper trades (2026-05-21) ────────────────────────────
+def test_reconcile_skips_paper_trades():
+    """Paper trades (live=False) must NOT be reconciled off-book.
+    Reconciler was previously stomping paper trades before SL/TP could fire."""
+    _, conn = _fresh_db()
+    # 1 paper trade + 1 live trade, both old enough to be eligible
+    _insert_trade(conn, cloid="paper_t", coin="SOL", status="open",
+                  open_ts=time.time() - 3600, max_hold_bars=8,
+                  strategy="hl_settle_5m", open_px=100, size_coin=0.1,
+                  extras={"live": False, "fire_reason": "paper", "extras": {}})
+    _insert_trade(conn, cloid="live_t", coin="BTC", status="open",
+                  open_ts=time.time() - 3600, max_hold_bars=8,
+                  strategy="hl_settle_5m", open_px=100, size_coin=0.1,
+                  extras={"live": True, "fire_reason": "live", "extras": {}})
+    # MockBus returns no HL positions (HL has nothing for either)
+    bus = _MockBus(hl_positions=[])
+    trader = _make_trader_with_bus(conn, bus)
+    # 1st pass: live records pending, paper skipped entirely
+    trader.reconcile_with_hl(min_confirm_s=0)
+    # 2nd pass with min_confirm_s=0: live reconciles, paper still skipped
+    trader.reconcile_with_hl(min_confirm_s=0)
+    paper_row = conn.execute("SELECT status FROM trades WHERE cloid='paper_t'").fetchone()
+    live_row = conn.execute("SELECT status FROM trades WHERE cloid='live_t'").fetchone()
+    assert paper_row["status"] == "open", f"paper trade incorrectly reconciled: {paper_row['status']}"
+    assert live_row["status"] == "reconciled_off_book", f"live trade should reconcile: {live_row['status']}"
+
+
+def test_reconcile_paper_trade_with_missing_live_key_treated_as_live():
+    """If extras_json lacks the 'live' key (legacy rows), default to treating
+    as LIVE — safer to over-reconcile than to leave a live ghost in place."""
+    _, conn = _fresh_db()
+    _insert_trade(conn, cloid="legacy", coin="ETH", status="open",
+                  open_ts=time.time() - 3600, max_hold_bars=8,
+                  strategy="hl_settle_5m", open_px=2000, size_coin=0.01,
+                  extras={"fire_reason": "legacy", "extras": {}})  # no 'live' key
+    bus = _MockBus(hl_positions=[])
+    trader = _make_trader_with_bus(conn, bus)
+    trader.reconcile_with_hl(min_confirm_s=0)
+    trader.reconcile_with_hl(min_confirm_s=0)
+    row = conn.execute("SELECT status FROM trades WHERE cloid='legacy'").fetchone()
+    # Missing 'live' key → treated as live → reconciles normally
+    assert row["status"] == "reconciled_off_book"
