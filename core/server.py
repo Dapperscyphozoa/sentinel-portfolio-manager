@@ -685,37 +685,185 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, {"items": items, "ts": int(time.time() * 1000)})
 
     def _serve_whales(self) -> None:
-        """Landing's /whales — large position holders.
-        Backed by HL fills from signal_bus filtered for large notional.
+        """Whale prints panel — recent single trades ≥ $100k on top venues.
+
+        Source: Binance USDS-M Futures aggTrades for the top-traded perps.
+        aggTrade is each market-side aggressor sweep; size is in base asset.
+        We multiply by price to filter to ≥$100k notional.
+
+        Why Binance and not HL: HL spot+perps liquidity is ~5% of Binance's
+        on most names. The signal lives on Binance. Restricting to our own
+        wallet's fills (the previous implementation) yielded zero whale
+        prints because we never trade $100k clips. The operator wants to
+        see who else is moving size — that's Binance.
+
+        Cached 30s to avoid hammering Binance from every dashboard poll.
         """
-        items = []
+        # Per-instance cache (module-level would persist across requests but
+        # the handler class is recreated per request; use class attr instead).
+        cache = getattr(Handler, "_whales_cache", None)
+        if cache and (time.time() - cache.get("ts", 0) < 30):
+            return self._json(200, {"items": cache["items"], "ts": int(time.time() * 1000)})
+
+        items: list = []
+        # Top USDT-SWAP perps on OKX. We use OKX rather than Binance because
+        # Binance returns HTTP 451 from many Render egress IPs (geo-restriction).
+        # OKX is the established source for this stack — sentinel-pm /ohlcv
+        # uses the same venue. Universe matches the established backtest set
+        # plus high-volume meme coins where whale prints concentrate.
+        symbols = ["BTC-USDT-SWAP","ETH-USDT-SWAP","SOL-USDT-SWAP",
+                   "BNB-USDT-SWAP","XRP-USDT-SWAP","DOGE-USDT-SWAP",
+                   "PEPE-USDT-SWAP","WIF-USDT-SWAP","AVAX-USDT-SWAP",
+                   "LINK-USDT-SWAP"]
+        cutoff_ms = int((time.time() - 300) * 1000)   # last 5 minutes
+        MIN_USD = 100_000
         try:
-            with httpx.Client(timeout=5.0) as cli:
-                # Recent fills from signal_bus
-                since = int((time.time() - 3600) * 1000)
-                r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/hl/fills?since={since}")
-                if r.status_code == 200:
-                    fills = r.json() or []
-                    # Filter for notional > $10k (proxy for "whale")
-                    for f in fills:
-                        px = float(f.get("px", 0))
-                        qty = float(f.get("qty", 0))
-                        if px * qty >= 10000:
+            with httpx.Client(timeout=2.5) as cli:
+                for sym in symbols:
+                    try:
+                        r = cli.get(
+                            "https://www.okx.com/api/v5/market/trades",
+                            params={"instId": sym, "limit": 100},
+                        )
+                        if r.status_code != 200:
+                            continue
+                        body = r.json() or {}
+                        trades = body.get("data") or []
+                        coin = sym.split("-")[0]
+                        for t in trades:
+                            try:
+                                ts = int(t.get("ts", 0))
+                            except (ValueError, TypeError):
+                                continue
+                            if ts < cutoff_ms:
+                                continue
+                            try:
+                                px = float(t.get("px", 0) or 0)
+                                sz = float(t.get("sz", 0) or 0)
+                            except (ValueError, TypeError):
+                                continue
+                            usd = px * sz
+                            if usd < MIN_USD:
+                                continue
+                            side = "BUY" if t.get("side") == "buy" else "SELL"
                             items.append({
-                                "coin": f.get("coin"),
-                                "side": "BUY" if f.get("side") == "B" else "SELL",
-                                "notional": round(px * qty, 0),
-                                "price": px,
-                                "ts": f.get("ts"),
+                                "coin": coin, "side": side,
+                                "usd": round(usd, 0), "price": px,
+                                "ts": ts,
                             })
+                    except Exception:
+                        continue
         except Exception:
             pass
-        self._json(200, {"items": items[:20], "ts": int(time.time() * 1000)})
+        # Newest first, cap at 30
+        items.sort(key=lambda x: x["ts"], reverse=True)
+        items = items[:30]
+        Handler._whales_cache = {"items": items, "ts": time.time()}
+        self._json(200, {"items": items, "ts": int(time.time() * 1000)})
 
     def _serve_news(self) -> None:
-        """Landing's /news — significant market events. Stub for now."""
-        # Could plug into a news API later. Empty for now.
-        self._json(200, {"items": [], "ts": int(time.time() * 1000)})
+        """Crypto news feed — pivotal market-moving events surfaced from
+        public RSS sources, scored for magnitude (1-5) and direction (-1/0/1).
+
+        Sources:
+          - CoinDesk RSS (general market + macro)
+          - The Block RSS (institutional + regulatory)
+          - CoinTelegraph RSS (alts + tech)
+
+        Magnitude heuristic (no API needed):
+          5: SEC|ETF|Fed|hack|exploit|crash|seized|approved|ban|launch
+          4: rally|surge|plunge|hit + $XXm/$XXb numbers|partnership|listed
+          3: rose|fell|update|integration|merger
+          2: weekly recap|opinion|analysis
+          1: anything else
+
+        Direction heuristic: bull/bear keyword scan over title only.
+
+        Cached 5 min — RSS feeds update slowly, no need to hammer.
+        """
+        cache = getattr(Handler, "_news_cache", None)
+        if cache and (time.time() - cache.get("ts", 0) < 300):
+            return self._json(200, {"items": cache["items"], "ts": int(time.time() * 1000)})
+
+        feeds = [
+            ("CoinDesk",     "https://www.coindesk.com/arc/outboundfeeds/rss/"),
+            ("The Block",    "https://www.theblock.co/rss.xml"),
+            ("CoinTelegraph","https://cointelegraph.com/rss"),
+        ]
+        BULL = {"surge","rally","soar","jump","rise","gain","beat","approve",
+                "launch","partnership","integrat","adopt","record","high",
+                "bullish","listed","add","invest","upgrade","mainnet"}
+        BEAR = {"crash","plunge","drop","fall","loss","hack","exploit","drain",
+                "seiz","ban","reject","delist","bearish","fud","sell","dump",
+                "outflow","liquidat","sanction","fraud","scam","arrest","sued"}
+        HIGH_MAG = {"sec","etf","fed","fomc","hack","exploit","crash","seiz",
+                    "approved","ban","launch","etf","blackrock","grayscale",
+                    "tether","binance","coinbase","kraken","drained","attack"}
+        MID_MAG = {"rally","surge","plunge","partnership","listed","sue","fine",
+                   "merger","raise","funding","investor"}
+
+        def score(title: str) -> tuple:
+            t = (title or "").lower()
+            mag = 1
+            for k in MID_MAG:
+                if k in t: mag = max(mag, 4); break
+            for k in HIGH_MAG:
+                if k in t: mag = 5; break
+            # Bump 2 → 3 for "rose/fell/update/integration" style middle ground
+            if mag == 1 and any(k in t for k in ("rose","fell","update","integrat","merger")):
+                mag = 3
+            bull = sum(1 for k in BULL if k in t)
+            bear = sum(1 for k in BEAR if k in t)
+            direction = 0
+            if bull > bear: direction = 1
+            elif bear > bull: direction = -1
+            return mag, direction
+
+        items: list = []
+        import xml.etree.ElementTree as ET
+        try:
+            with httpx.Client(timeout=4.0, follow_redirects=True,
+                              headers={"User-Agent": "Mozilla/5.0 (sentinel-dash)"}) as cli:
+                for source, url in feeds:
+                    try:
+                        r = cli.get(url)
+                        if r.status_code != 200:
+                            continue
+                        # RSS 2.0 — items in channel/item
+                        root = ET.fromstring(r.text)
+                        for item in root.iter("item"):
+                            title = (item.findtext("title") or "").strip()
+                            link  = (item.findtext("link")  or "").strip()
+                            pubd  = (item.findtext("pubDate") or "").strip()
+                            if not title:
+                                continue
+                            mag, direction = score(title)
+                            items.append({
+                                "title": title[:140],
+                                "source": source,
+                                "magnitude": mag,
+                                "direction": direction,
+                                "link": link,
+                                "pubdate": pubd,
+                            })
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+        # Sort by magnitude desc, then by pubdate desc (newer first within same mag).
+        # RFC822 string sort isn't ideal but RSS dates within a day usually sort right.
+        items.sort(key=lambda x: (-x["magnitude"], -hash(x.get("pubdate","")) ))
+        # Stable secondary: drop pubdate hash trick — sort newest by string desc within same mag
+        from collections import defaultdict
+        groups = defaultdict(list)
+        for it in items: groups[it["magnitude"]].append(it)
+        items = []
+        for mag in sorted(groups.keys(), reverse=True):
+            groups[mag].sort(key=lambda x: x.get("pubdate",""), reverse=True)
+            items.extend(groups[mag])
+        items = items[:20]
+        Handler._news_cache = {"items": items, "ts": time.time()}
+        self._json(200, {"items": items, "ts": int(time.time() * 1000)})
 
     # ────────────────── Engines full aggregator ──────────────────
     def _serve_engines_full(self) -> None:
@@ -1129,7 +1277,13 @@ class Handler(BaseHTTPRequestHandler):
                                      "detail": str(e), "url": url})
 
     def _serve_orderbook(self, coin: str) -> None:
-        """Real L2 book from HL info API."""
+        """L2 orderbook heatmap source. Renderer (landing.html loadOrderbook)
+        expects each level shaped {price, sz, usd}; tuple [px, sz] from the
+        previous version made the heatmap render blank. We also surface a
+        venues count for the panel header.
+
+        Source: HL info.l2Book — top 50 levels each side. usd = price * sz.
+        """
         coin = coin.upper()
         try:
             with httpx.Client(timeout=4.0) as cli:
@@ -1138,33 +1292,29 @@ class Handler(BaseHTTPRequestHandler):
                 if r.status_code == 200:
                     data = r.json() or {}
                     levels = data.get("levels", [[], []])
-                    bids = [[float(b["px"]), float(b["sz"])] for b in levels[0][:20]]
-                    asks = [[float(a["px"]), float(a["sz"])] for a in levels[1][:20]]
-                    mid = (bids[0][0] + asks[0][0]) / 2 if bids and asks else 0
+                    def lvl(side):
+                        out = []
+                        for x in side[:50]:
+                            try:
+                                px = float(x["px"]); sz = float(x["sz"])
+                            except (KeyError, ValueError, TypeError):
+                                continue
+                            if px <= 0 or sz <= 0:
+                                continue
+                            out.append({"price": px, "sz": sz, "usd": round(px * sz, 2)})
+                        return out
+                    bids = lvl(levels[0]) if len(levels) > 0 else []
+                    asks = lvl(levels[1]) if len(levels) > 1 else []
+                    mid = (bids[0]["price"] + asks[0]["price"]) / 2 if bids and asks else 0
                     return self._json(200, {
                         "coin": coin, "mid": mid,
                         "bids": bids, "asks": asks,
+                        "venues": 1,            # HL only — extend when bus exposes multi-venue book
                         "ts": int(time.time() * 1000),
                     })
         except Exception:
             pass
-        # Fallback to markprice
-        try:
-            with httpx.Client(timeout=5.0) as cli:
-                r = cli.get(f"http://localhost:{SIGNAL_BUS_PORT}/markprice/{coin}")
-                if r.status_code == 200:
-                    mp = r.json() or {}
-                    mid = float(mp.get("hl_mid") or mp.get("binance_mid") or 0)
-                    if mid > 0:
-                        return self._json(200, {
-                            "coin": coin, "mid": mid,
-                            "bids": [[mid * (1 - i * 0.0005), 0.5] for i in range(1, 11)],
-                            "asks": [[mid * (1 + i * 0.0005), 0.5] for i in range(1, 11)],
-                            "ts": int(time.time() * 1000),
-                        })
-        except Exception:
-            pass
-        self._json(200, {"coin": coin, "mid": 0, "bids": [], "asks": []})
+        self._json(200, {"coin": coin, "mid": 0, "bids": [], "asks": [], "venues": 0})
 
     def _proxy(self, target_port: int, strip_prefix: str) -> None:
         """Forward request to localhost:target_port."""
