@@ -48,10 +48,17 @@ class StrategyBase:
 
     @classmethod
     def info(cls) -> dict:
+        # Import locally to avoid circular import at module-load time
+        from common import config as _cfg
+        enabled = _cfg.strategy_enabled(cls.NAME)
+        live    = _cfg.strategy_live(cls.NAME)
         return {
             "name": cls.NAME,
             "cloid_prefix": cls.CLOID_PREFIX,
             "affinity": list(cls.AFFINITY),
             "tf": cls.TF,
             "universe_size": len(cls.UNIVERSE),
+            "enabled": enabled,                          # boots and scans
+            "live":    live,                             # sends real HL orders (vs paper)
+            "stage":   ("live" if live else ("paper" if enabled else "off")),
         }

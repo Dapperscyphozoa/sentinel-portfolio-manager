@@ -3013,23 +3013,22 @@ async function loadEnginesGrid() {
 
 
 // Per-engine attribution: WR, PF, expectancy, fee drag.
-// 2026-05-21: Updated to:
-//   1. Use clean_only=1 + since=POST_BUG_TS (filter out reconciler-bug-era data)
-//   2. Show LIVE/PAPER badge per engine (cross-ref /strategy/health registry)
-//   3. Include registered engines with no closures yet (the 9 newly-LIVE engines)
-//
-// POST_BUG_TS = first live timestamp of commit 0d7aa11 (reconciler-skips-paper fix).
-// All closures BEFORE this epoch are bug-contaminated: paper trades were stomped
-// after 60s of HL having no position, artificially closing them before SL/TP
-// could fire via mark-price polling. Numbers from that era are not real signal.
-// 2026-05-21 06:08:50 UTC = epoch 1779343730.
-const POST_BUG_TS = 1779343730;
+// 2026-05-22: REWRITE
+//   1. LIVE/PAPER badge derived from registry response (no hardcoded list).
+//   2. Default view shows ALL-TIME closures (since=0) so bleeders aren't hidden.
+//      A toggle switches to post-bug-fix-only view.
+//   3. Engines that produced ANY closure are shown even if not in current registry
+//      (catches dropped engines that left bleed in the books).
+//   4. Sort: bleeders (negative net) bubble to top so they don't hide under awaiting-rows.
+
+const POST_BUG_TS = 1779343730;  // 2026-05-21 06:08:50 UTC — reconciler bug fix epoch
+let ATTR_SINCE = 0;              // 0 = all-time (default); POST_BUG_TS = clean-only
 
 async function loadAttribution() {
     try {
-        // Pull clean+post-bug attribution + registry state in parallel
+        const qs = ATTR_SINCE > 0 ? `?clean_only=1&since=${ATTR_SINCE}` : `?since=0`;
         const [attrR, regR] = await Promise.all([
-            fetch(`/strategy/attribution?clean_only=1&since=${POST_BUG_TS}`),
+            fetch(`/strategy/attribution${qs}`),
             fetch('/strategy/health'),
         ]);
         if (!attrR.ok) return;
@@ -3037,42 +3036,37 @@ async function loadAttribution() {
         const engines = d.engines || [];
         const total = d.total || {n:0, wr:0, net_pnl:0, fees:0};
 
-        // Build LIVE/PAPER lookup from registry (engines registered) ∩ env LIVE flags.
-        // We can't read env vars from browser, so detect from /strategy/health
-        // augmented with the known LIVE list (synced manually with Render env).
+        // Build LIVE/PAPER lookup from registry — NO HARDCODED LIST.
+        // The registry now returns {name, enabled, live, stage} per engine.
         const registry = regR.ok ? ((await regR.json()).registry || []) : [];
-        const registeredNames = new Set(registry.map(r => r.name));
-        // The 9 engines currently LIVE on Render (STRATEGY_<NAME>_LIVE=1) as of 2026-05-21
-        const LIVE_ENGINES = new Set([
-            'uzt_rev', 'e16_bb_fade_hv_1d', 'ict_confluence_1d',
-            'ict_confluence_4h', 'stop_hunt', 'e08_dip3d7_td_4h_inv',
-            'oi_concentration', 'hlp_fade', 'e09_pump3d10_td_1d',
-        ]);
+        const LIVE_ENGINES  = new Set(registry.filter(r => r.live).map(r => r.name));
+        const PAPER_ENGINES = new Set(registry.filter(r => r.enabled && !r.live).map(r => r.name));
+        const KNOWN_ENGINES = new Set(registry.map(r => r.name));
 
-        // Format the post-bug cutoff as a compact "May 21" style label for the header.
-        const postBugD = new Date(POST_BUG_TS * 1000);
-        const postBugDate = postBugD.toLocaleDateString('en-US',
-            {month: 'short', day: 'numeric', timeZone: 'UTC'});
-
-        document.getElementById('attr-meta').textContent =
-            `${total.n} since ${postBugDate} · ${(total.wr*100).toFixed(1)}% WR · ${total.net_pnl >= 0 ? '+' : ''}$${total.net_pnl.toFixed(2)} net`;
+        // Header label adapts to filter mode
+        const filterLabel = ATTR_SINCE > 0
+            ? `since ${new Date(ATTR_SINCE * 1000).toLocaleDateString('en-US',{month:'short',day:'numeric',timeZone:'UTC'})}`
+            : 'all-time';
+        const netSign = total.net_pnl >= 0 ? '+' : '';
+        document.getElementById('attr-meta').innerHTML =
+            `<span style="opacity:0.7">${total.n} ${filterLabel} · </span>` +
+            `${(total.wr*100).toFixed(1)}% WR · ` +
+            `<span style="color:${total.net_pnl>=0?'var(--gain)':'var(--loss)'}">${netSign}$${total.net_pnl.toFixed(2)} net</span>` +
+            ` <a href="#" id="attr-toggle" style="margin-left:8px;font-size:9px;opacity:0.5;text-decoration:none">` +
+            (ATTR_SINCE > 0 ? '[show all]' : '[post-bug only]') + `</a>`;
 
         const body = document.getElementById('attribution-body');
 
         // Build merged engine list: closures-data engines + registered-but-silent engines
         const byEngine = new Map();
-        for (const e of engines) {
-            byEngine.set(e.engine, e);
-        }
-        // Add registered engines that have no closure data yet
+        for (const e of engines) byEngine.set(e.engine, e);
         for (const r of registry) {
             if (!byEngine.has(r.name)) {
                 byEngine.set(r.name, {
                     engine: r.name, n: 0, wins: 0, losses: 0, wr: 0,
                     pf: null, expectancy_usd: 0, gross_pnl: 0, fees: 0,
                     net_pnl: 0, avg_win: 0, avg_loss: 0, avg_hold_h: 0,
-                    by_coin: {}, by_reason: {},
-                    _no_data: true,
+                    by_coin: {}, by_reason: {}, _no_data: true,
                 });
             }
         }
@@ -3083,21 +3077,34 @@ async function loadAttribution() {
             return;
         }
 
-        // Sort: LIVE engines first, then by net_pnl desc, with no-data engines at end
+        // Sort: bleeders FIRST (so they can't hide), then winners, then no-data engines last.
+        // Within each group: live > paper > unknown.
+        const tier = (e) => {
+            if (LIVE_ENGINES.has(e.engine))  return 0;
+            if (PAPER_ENGINES.has(e.engine)) return 1;
+            if (!KNOWN_ENGINES.has(e.engine)) return 2;  // ghost engines (closures but no current registry)
+            return 3;
+        };
         all.sort((a, b) => {
-            const aLive = LIVE_ENGINES.has(a.engine) ? 0 : 1;
-            const bLive = LIVE_ENGINES.has(b.engine) ? 0 : 1;
-            if (aLive !== bLive) return aLive - bLive;
-            // Within same tier: with-data before no-data
+            // Bleeders (negative net) ALWAYS bubble first within their tier
             if (a._no_data !== b._no_data) return a._no_data ? 1 : -1;
-            return (b.net_pnl || 0) - (a.net_pnl || 0);
+            const tA = tier(a), tB = tier(b);
+            if (tA !== tB) return tA - tB;
+            return (a.net_pnl || 0) - (b.net_pnl || 0);  // most negative first
         });
 
         body.innerHTML = all.map(e => {
-            const isLive = LIVE_ENGINES.has(e.engine);
-            const badge = isLive
-                ? `<span style="display:inline-block;padding:1px 6px;font-size:8px;font-weight:700;letter-spacing:0.1em;color:var(--gain);border:1px solid var(--gain);margin-right:6px">LIVE</span>`
-                : `<span style="display:inline-block;padding:1px 6px;font-size:8px;font-weight:700;letter-spacing:0.1em;color:var(--oxide);border:1px solid var(--oxide);opacity:0.6;margin-right:6px">PAPER</span>`;
+            const stage = LIVE_ENGINES.has(e.engine) ? 'LIVE'
+                        : PAPER_ENGINES.has(e.engine) ? 'PAPER'
+                        : KNOWN_ENGINES.has(e.engine) ? 'OFF'
+                        : 'GHOST';
+            const stageColor = stage === 'LIVE'  ? 'var(--gain)'
+                             : stage === 'PAPER' ? 'var(--oxide)'
+                             : stage === 'GHOST' ? 'var(--loss)'
+                             : 'var(--ink-dim)';
+            const stageOpacity = stage === 'OFF' ? '0.4' : (stage === 'PAPER' ? '0.6' : '1');
+            const badge = `<span style="display:inline-block;padding:1px 6px;font-size:8px;font-weight:700;letter-spacing:0.1em;color:${stageColor};border:1px solid ${stageColor};opacity:${stageOpacity};margin-right:6px">${stage}</span>`;
+
             if (e._no_data) {
                 return `
                   <div style="border-bottom:1px solid rgba(200,204,212,0.08);padding:10px 0;display:grid;grid-template-columns:1fr auto;gap:8px;align-items:start;opacity:0.55">
@@ -3139,6 +3146,16 @@ async function loadAttribution() {
                 </div>
               </div>`;
         }).join('');
+
+        // Wire the [show all] / [post-bug only] toggle (re-bound every render)
+        const tog = document.getElementById('attr-toggle');
+        if (tog) {
+            tog.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                ATTR_SINCE = ATTR_SINCE > 0 ? 0 : POST_BUG_TS;
+                loadAttribution();
+            });
+        }
     } catch (e) {
         console.error('loadAttribution err', e);
     }
