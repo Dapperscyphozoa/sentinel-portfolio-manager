@@ -598,7 +598,7 @@ class Handler(BaseHTTPRequestHandler):
                         tp_v = px
             engine_v = tr.get("strategy") if tr else p.get("engine", p.get("strategy", "-"))
             # Compute mark-based unrealizedPnl if HL didn't give us one and we have both prices
-            upnl_v = float(p.get("upnl", p.get("unrealizedPnl", 0)) or 0)
+            upnl_v = float(p.get("upnl", p.get("unrealizedPnl", p.get("unrealized_pnl", 0))) or 0)
             if upnl_v == 0 and mark_px and entry_px and sz_signed:
                 upnl_v = (mark_px - entry_px) * sz_signed
             positions_out.append({
