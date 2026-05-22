@@ -459,17 +459,25 @@ class Handler(BaseHTTPRequestHandler):
                         action = cr.get("action", "")
                         holds_or_just_opened = (actual != "flat") or (action == "open")
                         if c and tgt != "flat" and holds_or_just_opened and c not in runner_by_coin:
+                            # The ENGINE that fired is the set of non-muted signal
+                            # generators (each is a real engine: donchian, ema_cross,
+                            # rsi_revert, bb_squeeze). "sentinel-trader" is just the
+                            # executor harness — not an engine. Show actual engines.
                             disabled = cr.get("disabled_gens") or []
-                            all_gens = {"ema_cross", "donchian", "rsi_revert", "bb_squeeze"}
-                            active = sorted(all_gens - set(disabled))
+                            all_gens = ["donchian", "ema_cross", "rsi_revert", "bb_squeeze"]
+                            active = [g for g in all_gens if g not in disabled]
+                            # Compact "g1+g2" label per coin (max 3 generators visible
+                            # at once given typical mute rates). Suffix sw: for the
+                            # 10-coin sweep-winner meta strategy.
+                            engine_label = "sw:" + "+".join(active) if active else "sw:?"
                             runner_by_coin[c] = {
                                 "coin": c,
-                                "strategy": "sentinel-trader",
+                                "strategy": engine_label,
                                 "is_long": 1 if tgt == "long" else 0,
                                 "status": "open",
                                 "tp_px": None,
                                 "sl_px": None,
-                                "extras_json": f'{{"sub_engines": {active}}}',
+                                "extras_json": f'{{"executor": "sentinel-trader", "active_gens": {active}}}',
                             }
         except Exception:
             pass
