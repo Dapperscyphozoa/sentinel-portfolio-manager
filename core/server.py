@@ -462,9 +462,19 @@ class Handler(BaseHTTPRequestHandler):
         # the FROZEN "10-coin sweep winner" config). Has its own /state schema
         # — positions live under last_coin_results with target!=flat. Attribute
         # to engine="sentinel-trader" so the dashboard shows owner not "-".
+        # Also reads /positions to enrich with sl_px / tp_px (ATR-derived).
         try:
             st_url = os.environ.get("SENTINEL_TRADER_URL",
                                     "https://sentinel-trader.onrender.com")
+            # Pre-fetch /positions for tp/sl data (one call per /dash render)
+            st_positions = {}
+            try:
+                with httpx.Client(timeout=4.0) as cli2:
+                    rp = cli2.get(f"{st_url.rstrip('/')}/positions")
+                    if rp.status_code == 200:
+                        st_positions = rp.json() or {}
+            except Exception:
+                pass
             with httpx.Client(timeout=5.0) as cli:
                 r = cli.get(f"{st_url.rstrip('/')}/state")
                 if r.status_code == 200:
@@ -492,13 +502,15 @@ class Handler(BaseHTTPRequestHandler):
                             # at once given typical mute rates). Suffix sw: for the
                             # 10-coin sweep-winner meta strategy.
                             engine_label = "sw:" + "+".join(active) if active else "sw:?"
+                            # Read sl_px/tp_px from /positions if available
+                            stp = st_positions.get(c, {}) if isinstance(st_positions, dict) else {}
                             runner_by_coin[c] = {
                                 "coin": c,
                                 "strategy": engine_label,
                                 "is_long": 1 if tgt == "long" else 0,
                                 "status": "open",
-                                "tp_px": None,
-                                "sl_px": None,
+                                "tp_px": stp.get("tp_px"),
+                                "sl_px": stp.get("sl_px"),
                                 "extras_json": f'{{"executor": "sentinel-trader", "active_gens": {active}}}',
                             }
         except Exception:
