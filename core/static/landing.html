@@ -1593,7 +1593,12 @@ async function loadDash() {
             // placeholders so the user knows the panel is bootstrapping.
             return;
         }
-        const eq = d.equity || 0;
+        // Preserve last-good equity when /dash returns 0/null/undefined.
+        // Operator-flagged 2026-05-22: dashboard "dropped out" to $0.00 because
+        // `d.equity || 0` masked transient missing values as zero.
+        const eq = (typeof d.equity === 'number' && d.equity > 0)
+                   ? d.equity
+                   : (window.__equity || 0);
         // Cache for cross-panel reuse (e.g. confluence panel computes %PnL/equity)
         window.__equity = eq;
         // Cache full /dash payload so renderSystemA can avoid duplicate fetch
@@ -3168,7 +3173,9 @@ async function loadAttribution() {
   try {
     const cachedDash = _panelCacheGet('dash');
     if (cachedDash) {
-      const eq = cachedDash.equity || 0;
+      const eq = (typeof cachedDash.equity === 'number' && cachedDash.equity > 0)
+                 ? cachedDash.equity
+                 : (window.__equity || 0);
       window.__equity = eq;
       window.__dashCache = { ts: Date.now(), data: cachedDash };
       const heroEq = document.getElementById('hero-eq');
