@@ -451,11 +451,14 @@ class Handler(BaseHTTPRequestHandler):
                         c = cr.get("coin")
                         tgt = cr.get("target", "flat")
                         actual = cr.get("actual", "flat")
-                        # Attribute only when the trader is actually holding the
-                        # position (target!=flat AND actual!=flat). "skip_cap"
-                        # entries mean the trader WANTED to open but hit
-                        # MAX_CONCURRENT — those are not held positions.
-                        if c and tgt != "flat" and actual != "flat" and c not in runner_by_coin:
+                        # Attribute when the trader is actually holding (actual!=flat)
+                        # OR when it just placed an open this scan (action=="open",
+                        # which catches the fill-confirmation lag between order send
+                        # and the trader's next position read). Excludes "skip_cap"
+                        # entries (wanted to open but hit MAX_CONCURRENT).
+                        action = cr.get("action", "")
+                        holds_or_just_opened = (actual != "flat") or (action == "open")
+                        if c and tgt != "flat" and holds_or_just_opened and c not in runner_by_coin:
                             disabled = cr.get("disabled_gens") or []
                             all_gens = {"ema_cross", "donchian", "rsi_revert", "bb_squeeze"}
                             active = sorted(all_gens - set(disabled))
