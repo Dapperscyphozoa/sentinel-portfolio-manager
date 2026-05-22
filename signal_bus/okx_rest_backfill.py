@@ -35,14 +35,43 @@ def _backfill_one(coin: str, tf: str, bars: int = 200) -> list[dict]:
             params: dict = {"instId": inst, "bar": bar, "limit": "100"}
             if after is not None:
                 params["after"] = str(after)
-            try:
-                r = c.get(url, params=params)
-                r.raise_for_status()
-            except Exception as e:
-                log.warning("okx rest backfill %s %s: %s", coin, tf, e)
+
+            # 429-tolerant request loop. 2026-05-22: previously any HTTP error
+            # broke the pagination loop immediately, so concurrent backfills
+            # (max_workers=4) lost coins past the rate-limit threshold —
+            # observed BTC 1000 bars + ETH/SOL only ~600 because OKX 429s
+            # cascaded mid-pagination. Now: retry 429 with exponential backoff
+            # (1s, 2s, 4s, 8s, 16s); break on any other error.
+            rows = None
+            backoff = 1.0
+            for attempt in range(5):
+                try:
+                    r = c.get(url, params=params)
+                    if r.status_code == 429:
+                        log.info("okx rest backfill %s %s: 429 attempt %d, sleeping %.1fs",
+                                 coin, tf, attempt + 1, backoff)
+                        time.sleep(backoff)
+                        backoff *= 2
+                        continue
+                    r.raise_for_status()
+                    rows = (r.json() or {}).get("data") or []
+                    break
+                except httpx.HTTPStatusError as e:
+                    # Non-429 HTTP error — log and abandon
+                    log.warning("okx rest backfill %s %s: %s", coin, tf, e)
+                    rows = None
+                    break
+                except Exception as e:
+                    log.warning("okx rest backfill %s %s: %s", coin, tf, e)
+                    rows = None
+                    break
+
+            if rows is None:
+                # Hard failure (non-429 or 5 consecutive 429s) — preserve any
+                # bars already collected by exiting the pagination loop.
                 break
-            rows = (r.json() or {}).get("data") or []
             if not rows:
+                # Empty response = end of OKX history for this instrument
                 break
             for row in rows:
                 try:
