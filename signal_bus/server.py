@@ -90,6 +90,14 @@ class Handler(BaseHTTPRequestHandler):
         assert CACHE is not None
 
         if path == "/health":
+            # Lock-free fast path. Render's health probe has a hard 5s timeout
+            # and CACHE.stats() acquires the cache RLock which is held by every
+            # WS writer (binance, hl, okx, bybit, oi, liq) — contention pushed
+            # /health past 5s and triggered a restart loop on 2026-05-22.
+            # The heavy snapshot now lives at /health/full.
+            return _json_resp(self, 200, {"ok": True, "ts": time.time()})
+
+        if path == "/health/full":
             try:
                 from common.weight_budget import get_budget
                 weight_stats = get_budget().stats()
