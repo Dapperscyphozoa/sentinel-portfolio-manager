@@ -201,7 +201,7 @@ def _on_trades(cache: Cache, data) -> None:
 
 
 def _on_l2book(cache: Cache, data) -> None:
-    """L2 order book snapshot. Used by hl_depth_shock engine.
+    """L2 order book snapshot. (Originally consumed by hl_depth_shock, removed 2026-05-22; kept for future depth-based engines.)
     Schema: {coin, levels: [bids_array, asks_array], time}
     Each level: {px: str, sz: str, n: int}
     """

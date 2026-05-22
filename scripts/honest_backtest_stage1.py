@@ -9,7 +9,6 @@ Three categories of Stage 1 engines, three distinct gating paths:
 
   CATEGORY B — proxy backtest + live paper required (council Q1, hybrid Q8):
     - hl_cvd_aggressor        (Binance CVD proxy + HL live paper)
-    - hl_depth_shock          (Bybit/Binance L2 proxy + HL live paper)
     GATE: proxy bt_PF ≥ 1.2 AND live paper n ≥ 30, rolling-PF ≥ 1.5
 
   CATEGORY C — no proxy possible, live-paper-only:
