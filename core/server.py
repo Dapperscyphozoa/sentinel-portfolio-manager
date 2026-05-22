@@ -418,6 +418,19 @@ class Handler(BaseHTTPRequestHandler):
             equity = _raw_equity
         else:
             equity = float(getattr(type(self), "_last_good_equity", 0.0) or 0.0)
+        # Positions preservation: same idea. If we have equity > 0 but
+        # signal-bus returned empty positions, that's a fetch gap not real
+        # truth — preserve last-good. Empty positions WITH equity = 0 means
+        # genuine cold-start, keep empty.
+        _raw_positions = hl_positions or account_pm.get("positions") or []
+        if _raw_positions:
+            type(self)._last_good_positions = _raw_positions
+            hl_positions = _raw_positions
+        elif equity > 0:
+            # Equity says we have money but positions came back empty → fetch gap.
+            # Serve cached last-good. Falls through to [] if nothing cached.
+            hl_positions = getattr(type(self), "_last_good_positions", []) or []
+            account_pm["positions"] = hl_positions
         # Pull strategy_runner trades to enrich HL positions with tp/sl/engine.
         # Coin → most-recent open trade row from our SQLite.
         runner_by_coin: dict = {}
