@@ -436,6 +436,40 @@ class Handler(BaseHTTPRequestHandler):
                             runner_by_coin[tr["coin"]] = tr
         except Exception:
             pass
+        # Third fallback: sentinel-trader (single-strategy live executor running
+        # the FROZEN "10-coin sweep winner" config). Has its own /state schema
+        # — positions live under last_coin_results with target!=flat. Attribute
+        # to engine="sentinel-trader" so the dashboard shows owner not "-".
+        try:
+            st_url = os.environ.get("SENTINEL_TRADER_URL",
+                                    "https://sentinel-trader.onrender.com")
+            with httpx.Client(timeout=5.0) as cli:
+                r = cli.get(f"{st_url.rstrip('/')}/state")
+                if r.status_code == 200:
+                    st = r.json() or {}
+                    for cr in st.get("last_coin_results", []):
+                        c = cr.get("coin")
+                        tgt = cr.get("target", "flat")
+                        actual = cr.get("actual", "flat")
+                        # Attribute only when the trader is actually holding the
+                        # position (target!=flat AND actual!=flat). "skip_cap"
+                        # entries mean the trader WANTED to open but hit
+                        # MAX_CONCURRENT — those are not held positions.
+                        if c and tgt != "flat" and actual != "flat" and c not in runner_by_coin:
+                            disabled = cr.get("disabled_gens") or []
+                            all_gens = {"ema_cross", "donchian", "rsi_revert", "bb_squeeze"}
+                            active = sorted(all_gens - set(disabled))
+                            runner_by_coin[c] = {
+                                "coin": c,
+                                "strategy": "sentinel-trader",
+                                "is_long": 1 if tgt == "long" else 0,
+                                "status": "open",
+                                "tp_px": None,
+                                "sl_px": None,
+                                "extras_json": f'{{"sub_engines": {active}}}',
+                            }
+        except Exception:
+            pass
         # Final fallback: read HL native reduceOnly orders as TP/SL source. The
         # runner DB can be empty (fresh deploy, schema migration, or
         # reconciliation gap) but the orders are still live on HL. Without this,
