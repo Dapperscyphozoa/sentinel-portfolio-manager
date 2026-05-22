@@ -447,7 +447,6 @@ def load_strategy(name: str) -> type[StrategyBase]:
         "cascade_sniper_hl": ["cascade_sniper"],
         # Stage 1 engines (council 2026-05-18)
         "hl_cvd_aggressor": ["hl_cvd_aggressor"],
-        "funding_triangulation": ["funding_triangulation"],
         "liq_cluster_hunt": ["liq_cluster_hunt"],
         "hl_whale_frontrun": ["hl_whale_frontrun"],
         "hl_depth_shock": ["hl_depth_shock"],

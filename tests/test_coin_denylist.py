@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 # Module-level import inside the test functions to allow env manipulation
 
 
-def _build_strat(name='funding_triangulation', universe=('SOL', 'BNB', 'ETH')):
+def _build_strat(name='hl_settle_5m', universe=('SOL', 'BNB', 'ETH')):
     strat = MagicMock()
     strat.NAME = name
     strat.UNIVERSE = list(universe)
@@ -31,10 +31,10 @@ def _build_strat(name='funding_triangulation', universe=('SOL', 'BNB', 'ETH')):
 
 
 def test_denylist_blocks_coin(monkeypatch):
-    monkeypatch.setenv('FUNDING_TRIANGULATION_COIN_DENYLIST', 'SOL,BNB')
+    monkeypatch.setenv('HL_SETTLE_5M_COIN_DENYLIST', 'SOL,BNB')
     monkeypatch.delenv('FMOM_COIN_DENYLIST', raising=False)
     # Re-evaluate the env reader inline (matches runner code)
-    deny_env = os.environ.get('FUNDING_TRIANGULATION_COIN_DENYLIST', '')
+    deny_env = os.environ.get('HL_SETTLE_5M_COIN_DENYLIST', '')
     denyset = {c.strip().upper() for c in deny_env.split(',') if c.strip()}
     assert denyset == {'SOL', 'BNB'}
     assert 'SOL' in denyset

@@ -214,16 +214,6 @@ ENGINE_REGISTRY: dict[str, dict] = {
         "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
         "notes": "world-first HL CVD aggressor flow. Needs honest backtest before live.",
     },
-    "funding_triangulation": {
-        "class": "cross_venue_funding_divergence",
-        "affinity": ["range", "chop", "trend_up", "trend_down"],
-        "capital_fraction": 0.00,
-        "bt_pf": 2.00,
-        "bt_n": 0,
-        "min_n_for_gate": 30,
-        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
-        "notes": "HL funding vs Binance/OKX consensus. Single-leg HL execution.",
-    },
     "liq_cluster_hunt": {
         "class": "liq_cluster_predictive",
         "affinity": ["range", "chop", "high_vol", "trend_up", "trend_down"],

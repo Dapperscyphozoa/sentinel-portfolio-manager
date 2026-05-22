@@ -85,10 +85,6 @@ CATEGORY_C = {     # live-paper only
         "gate_live_n": 40, "gate_live_pf": 1.5,
         "rationale": "Binance forceOrder archive not freely available; live-paper only",
     },
-    "funding_triangulation": {
-        "gate_live_n": 30, "gate_live_pf": 1.5,
-        "rationale": "HL hourly funding history not in HistoricalBus; live-paper only",
-    },
 }
 
 

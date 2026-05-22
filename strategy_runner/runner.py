@@ -139,13 +139,10 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load hl_cvd_aggressor")
 
-    # 1.14) Funding Triangulation (Stage 1 #2 — HL vs CEX funding divergence)
-    try:
-        from .strategies.funding_triangulation import FundingTriangulation
-        register(FundingTriangulation)
-        log.info("Loaded funding_triangulation: %s", FundingTriangulation.NAME)
-    except Exception:
-        log.exception("failed to load funding_triangulation")
+    # 1.14) Funding Triangulation — REMOVED 2026-05-22 (sentinel CRITICAL 66%,
+    #       same 8h-settlement-lag structural flaw as killed fd1; live n=14 WR 29%
+    #       net -$0.69 after threshold doubled + 6-coin denylist failed to fix.
+    #       Closures archived to legacy-data/funding_triangulation_closures.json)
 
     # 1.15) Cross-Coin Z-Score — KILLED 2026-05-19 (sentinel CRITICAL unanimous,
     #       honest backtest PF 0.99 over 90d × 10 pairs, thesis broken, see SPEC §4)

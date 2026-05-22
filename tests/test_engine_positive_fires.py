@@ -60,50 +60,7 @@ def _bars(n: int, close_seq=None, open_seq=None,
 
 
 # ──────────────────────────────────────────────────────────────────────
-# funding_triangulation — POSITIVE firing
-# ──────────────────────────────────────────────────────────────────────
 
-def test_funding_triangulation_fires_short_on_overpaying_longs(edge_filters_pass_all):
-    from strategy_runner.strategies.funding_triangulation import FundingTriangulation
-
-    bus = MagicMock()
-    # HL annualized = 5e-4 × 8760 × 10000 = 43,800 bps
-    # CEX annualized = 1e-5 × 1095 × 10000 = 110 bps
-    # Delta = +43,690 bps >> default 150 bps threshold
-    bus.funding.return_value = [
-        {"venue": "hyperliquid", "rate": 5e-4, "ts": 1.0},
-        {"venue": "binance",     "rate": 1e-5, "ts": 1.0},
-        {"venue": "okx",         "rate": 1e-5, "ts": 1.0},
-    ]
-    bus.candles.return_value = _bars(20)
-    bus.cvd.return_value = {"net": 0.0, "buy_usd": 1000.0, "sell_usd": 1000.0,
-                            "n_buy": 10, "n_sell": 10}
-    bus.markprice.return_value = {"hl_mid": 100.0, "binance_mid": 100.0}
-
-    sig = FundingTriangulation.evaluate("SOL", bus)
-    assert sig is not None, "expected SHORT fire when HL massively overpaying longs"
-    assert sig.is_long is False
-    assert sig.side == "A"
-
-
-def test_funding_triangulation_fires_long_on_undercharging_longs(edge_filters_pass_all):
-    from strategy_runner.strategies.funding_triangulation import FundingTriangulation
-
-    bus = MagicMock()
-    bus.funding.return_value = [
-        {"venue": "hyperliquid", "rate": -5e-4, "ts": 1.0},
-        {"venue": "binance",     "rate": 1e-5, "ts": 1.0},
-        {"venue": "okx",         "rate": 1e-5, "ts": 1.0},
-    ]
-    bus.candles.return_value = _bars(20)
-    bus.cvd.return_value = {"net": 0.0, "buy_usd": 1000.0, "sell_usd": 1000.0,
-                            "n_buy": 10, "n_sell": 10}
-    bus.markprice.return_value = {"hl_mid": 100.0, "binance_mid": 100.0}
-
-    sig = FundingTriangulation.evaluate("SOL", bus)
-    assert sig is not None, "expected LONG fire when HL undercharging longs"
-    assert sig.is_long is True
-    assert sig.side == "B"
 
 
 # ──────────────────────────────────────────────────────────────────────
