@@ -473,6 +473,13 @@ def _check_impl(conn, strategy: str, signal: dict, regime: dict,
     margin_pct = _f("MARGIN_PCT_PER_TRADE", 0.05)
     engine_size_mult = float(eng_cfg.get("size_mult", 1.0))
     margin_usd = margin_pct * account_value_usd * size_mult * engine_size_mult
+    # Operator policy 2026-05-22: every position must be ≥ MIN_POSITION_NOTIONAL_USD
+    # notional. With small wallets + engine size_mult overrides (e08 inv at 0.2),
+    # default sizing can fall below the operator's edge-meaningful floor. HL min
+    # order is $10 but operator wants $25+ to keep trades worth tracking.
+    min_notional_usd = _f("MIN_POSITION_NOTIONAL_USD", 25.0)
+    if margin_usd * leverage < min_notional_usd:
+        margin_usd = min_notional_usd / leverage
 
     # 6a) Per-engine concentration cap (spec §7.1: capital_fraction).
     # Spec ends with "Sum: 1.00 (allocate every dollar)" — cap_frac is the
