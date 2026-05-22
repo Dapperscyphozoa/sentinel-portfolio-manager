@@ -462,27 +462,65 @@ def main() -> None:
         # Default 1000 = the KLINE_CAP in cache.py, which saturates the ring
         # buffer and unblocks uzt_rev's 500-bar gate on 15m immediately.
         # Tunable via OKX_REST_BACKFILL_BARS.
+        #
+        # 2026-05-22 OOM mitigation: spm-bus OOM'd at 12:19am (6min after
+        # deploy at 12:13:38) — boot-time backfill with 4 parallel workers ×
+        # 6 TFs × ~24 coins peaked at >512MB. Now skipped entirely when
+        # cold_load already saturated the cache from SQLite (the common case
+        # — only first-ever boot or DB corruption has cold SQLite). When
+        # forced, single-worker keeps the memory spike below the ceiling.
         if config.get_bool("BACKFILL_ON_BOOT", default=True):
             from signal_bus import okx_rest_backfill  # noqa: E402
             backfill_bars = int(config.get("OKX_REST_BACKFILL_BARS", "1000") or "1000")
+            # Saturation gate: if cold_load already gave us ≥80% of target
+            # bars for at least half the (coin, tf) pairs, skip the redundant
+            # REST refetch. cache.klines is dict[(coin, tf), deque] post-load.
+            with CACHE._lock:
+                target_pairs = max(1, len(coins) * 4)  # 4 main TFs (1m/5m/15m/1h)
+                saturated_pairs = sum(
+                    1 for dq in CACHE.klines.values()
+                    if len(dq) >= int(backfill_bars * 0.8)
+                )
+                warm_enough = saturated_pairs >= target_pairs // 2
+                warm_pct = (saturated_pairs / target_pairs * 100) if target_pairs else 0
+            if warm_enough:
+                log.info(
+                    "skipping REST backfill: cold_load saturated %d/%d kline pairs "
+                    "(%.0f%% ≥80%% full of %d-bar target)",
+                    saturated_pairs, target_pairs, warm_pct, backfill_bars,
+                )
+            else:
+                log.info(
+                    "REST backfill required: only %d/%d kline pairs saturated "
+                    "after cold_load (%.0f%% of target)",
+                    saturated_pairs, target_pairs, warm_pct,
+                )
 
-            def _do_backfill():
-                try:
-                    n = okx_rest_backfill.backfill_all(coins, CACHE, bars=backfill_bars)
-                    log.info("REST backfill complete: %d bars total (target=%d/coin/tf)",
-                             n, backfill_bars)
-                    # 2026-05-21: flush immediately so backfilled bars survive
-                    # the next restart. Without this, 4h/1d cache was rebuilt
-                    # from scratch every deploy and engines using those TFs
-                    # were dead-on-arrival.
+                def _do_backfill():
                     try:
-                        flushed = CACHE.flush_klines()
-                        log.info("post-backfill flush: %d bars persisted to SQLite", flushed)
+                        # Single worker prevents OOM spike: 4 parallel × 6 TFs ×
+                        # 1000 bars per HTTP response was the root cause of the
+                        # 12:19am OOM. Sequential takes ~30min vs ~30s but the
+                        # WS feeds keep strategies live during backfill, so the
+                        # only visible cost is slower recovery on a truly cold
+                        # boot (no SQLite history).
+                        n = okx_rest_backfill.backfill_all(
+                            coins, CACHE, bars=backfill_bars, max_workers=1
+                        )
+                        log.info("REST backfill complete: %d bars total (target=%d/coin/tf)",
+                                 n, backfill_bars)
+                        # 2026-05-21: flush immediately so backfilled bars survive
+                        # the next restart. Without this, 4h/1d cache was rebuilt
+                        # from scratch every deploy and engines using those TFs
+                        # were dead-on-arrival.
+                        try:
+                            flushed = CACHE.flush_klines()
+                            log.info("post-backfill flush: %d bars persisted to SQLite", flushed)
+                        except Exception:
+                            log.exception("post-backfill flush failed")
                     except Exception:
-                        log.exception("post-backfill flush failed")
-                except Exception:
-                    log.exception("REST backfill failed")
-            threading.Thread(target=_do_backfill, daemon=True, name="rest_backfill").start()
+                        log.exception("REST backfill failed")
+                threading.Thread(target=_do_backfill, daemon=True, name="rest_backfill").start()
     threading.Thread(target=_flush_loop, args=(CACHE,), daemon=True, name="flush").start()
 
     # HL WS thread is wired up via hl_ws.run_in_thread

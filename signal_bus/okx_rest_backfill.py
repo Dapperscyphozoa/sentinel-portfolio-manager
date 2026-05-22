@@ -67,7 +67,7 @@ def _backfill_one(coin: str, tf: str, bars: int = 200) -> list[dict]:
 
 def backfill_all(coins: Iterable[str], cache: Cache,
                  tfs: Iterable[str] = ("1m", "5m", "15m", "1h", "4h", "1d"),
-                 bars: int = 200) -> int:
+                 bars: int = 200, max_workers: int = 4) -> int:
     """Concurrent bulk backfill. Returns total bars loaded.
 
     2026-05-21: previously serial — 24 coins × 6 TFs × ~1.5s/combo = 3.6min total,
@@ -76,6 +76,10 @@ def backfill_all(coins: Iterable[str], cache: Cache,
     concurrent workers; OKX REST 20/sec/IP soft limit easily survives this).
     Per-coin all-TF batch keeps progress meaningful per worker, so even if
     interrupted, complete-coin units have been written.
+
+    2026-05-22: max_workers parameterized. Default 4 for first-ever boot
+    (speed matters when SQLite is empty); callers can pass 1 to avoid the
+    parallel-JSON-parse memory spike that OOM'd spm-bus on starter plan.
     """
     import concurrent.futures as cf
     coins = list(coins)
@@ -109,7 +113,7 @@ def backfill_all(coins: Iterable[str], cache: Cache,
             log.exception("per-coin backfill flush failed for %s", coin)
         return n
 
-    with cf.ThreadPoolExecutor(max_workers=4) as ex:
+    with cf.ThreadPoolExecutor(max_workers=max_workers) as ex:
         futs = {ex.submit(_backfill_coin_all_tfs, c): c for c in coins}
         for f in cf.as_completed(futs):
             coin = futs[f]
