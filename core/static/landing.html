@@ -727,7 +727,7 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
     }
     load();
     // Refresh every 5 minutes while page is open
-    setInterval(load, 5 * 60 * 1000);
+    setInterval(load, 30 * 1000);  // 30s (was 5min) — fast recovery on transient /dash failures
 })();
 </script>
 

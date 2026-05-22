@@ -408,7 +408,16 @@ class Handler(BaseHTTPRequestHandler):
         # Prefer live signal_bus HL account (has positions + value from WS)
         hl_acct = self._hl_account_full()
         hl_positions = self._hl_positions()
-        equity = float(hl_acct.get("value") or account_pm.get("value", 0) or 0)
+        # Equity preservation: if HL signal-bus returns 0 (WS gap, reconnect,
+        # cold start) keep the last-good value from a class attribute. Frontend
+        # falsy-fallback only helps after a previous successful fetch; this
+        # protects the very first paint after a deploy too.
+        _raw_equity = float(hl_acct.get("value") or account_pm.get("value", 0) or 0)
+        if _raw_equity > 0:
+            type(self)._last_good_equity = _raw_equity
+            equity = _raw_equity
+        else:
+            equity = float(getattr(type(self), "_last_good_equity", 0.0) or 0.0)
         # Pull strategy_runner trades to enrich HL positions with tp/sl/engine.
         # Coin → most-recent open trade row from our SQLite.
         runner_by_coin: dict = {}
