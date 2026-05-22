@@ -149,6 +149,18 @@ _PROXY_MAP = {
 _HEALTH_CACHE: dict = {"ts": 0, "data": None}
 _HEALTH_TTL_S = 15.0
 
+# ─── /dash supporting caches ───
+# /dash polls every 15s; these caches hold the three new dependencies that
+# would otherwise stack 3 sequential REST calls on the hot path and time out.
+# All are short-TTL with explicit refresh on miss; cache miss returns last
+# good value rather than blocking.
+_ALL_MIDS_CACHE: dict = {"ts": 0, "data": {}}
+_ALL_MIDS_TTL_S = 8.0
+_WHALES_COUNT_CACHE: dict = {"ts": 0, "data": 0}
+_WHALES_COUNT_TTL_S = 20.0
+_REGIME_CACHE: dict = {"ts": 0, "data": {}}
+_REGIME_TTL_S = 30.0
+
 # ─── Deep research background job store ───
 # In-memory dict of job_id → {status, phase, started_at, progress, result}
 # Single-instance OK (we have one core service). Auto-evicts jobs older than 10min.
@@ -318,14 +330,28 @@ class Handler(BaseHTTPRequestHandler):
         return []
 
     def _hl_all_mids(self) -> dict:
+        """HL allMids — every perp's mid price in one REST call.
+
+        TTL-cached at 8s. /dash polls every 15s, so 8s ensures one fresh
+        fetch per poll worst case but allows hits from concurrent callers
+        (positions loop + verified_coins fallback) on the same /dash.
+        On REST failure returns last good value rather than empty dict.
+        """
+        now = time.time()
+        if _ALL_MIDS_CACHE["data"] and now - _ALL_MIDS_CACHE["ts"] < _ALL_MIDS_TTL_S:
+            return _ALL_MIDS_CACHE["data"]
         try:
-            with httpx.Client(timeout=4.0) as cli:
+            with httpx.Client(timeout=3.0) as cli:
                 r = cli.post("https://api.hyperliquid.xyz/info", json={"type": "allMids"})
                 if r.status_code == 200:
-                    return r.json()
+                    data = r.json() or {}
+                    _ALL_MIDS_CACHE["ts"] = now
+                    _ALL_MIDS_CACHE["data"] = data
+                    return data
         except Exception:
             pass
-        return {}
+        # On failure return last good value if we have one
+        return _ALL_MIDS_CACHE["data"] or {}
 
     def _utc_session(self) -> str:
         """Return current session name from UTC hour."""
@@ -659,28 +685,41 @@ class Handler(BaseHTTPRequestHandler):
         if not mark_coins and all_mids_cache:
             mark_coins = len(all_mids_cache)
         # Whale prints — count >$100k fills in the last hour from the existing
-        # /whales aggregator (multi-venue, already populated). Cheap local call.
-        total_whales = 0
-        try:
-            with httpx.Client(timeout=2.0) as cli:
-                wr = cli.get(f"http://127.0.0.1:{PUBLIC_PORT}/whales")
-                if wr.status_code == 200:
-                    wjson = wr.json() or {}
-                    total_whales = len(wjson.get("items") or [])
-        except Exception:
-            pass
-        # Regime: PM exposes /regime which classifies BTC 1h candles via
-        # pm.pm_regime.classify(). Cheap (60 candles, in-memory). When empty,
-        # falls back to the regime dict already pulled via _pm_data().
-        regime_full = regime if isinstance(regime, dict) else {}
-        if not regime_full.get("regime"):
+        # /whales aggregator (multi-venue, already populated). TTL-cached 20s
+        # so /dash never blocks waiting for the aggregator's own poll cycle.
+        now_ts = time.time()
+        if _WHALES_COUNT_CACHE["data"] is not None and now_ts - _WHALES_COUNT_CACHE["ts"] < _WHALES_COUNT_TTL_S:
+            total_whales = _WHALES_COUNT_CACHE["data"]
+        else:
+            total_whales = _WHALES_COUNT_CACHE["data"] or 0  # last good
             try:
-                with httpx.Client(timeout=3.0) as cli:
-                    pr = cli.get(f"http://localhost:{PM_PORT}/regime")
-                    if pr.status_code == 200:
-                        regime_full = pr.json() or regime_full
+                with httpx.Client(timeout=1.5) as cli:
+                    wr = cli.get(f"http://127.0.0.1:{PUBLIC_PORT}/whales")
+                    if wr.status_code == 200:
+                        wjson = wr.json() or {}
+                        total_whales = len(wjson.get("items") or [])
+                        _WHALES_COUNT_CACHE["ts"] = now_ts
+                        _WHALES_COUNT_CACHE["data"] = total_whales
             except Exception:
                 pass
+        # Regime: PM /regime classifies BTC 1h candles via pm.pm_regime.classify().
+        # Slow path (calls signal_bus for candles) so TTL-cache 30s.
+        regime_full = regime if isinstance(regime, dict) else {}
+        if not regime_full.get("regime"):
+            if _REGIME_CACHE["data"] and now_ts - _REGIME_CACHE["ts"] < _REGIME_TTL_S:
+                regime_full = _REGIME_CACHE["data"]
+            else:
+                try:
+                    with httpx.Client(timeout=2.5) as cli:
+                        pr = cli.get(f"http://localhost:{PM_PORT}/regime")
+                        if pr.status_code == 200:
+                            regime_full = pr.json() or regime_full
+                            _REGIME_CACHE["ts"] = now_ts
+                            _REGIME_CACHE["data"] = regime_full
+                except Exception:
+                    # Fall through with last good or empty dict
+                    if _REGIME_CACHE["data"]:
+                        regime_full = _REGIME_CACHE["data"]
         out = {
             "ts": int(time.time() * 1000),
             "equity": equity,
