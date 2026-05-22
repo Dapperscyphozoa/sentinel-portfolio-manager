@@ -202,7 +202,8 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "fmom":                {"affinity": ["trend_up", "trend_down", "range", "chop"],
                              "bt_pf": 1.75, "cap_frac": 0.00},
     "hl_settle_5m":        {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
-                             "bt_pf": 1.85, "cap_frac": 0.16},   # trimmed 0.18→0.16 to fund e08_inv (2026-05-20)
+                             "bt_pf": 1.85, "cap_frac": 0.16,
+                             "size_mult": 0.2},   # 1% margin/trade per operator 2026-05-22 (was 5% default; post-fix PF 3.70)
     # Stage 1 NEW ENGINE — paper-only pending honest backtest gate (council priority)
     "hl_cvd_aggressor": {
         "class": "cvd_aggressor_flow",
