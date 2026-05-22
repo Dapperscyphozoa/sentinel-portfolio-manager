@@ -110,6 +110,15 @@ def _runtime_halt(strategy: str) -> bool:
 def run(conn: sqlite3.Connection) -> dict:
     """Inspect all engines with bt_pf ≥ MIN_BT_PF and rolling-30 PF.
     Demote any whose rolling PF < 0.7 × bt_pf."""
+    # 2026-05-22 OPERATOR DIRECTIVE: auto-demote authority revoked. Sentinel
+    # has previously halted engines mid-comeback, removing operator agency
+    # over which strategies trade. This routine no longer demotes by default.
+    # To re-enable, set AUTO_DEMOTE_ENABLED=1 explicitly (escape hatch only;
+    # not for normal operation). When disabled, the routine still computes
+    # the diagnostic numbers and returns them in the report — operator can
+    # see what WOULD have been demoted without it actually firing.
+    auto_demote_on = os.environ.get("AUTO_DEMOTE_ENABLED", "0") == "1"
+
     from pm.pretrade import ENGINE_REGISTRY
 
     now = time.time()
@@ -129,6 +138,11 @@ def run(conn: sqlite3.Connection) -> dict:
                              "threshold": threshold, "verdict": "insufficient_n"}
             continue
         verdict = "demote" if pf < threshold else "keep"
+        # OPERATOR-DISABLED: emit "would_demote" instead of "demote" when the
+        # auto authority is off. Diagnostic visibility preserved without the
+        # side effect.
+        if verdict == "demote" and not auto_demote_on:
+            verdict = "would_demote"
         checked[name] = {"n": n, "rolling_pf": round(pf, 3),
                          "bt_pf": bt_pf, "threshold": round(threshold, 3),
                          "verdict": verdict}
@@ -144,6 +158,11 @@ def run(conn: sqlite3.Connection) -> dict:
                 "threshold": round(threshold, 3), "bt_pf": bt_pf,
                 "n": n, "env_persisted": env_ok, "runtime_halted": runtime_ok,
             })
+        elif verdict == "would_demote":
+            log.warning("WOULD-DEMOTE %s: rolling_PF=%.2f < threshold=%.2f "
+                        "(bt_pf=%.2f n=%d) — auto-demote DISABLED by operator; "
+                        "set AUTO_DEMOTE_ENABLED=1 to re-arm",
+                        name, pf, threshold, bt_pf, n)
 
     severity = ("HIGH" if demoted
                 else "CLEAN")

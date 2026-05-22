@@ -261,6 +261,13 @@ def _reinstate(engine: str) -> bool:
 
 def run(conn: sqlite3.Connection) -> dict:
     """Main entry — monitor scheduler calls this every 5min."""
+    # 2026-05-22 OPERATOR DIRECTIVE: 4-loss auto-demote authority revoked.
+    # When AUTO_4LOSS_DEMOTE_ENABLED=0 (default), this routine still DETECTS
+    # demotions/promotions for diagnostic visibility but does NOT flip env
+    # vars or fire sentinel audits. Operator regains exclusive authority
+    # over which engines trade. Set AUTO_4LOSS_DEMOTE_ENABLED=1 to re-arm.
+    auto_4loss_on = os.environ.get("AUTO_4LOSS_DEMOTE_ENABLED", "0") == "1"
+
     _ensure_seen_table(conn)
     now = time.time()
     new_demotions = []
@@ -318,8 +325,15 @@ def run(conn: sqlite3.Connection) -> dict:
         # First-time detection of this demotion
         if seen is None or int(seen["demoted_ts"]) != demoted_ts:
             log.error("NEW 4-LOSS DEMOTION detected: %s (demoted_ts=%s)", engine, demoted_ts)
-            audit_path = _fire_sentinel_audit(engine, conn)
-            env_ok = _flip_env(engine, "0")
+            if auto_4loss_on:
+                audit_path = _fire_sentinel_audit(engine, conn)
+                env_ok = _flip_env(engine, "0")
+            else:
+                log.warning("AUTO-DEMOTE-DISABLED: would have audited + halted %s; "
+                            "operator authority preserved (set AUTO_4LOSS_DEMOTE_ENABLED=1 to re-arm)",
+                            engine)
+                audit_path = None
+                env_ok = False
             conn.execute("""
                 INSERT OR REPLACE INTO seen_demotions
                 (engine, demoted_ts, audit_fired, env_flipped, promoted_ts, audit_path)
@@ -327,7 +341,8 @@ def run(conn: sqlite3.Connection) -> dict:
             """, (engine, demoted_ts, 1 if audit_path else 0, 1 if env_ok else 0, audit_path))
             conn.commit()
             new_demotions.append({"engine": engine, "audit_fired": bool(audit_path),
-                                  "env_flipped": env_ok, "audit_path": audit_path})
+                                  "env_flipped": env_ok, "audit_path": audit_path,
+                                  "auto_disabled": not auto_4loss_on})
             continue
 
         # Already-seen demoted engine — check for 4-paper-win promotion
@@ -335,16 +350,24 @@ def run(conn: sqlite3.Connection) -> dict:
         pending.append({"engine": engine, "paper_win_streak": win_streak,
                         "need": WIN_STREAK_FOR_PROMOTE})
         if win_streak >= WIN_STREAK_FOR_PROMOTE:
-            log.warning("AUTO-PROMOTE %s: %d consec paper wins", engine, win_streak)
-            env_ok = _flip_env(engine, "1")
-            reinstate_ok = _reinstate(engine)
-            conn.execute(
-                "UPDATE seen_demotions SET promoted_ts=? WHERE engine=?",
-                (int(now), engine),
-            )
-            conn.commit()
-            promotions.append({"engine": engine, "win_streak": win_streak,
-                               "env_flipped": env_ok, "reinstate_ok": reinstate_ok})
+            if auto_4loss_on:
+                log.warning("AUTO-PROMOTE %s: %d consec paper wins", engine, win_streak)
+                env_ok = _flip_env(engine, "1")
+                reinstate_ok = _reinstate(engine)
+                conn.execute(
+                    "UPDATE seen_demotions SET promoted_ts=? WHERE engine=?",
+                    (int(now), engine),
+                )
+                conn.commit()
+                promotions.append({"engine": engine, "win_streak": win_streak,
+                                   "env_flipped": env_ok, "reinstate_ok": reinstate_ok})
+            else:
+                log.warning("AUTO-PROMOTE-DISABLED: %s has %d consec paper wins, "
+                            "would have re-promoted; operator authority preserved",
+                            engine, win_streak)
+                promotions.append({"engine": engine, "win_streak": win_streak,
+                                   "env_flipped": False, "reinstate_ok": False,
+                                   "auto_disabled": True})
 
     # Cleanup stale rows: engines no longer in cooldown.engine_demotions
     stale = conn.execute("SELECT engine FROM seen_demotions").fetchall()
