@@ -491,19 +491,23 @@ class Handler(BaseHTTPRequestHandler):
                         action = cr.get("action", "")
                         holds_or_just_opened = (actual != "flat") or (action == "open")
                         if c and tgt != "flat" and holds_or_just_opened and c not in runner_by_coin:
-                            # The ENGINE that fired is the set of non-muted signal
-                            # generators (each is a real engine: donchian, ema_cross,
-                            # rsi_revert, bb_squeeze). "sentinel-trader" is just the
-                            # executor harness — not an engine. Show actual engines.
-                            disabled = cr.get("disabled_gens") or []
-                            all_gens = ["donchian", "ema_cross", "rsi_revert", "bb_squeeze"]
-                            active = [g for g in all_gens if g not in disabled]
-                            # Compact "g1+g2" label per coin (max 3 generators visible
-                            # at once given typical mute rates). Suffix sw: for the
-                            # 10-coin sweep-winner meta strategy.
-                            engine_label = "sw:" + "+".join(active) if active else "sw:?"
-                            # Read sl_px/tp_px from /positions if available
+                            # ACTUAL firing engine — prefer gen_ids from the signals
+                            # table (companion enrichment in sentinel-trader ea09490).
+                            # gen_ids is what voted at entry. disabled_gens is what
+                            # was ALLOWED to vote. These differ when only one active
+                            # gen had enough confidence to fire alone — previous
+                            # label 'sw:donchian+rsi_revert' was misleading because
+                            # only donchian actually voted on most entries.
                             stp = st_positions.get(c, {}) if isinstance(st_positions, dict) else {}
+                            firing_raw = (stp.get("gen_ids") or "").strip()
+                            if firing_raw:
+                                firing = [g.strip() for g in firing_raw.split(",") if g.strip()]
+                            else:
+                                # Fallback: active gens (was the only signal source pre-ea09490)
+                                disabled = cr.get("disabled_gens") or []
+                                all_gens = ["donchian", "ema_cross", "rsi_revert", "bb_squeeze"]
+                                firing = [g for g in all_gens if g not in disabled]
+                            engine_label = "sw:" + "+".join(firing) if firing else "sw:?"
                             runner_by_coin[c] = {
                                 "coin": c,
                                 "strategy": engine_label,
@@ -511,7 +515,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "status": "open",
                                 "tp_px": stp.get("tp_px"),
                                 "sl_px": stp.get("sl_px"),
-                                "extras_json": f'{{"executor": "sentinel-trader", "active_gens": {active}}}',
+                                "extras_json": f'{{"executor": "sentinel-trader", "firing_gens": {firing}}}',
                             }
         except Exception:
             pass
