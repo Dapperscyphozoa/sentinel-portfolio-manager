@@ -260,9 +260,25 @@ class Handler(BaseHTTPRequestHandler):
         return {}
 
     def _signal_bus_health(self) -> dict:
+        """Lightweight signal_bus stats for dashboard panels.
+
+        Calls the lock-free /counts endpoint (mark_coins, funding_coins, etc).
+        /health only returns {ok, ts} since 2026-05-22; /health/full holds
+        CACHE._lock and 502s under WS write load. /counts uses GIL-atomic
+        len() reads, safe at any contention level.
+        """
+        # Try the lock-free counts endpoint first
         try:
-            with httpx.Client(timeout=5.0) as cli:
-                r = cli.get(f"{SIGNAL_BUS_BASE}/health")
+            with httpx.Client(timeout=4.0) as cli:
+                r = cli.get(f"{SIGNAL_BUS_BASE}/counts")
+                if r.status_code == 200:
+                    return r.json()
+        except Exception:
+            pass
+        # Fallback: full stats (may 502 under load)
+        try:
+            with httpx.Client(timeout=4.0) as cli:
+                r = cli.get(f"{SIGNAL_BUS_BASE}/health/full")
                 if r.status_code == 200:
                     return r.json()
         except Exception:
@@ -546,12 +562,23 @@ class Handler(BaseHTTPRequestHandler):
                             hl_triggers_by_coin.setdefault(c, []).append(px)
         except Exception:
             pass
+        # Fetch HL allMids ONCE for the positions loop. This is the universal
+        # fallback for mark_px: signal_bus HL WS only subscribes to a 20-coin
+        # hardcoded set (DEFAULT_MARK_COINS in signal_bus/hl_ws.py), so any
+        # position outside that set used to fall through with mark_px=0 and
+        # render as $0.00 uPnL when HL's position struct also lacked
+        # unrealizedPnl. allMids covers every HL perp (~230 coins) in one
+        # REST call. Cheap (~50ms) and runs once per /dash poll (every 15s).
+        all_mids_cache = self._hl_all_mids() or {}
         # Positions list — shape landing expects: {upnl, lev, tp, sl, engine, stage, coin, side, size, entry, entry_px, mark_px}
         positions_out = []
         for p in hl_positions or account_pm.get("positions") or []:
             coin = p.get("coin", "?")
             entry_px = float(p.get("entry_px", p.get("entryPx", 0)) or 0)
-            # Mark price from bus (HL position struct doesn't always carry mark)
+            # Mark price resolution chain:
+            #   1. HL position struct (rarely populated)
+            #   2. signal_bus /markprice (only the 20 subscribed coins)
+            #   3. HL allMids (covers every perp; the new universal fallback)
             mark_px = float(p.get("mark_px", p.get("markPx", 0)) or 0)
             if not mark_px:
                 try:
@@ -561,6 +588,11 @@ class Handler(BaseHTTPRequestHandler):
                             mp = rr.json() or {}
                             mark_px = float(mp.get("hl_mid") or mp.get("binance_mid") or 0)
                 except Exception:
+                    pass
+            if not mark_px and all_mids_cache:
+                try:
+                    mark_px = float(all_mids_cache.get(coin) or 0)
+                except (TypeError, ValueError):
                     pass
             # Leverage — HL returns dict {type, value}; landing expects scalar number
             lev_obj = p.get("leverage", p.get("lev"))
@@ -621,6 +653,34 @@ class Handler(BaseHTTPRequestHandler):
         # Funding cache count = number of coins for which we have funding data
         funding_cached = int(sb.get("funding_coins", 0))
         mark_coins = int(sb.get("mark_coins", 0))
+        # If signal_bus mark count is 0 (boot, contention) fall back to the
+        # allMids fetch already done for the positions loop — every HL perp
+        # we have a mid for counts as a "verified" coin.
+        if not mark_coins and all_mids_cache:
+            mark_coins = len(all_mids_cache)
+        # Whale prints — count >$100k fills in the last hour from the existing
+        # /whales aggregator (multi-venue, already populated). Cheap local call.
+        total_whales = 0
+        try:
+            with httpx.Client(timeout=2.0) as cli:
+                wr = cli.get(f"http://127.0.0.1:{PUBLIC_PORT}/whales")
+                if wr.status_code == 200:
+                    wjson = wr.json() or {}
+                    total_whales = len(wjson.get("items") or [])
+        except Exception:
+            pass
+        # Regime: PM exposes /regime which classifies BTC 1h candles via
+        # pm.pm_regime.classify(). Cheap (60 candles, in-memory). When empty,
+        # falls back to the regime dict already pulled via _pm_data().
+        regime_full = regime if isinstance(regime, dict) else {}
+        if not regime_full.get("regime"):
+            try:
+                with httpx.Client(timeout=3.0) as cli:
+                    pr = cli.get(f"http://localhost:{PM_PORT}/regime")
+                    if pr.status_code == 200:
+                        regime_full = pr.json() or regime_full
+            except Exception:
+                pass
         out = {
             "ts": int(time.time() * 1000),
             "equity": equity,
@@ -628,11 +688,11 @@ class Handler(BaseHTTPRequestHandler):
             "session": {"name": self._utc_session(),
                         "ts": int(time.time() * 1000)},
             "orderbook": {"verified_coins": mark_coins},
-            "whale": {"total_whales": 0},   # no whale tracker yet — see precog-hl/whale_filter.py for spec
+            "whale": {"total_whales": total_whales},
             "funding_cached": funding_cached,
-            "risk_ladder": {"risk": 0.04, "regime": regime.get("regime", "unknown")},
+            "risk_ladder": {"risk": 0.04, "regime": regime_full.get("regime", "unknown")},
             "universe_size": len(universe) or 230,
-            "regime": regime,
+            "regime": regime_full,
         }
         self._json(200, out)
 

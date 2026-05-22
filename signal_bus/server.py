@@ -97,6 +97,27 @@ class Handler(BaseHTTPRequestHandler):
             # The heavy snapshot now lives at /health/full.
             return _json_resp(self, 200, {"ok": True, "ts": time.time()})
 
+        if path == "/counts":
+            # Lock-free counts for dashboard panel population. dict/list len()
+            # is GIL-atomic in CPython so we can read these without acquiring
+            # CACHE._lock (which /health/full needs and which lock-contends
+            # under WS write load). Used by core /dash to populate
+            # orderbook.verified_coins + funding_cached without the 502s that
+            # /health/full hits during heavy load.
+            try:
+                return _json_resp(self, 200, {
+                    "ok": True,
+                    "ts": time.time(),
+                    "mark_coins": len(CACHE.marks),
+                    "funding_coins": len(CACHE.funding_latest),
+                    "kline_keys": len(CACHE.klines),
+                    "liq_events": len(CACHE.liqs),
+                    "hl_positions": len(CACHE.hl_positions),
+                    "hl_fills_buffered": len(CACHE.hl_fills),
+                })
+            except Exception as e:
+                return _json_resp(self, 500, {"ok": False, "error": str(e)[:200]})
+
         if path == "/health/full":
             try:
                 from common.weight_budget import get_budget
