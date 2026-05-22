@@ -163,13 +163,10 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load hl_whale_frontrun")
 
-    # 1.18) HL Depth Shock (Stage 1 #6 — orderbook liquidity-eviction fade)
-    try:
-        from .strategies.hl_depth_shock import HLDepthShock
-        register(HLDepthShock)
-        log.info("Loaded hl_depth_shock: %s", HLDepthShock.NAME)
-    except Exception:
-        log.exception("failed to load hl_depth_shock")
+    # 1.18) hl_depth_shock — REMOVED 2026-05-22. n=9 WR 22% PF 0.32 net -$0.69.
+    #       Widening params to observe was rejected by operator: dead engines
+    #       take up registry/cognitive space; remove rather than nurse.
+    #       See legacy-data/hl_depth_shock_closures.json + BLEEDER_TRIAGE.md.
 
     # 1.19) HL Vault Predict (Stage 1 #7 — HLP rebalance anticipation)
     try:

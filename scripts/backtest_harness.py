@@ -449,7 +449,7 @@ def load_strategy(name: str) -> type[StrategyBase]:
         "hl_cvd_aggressor": ["hl_cvd_aggressor"],
         "liq_cluster_hunt": ["liq_cluster_hunt"],
         "hl_whale_frontrun": ["hl_whale_frontrun"],
-        "hl_depth_shock": ["hl_depth_shock"],
+        # hl_depth_shock REMOVED 2026-05-22 (PF 0.32 net -$0.69 at n=9).
         "hl_vault_predict": ["hl_vault_predict"],
         # 2026-05-22 additions: production engines for honest BT
         "fmom":               ["fmom"],

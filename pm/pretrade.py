@@ -234,16 +234,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
         "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
         "notes": "World-first: copy new opens from top-20 HL wallets. Highest est edge.",
     },
-    "hl_depth_shock": {
-        "class": "orderbook_liquidity_shock",
-        "affinity": ["range", "chop", "high_vol"],
-        "capital_fraction": 0.00,
-        "bt_pf": 2.10,
-        "bt_n": 0,
-        "min_n_for_gate": 30,
-        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
-        "notes": "Fade bid/ask depth shocks before price catches down.",
-    },
+    # hl_depth_shock — REMOVED 2026-05-22 (n=9 WR 22% PF 0.32 net -$0.69).
     "hl_vault_predict": {
         "class": "vault_rebalance_anticipation",
         "affinity": ["range", "chop", "trend_up", "trend_down"],

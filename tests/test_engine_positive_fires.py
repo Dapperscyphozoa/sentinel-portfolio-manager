@@ -120,41 +120,8 @@ def test_hl_cvd_aggressor_fires_short_on_strong_aggressor_sell(edge_filters_pass
     assert sig.sl_px > sig.ref_price
 
 
-# ──────────────────────────────────────────────────────────────────────
-# hl_depth_shock — POSITIVE firing
-# ──────────────────────────────────────────────────────────────────────
-
-def test_hl_depth_shock_fires_on_ask_shock(edge_filters_pass_all):
-    from strategy_runner.strategies.hl_depth_shock import HLDepthShock
-
-    bus = MagicMock()
-    # Ask depth collapsed (positive shock_pct), price barely moved, deep enough
-    bus.depth_shock.return_value = {
-        "mid": 100.0,
-        "bid_shock_pct": -5.0,    # bid stable
-        "ask_shock_pct": 50.0,     # ask 50% drop (> DS_SHOCK_PCT_MIN=30)
-        "price_move_bps": 2.0,     # < DS_PRICE_MOVE_MAX_BPS=10
-        "spread_bps": 0.5,
-        "samples": 10,
-        "bid_before_usd": 50_000.0,
-        "ask_before_usd": 50_000.0,
-    }
-    bus.candles.return_value = _bars(5)
-    bus.markprice.return_value = {"hl_mid": 100.0, "binance_mid": 100.0}
-    bus.cvd.return_value = {"net": 0.0, "buy_usd": 1000.0, "sell_usd": 1000.0,
-                            "n_buy": 10, "n_sell": 10}
-
-    sig = HLDepthShock.evaluate("SOL", bus)
-    # Some implementations may still need additional gates passed; verify
-    # direction-consistency IF fires; the assertion above is "engine CAN fire"
-    if sig is None:
-        pytest.skip("engine has additional gates beyond depth_shock; "
-                    "core direction logic exercised by other tests")
-    # If it fires, SL/TP must be consistent with direction
-    if sig.is_long:
-        assert sig.sl_px < sig.ref_price and sig.tp_px > sig.ref_price
-    else:
-        assert sig.sl_px > sig.ref_price and sig.tp_px < sig.ref_price
+# hl_depth_shock REMOVED 2026-05-22 (n=9 WR 22% PF 0.32 net -$0.69).
+# Engine + test deleted; no replacement.
 
 
 # ──────────────────────────────────────────────────────────────────────

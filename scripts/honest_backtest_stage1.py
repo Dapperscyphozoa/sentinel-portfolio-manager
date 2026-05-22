@@ -64,11 +64,7 @@ CATEGORY_B = {     # proxy backtest + live paper
         "gate_live_n": 30, "gate_live_pf": 1.5,
         "proxy_note": "Binance CVD 1s aggregation",
     },
-    "hl_depth_shock": {
-        "days": 60, "min_n_bt": 100, "gate_bt_pf": 1.2,
-        "gate_live_n": 30, "gate_live_pf": 1.5,
-        "proxy_note": "Bybit/Binance L2 depth delta",
-    },
+    # hl_depth_shock REMOVED 2026-05-22 (n=9 WR 22% PF 0.32 net -$0.69).
 }
 
 CATEGORY_C = {     # live-paper only
