@@ -74,6 +74,15 @@ CREATE TABLE IF NOT EXISTS hlp_history (
     PRIMARY KEY (coin, ts)
 ) WITHOUT ROWID;
 CREATE INDEX IF NOT EXISTS idx_hlp_coin_ts ON hlp_history(coin, ts DESC);
+
+CREATE TABLE IF NOT EXISTS oi_history (
+    coin       TEXT NOT NULL,
+    ts         INTEGER NOT NULL,
+    oi         REAL NOT NULL,
+    oi_usd     REAL NOT NULL,
+    PRIMARY KEY (coin, ts)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_oi_coin_ts ON oi_history(coin, ts DESC);
 """
 
 
@@ -533,6 +542,67 @@ class Cache:
         with self._lock:
             for r in rows:
                 self.hlp_history[r["coin"]].append((r["ts"], r["net_usd"]))
+        return len(rows)
+
+    def flush_oi(self) -> int:
+        """Persist OI history to SQLite (poll cadence per oi_poller).
+
+        Called on every successful OI poll; survives redeploys. Without this,
+        oi_concentration's 200-sample warmup resets to 0 on each spm-bus
+        restart — at 60s poll, that's 3.3h of dead-on-arrival time per deploy.
+        With persistence, restarts rehydrate the 720-deque from disk
+        immediately.
+        """
+        n = 0
+        with _DB_LOCK:
+            for coin, hist_deque in self.oi_history.items():
+                if not hist_deque:
+                    continue
+                # Only persist the latest entry — older rows already on disk
+                latest = hist_deque[-1]
+                try:
+                    self.db.execute(
+                        "INSERT OR IGNORE INTO oi_history(coin, ts, oi, oi_usd) VALUES(?,?,?,?)",
+                        (coin, latest["ts"], latest["oi"], latest["oi_usd"]),
+                    )
+                    n += 1
+                except Exception:
+                    pass
+            # prune SQLite to last 30d
+            cutoff = int((time.time() - 30 * 86400) * 1000)
+            self.db.execute("DELETE FROM oi_history WHERE ts < ?", (cutoff,))
+        self.last_update["oi_flush"] = time.time()
+        return n
+
+    def cold_load_oi(self) -> int:
+        """Rehydrate oi_history deques from SQLite on boot. Returns rows loaded.
+
+        Loads up to the deque maxlen (720) most-recent rows per coin so the
+        ring buffer starts saturated. oi_concentration needs 200 samples to
+        fire; with this path, that gate is met immediately on every restart
+        instead of after a 3.3h cold-start.
+        """
+        # Get maxlen by introspecting one of the deques (defaultdict factory)
+        try:
+            maxlen = self.oi_history.default_factory().maxlen or 720
+        except Exception:
+            maxlen = 720
+        # Window function: top-N most-recent per coin
+        rows = self.db.execute(
+            "SELECT coin, ts, oi, oi_usd FROM ("
+            "  SELECT coin, ts, oi, oi_usd,"
+            "         ROW_NUMBER() OVER (PARTITION BY coin ORDER BY ts DESC) AS rn"
+            "  FROM oi_history"
+            ") "
+            "WHERE rn <= ? "
+            "ORDER BY coin, ts ASC",
+            (maxlen,),
+        ).fetchall()
+        with self._lock:
+            for r in rows:
+                self.oi_history[r["coin"]].append({
+                    "ts": r["ts"], "oi": r["oi"], "oi_usd": r["oi_usd"],
+                })
         return len(rows)
 
     def cold_load(self, hours_klines: int = 24, hours_liqs: int = 24,

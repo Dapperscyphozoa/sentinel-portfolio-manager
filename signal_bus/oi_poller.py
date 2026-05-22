@@ -19,6 +19,7 @@ Endpoint exposed by signal-bus:
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 from collections import deque
@@ -29,7 +30,13 @@ import httpx
 log = logging.getLogger("oi_poller")
 
 HL_INFO_URL = "https://api.hyperliquid.xyz/info"
-POLL_INTERVAL_S = 300       # 5 minutes (matches hlp_poller cadence; OI is slow-moving)
+POLL_INTERVAL_S = int(os.environ.get("OI_POLL_INTERVAL_S", "60"))
+# 2026-05-22: lowered 300 → 60. At 5min cadence, oi_concentration's 200-sample
+# gate took 17h cold-start (well past typical Render restart frequency).
+# At 60s + SQLite cold-load (this commit), cold-start is ~0s — deque rehydrates
+# from disk immediately, and the 60s cadence keeps it fresh. HL weight cost
+# +20/min (metaAndAssetCtxs = 20 weight) = +20% of current 11% utilization,
+# still well under the 1080/min ceiling. Configurable via OI_POLL_INTERVAL_S.
 HISTORY_POINTS = 8640       # 30 days × 288 (5min bars) — matches hlp_history sizing
 REQUEST_TIMEOUT_S = 15.0
 MAX_BACKOFF_S = 300
@@ -102,6 +109,14 @@ def _run_loop(cache, stop_event: threading.Event) -> None:
             if snap is not None:
                 cache.update_oi(snap)
                 cache.last_update["oi_poll"] = time.time()
+                # Persist latest snapshot to SQLite — survives restarts so
+                # oi_concentration's 200-sample gate doesn't have to cold-start
+                # every redeploy. flush_oi only inserts the newest row per
+                # coin (older rows already on disk), so this is cheap.
+                try:
+                    cache.flush_oi()
+                except Exception:
+                    log.exception("flush_oi failed; OI will not survive restart")
                 backoff = 1.0   # reset
             else:
                 # transient — back off but don't crash the thread
@@ -129,5 +144,16 @@ def start(cache) -> tuple[threading.Thread, threading.Event]:
 
 # ── Convenience wrapper to match hlp_poller.run_in_thread() convention ───
 def run_in_thread(cache) -> None:
-    """Start the poller in a daemon thread. Compatible with server.py boot pattern."""
+    """Start the poller in a daemon thread. Compatible with server.py boot pattern.
+
+    Cold-loads oi_history from SQLite first so oi_concentration's 200-sample
+    threshold is met immediately on every restart (assuming the bus has been
+    up long enough to populate disk at any point in history).
+    """
+    try:
+        n_loaded = cache.cold_load_oi()
+        log.info("oi cold-loaded %d rows from sqlite", n_loaded)
+    except Exception:
+        log.exception("oi cold-load failed; engine will need %ds × 200 = %dh warmup",
+                      POLL_INTERVAL_S, POLL_INTERVAL_S * 200 // 3600)
     start(cache)
