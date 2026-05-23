@@ -147,13 +147,11 @@ def _load_registered() -> None:
     #       never promoted. Module moved to _archived/liq_cluster_hunt.py.
     #       Closures archived to legacy-data/liq_cluster_hunt_closures.json.
 
-    # 1.17) HL Whale Frontrun (Stage 1 #5 — world-first, highest single-engine edge)
-    try:
-        from .strategies.hl_whale_frontrun import HLWhaleFrontrun
-        register(HLWhaleFrontrun)
-        log.info("Loaded hl_whale_frontrun: %s", HLWhaleFrontrun.NAME)
-    except Exception:
-        log.exception("failed to load hl_whale_frontrun")
+    # 1.17) hl_whale_frontrun — REMOVED 2026-05-23 (operator kill: live n=6
+    #       WR 16.7% net -$1.20, 5L 1W). World-first thesis didn't hold:
+    #       whale moves were either too fast to frontrun or signals were noise.
+    #       Module moved to _archived/. Closures archived to
+    #       legacy-data/hl_whale_frontrun_closures.json.
 
     # 1.18) hl_depth_shock — REMOVED 2026-05-22. n=9 WR 22% PF 0.32 net -$0.69.
     #       Widening params to observe was rejected by operator: dead engines

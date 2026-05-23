@@ -214,16 +214,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
         "notes": "world-first HL CVD aggressor flow. Needs honest backtest before live.",
     },
     # liq_cluster_hunt — REMOVED 2026-05-23 (operator kill: live n=1 WR 0% net -$0.17)
-    "hl_whale_frontrun": {
-        "class": "whale_position_copy",
-        "affinity": ["trend_up", "trend_down", "range", "chop"],
-        "capital_fraction": 0.00,
-        "bt_pf": 3.20,
-        "bt_n": 0,
-        "min_n_for_gate": 30,
-        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
-        "notes": "World-first: copy new opens from top-20 HL wallets. Highest est edge.",
-    },
+    # hl_whale_frontrun — REMOVED 2026-05-23 (operator kill: live n=6 WR 16.7% net -$1.20)
     # hl_depth_shock — REMOVED 2026-05-22 (n=9 WR 22% PF 0.32 net -$0.69).
     "hl_vault_predict": {
         "class": "vault_rebalance_anticipation",
