@@ -3062,9 +3062,21 @@ async function loadAttribution() {
 
         const body = document.getElementById('attribution-body');
 
+        // Suppressed ghost engines — operator-killed engines whose historical
+        // closures still exist in the attribution database but should NOT clutter
+        // the dashboard. Set added 2026-05-23. To resurface, remove name here.
+        const SUPPRESSED_ENGINES = new Set([
+            'fmom', 'oi_concentration', 'liq_cluster_hunt', 'liq_cascade',
+            'funding_triangulation', 'hl_depth_shock',
+            'e08_dip3d10_td_1d', 'e17_bb_fade_bt_1d',
+        ]);
+
         // Build merged engine list: closures-data engines + registered-but-silent engines
         const byEngine = new Map();
-        for (const e of engines) byEngine.set(e.engine, e);
+        for (const e of engines) {
+            if (SUPPRESSED_ENGINES.has(e.engine)) continue;
+            byEngine.set(e.engine, e);
+        }
         for (const r of registry) {
             if (!byEngine.has(r.name)) {
                 byEngine.set(r.name, {
