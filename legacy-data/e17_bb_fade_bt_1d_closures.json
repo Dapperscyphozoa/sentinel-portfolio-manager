@@ -1,0 +1,33 @@
+{
+  "engine": "e17_bb_fade_bt_1d",
+  "archive_ts": 1779542325876,
+  "archive_iso": "2026-05-23",
+  "reason": "operator directive \u2014 dashboard cleanup, kill + archive",
+  "pnl": {
+    "total_net_pnl": -1.1505,
+    "n_closed": 1,
+    "wr_pct": 0.0,
+    "equity": 436.650537,
+    "__synthetic": false
+  },
+  "state": {
+    "mode_effective": "paper",
+    "halt": {
+      "active": false
+    },
+    "open_trades": [],
+    "equity_usd": 436.650537,
+    "daily_pnl_usd": -1.1505,
+    "closed_trades_count": 1
+  },
+  "closures": [
+    {
+      "ts_close": 1779182787334,
+      "net_pnl": -1.150474,
+      "coin": "ETH",
+      "is_long": true,
+      "close_reason": "backfill"
+    }
+  ],
+  "signals": []
+}

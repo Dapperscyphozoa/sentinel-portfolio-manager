@@ -1,0 +1,10 @@
+{
+  "engine": "e08_dip3d10_td_1d",
+  "archive_ts": 1779542325876,
+  "archive_iso": "2026-05-23",
+  "reason": "operator directive \u2014 dashboard cleanup, kill + archive",
+  "pnl": null,
+  "state": null,
+  "closures": [],
+  "signals": []
+}

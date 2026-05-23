@@ -141,7 +141,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "e01_zfade3s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.29, "cap_frac": 0.05},
 
     # ─── YELLOW: marginal — paper mode only (LIVE=0 env, 5 engines) ───
-    "e17_bb_fade_bt_1d":   {"affinity": ["high_vol", "range"],      "bt_pf":  1.21, "cap_frac": 0.01},
+    # e17_bb_fade_bt_1d — REMOVED 2026-05-23 (operator dashboard cleanup, archived to legacy-data/)
     "e07_zfade2s_tu_1d":   {"affinity": ["trend_up"],               "bt_pf":  1.01, "cap_frac": 0.02},
     # 2026-05-21: KILLED — replay BT n=25 WR 0% PF 0 net -$10.60. APT dominant
     # 24/25 trades. Engine was firing 6.3/d in paper and bleeding mock capital.

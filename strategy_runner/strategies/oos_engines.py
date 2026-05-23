@@ -13,6 +13,15 @@ Production config:
     12% engine DD (1h), live PF < 0.74 × bt_PF after 22 trades (1h)
   - Promotion: 20 paper trades, live PF within 20% of bt_PF → live
 """
+
+# REMOVED 2026-05-23 (operator dashboard cleanup):
+#   e08_dip3d10_td_1d — historical dump engine, weak live realized.
+#     Closures archived to legacy-data/e08_dip3d10_td_1d_closures.json
+#   e17_bb_fade_bt_1d — BB fade engine, weak realized after regime gating.
+#     Closures archived to legacy-data/e17_bb_fade_bt_1d_closures.json
+# Both classes removed from this file. Do not re-add without honest
+# backtest + sentinel-validated edge.
+
 from __future__ import annotations
 
 import math
@@ -180,47 +189,6 @@ class E07_zfade_2s_TU_1d(StrategyBase):
 # ============================================================
 # ENGINE 3 (E08_1d) — dip3d 10% in TREND_DOWN, 1d
 # ============================================================
-class E08_dip3d_10_TD_1d(StrategyBase):
-    """3-day cumulative drop >10% in TREND_DOWN regime → long bounce, daily.
-    Backtest PF: 1.93 (n=203). Workhorse mean-reversion engine.
-    """
-    NAME = "e08_dip3d10_td_1d"
-    CLOID_PREFIX = "e08_"
-    AFFINITY = ["trend_down"]
-    TF = "1d"
-    UNIVERSE = DEFAULT_UNIVERSE
-    _DROP_PCT = 0.10
-    _HOLD_BARS = 2
-
-    @classmethod
-    def evaluate(cls, coin: str, bus) -> Optional[Signal]:
-        bars = _bars_for_tf(bus, coin, cls.TF, 70)
-        if not bars or len(bars) < 65:
-            return None
-        closes = [b["close"] for b in bars]
-        highs = [b["high"] for b in bars]
-        lows = [b["low"] for b in bars]
-        i = len(bars) - 1
-        if _regime(closes, highs, lows, i) != "TREND_DOWN":
-            return None
-        if i < 3:
-            return None
-        cum = (closes[-1] - closes[-4]) / closes[-4] if closes[-4] > 0 else 0
-        if cum >= -cls._DROP_PCT:
-            return None
-        c = closes[-1]
-        sl, tp = _sl_tp(c, True)
-        return Signal(
-            coin=coin, side="B", is_long=True,
-            ref_price=c, sl_px=sl, tp_px=tp, max_hold_bars=cls._HOLD_BARS,
-            fire_ts=float(bars[-1]["open_ts"]), fire_reason=f"dip3d={cum*100:.1f}%",
-            extras={"cum_3d_pct": cum, "regime": "TREND_DOWN", "tf": cls.TF},
-        )
-
-
-# ============================================================
-# ENGINE 4 (E09_1d) — pump3d 10% in TREND_DOWN, 1d
-# ============================================================
 class E09_pump3d_10_TD_1d(StrategyBase):
     """3-day cumulative pump >10% in TREND_DOWN regime → short reversion, daily.
     Backtest PF: 1.87 (n=111). Bear-market rally fader.
@@ -317,69 +285,6 @@ class E16_bb_fade_HV_1d(StrategyBase):
 
 # ============================================================
 # ENGINE 6 (E17_1d) — bb_fade in BOTH_TRENDS, 1d
-# ============================================================
-class E17_bb_fade_BT_1d(StrategyBase):
-    """Bollinger band fade — regime-gated to HIGH_VOL and RANGE only.
-
-    HISTORY: original spec gated to TREND_UP/TREND_DOWN. Backtest v2 (2026-05-18,
-    n=83 across 20 coins × 200 1d bars) showed:
-      TREND_DOWN  n=51  WR 35%  PF 0.59  net -$119
-      TREND_UP    n=28  WR 43%  PF 0.60  net  -$59
-      HIGH_VOL    n= 2  WR 50%  PF 3.00  net   +$8
-      RANGE       n= 2  WR  0%  PF 0.00  net  -$16
-    Trend regimes lost in 79/83 fires (95%). Walk-forward both halves <1.0 PF
-    (first 0.44, second 0.86). Trend-fade thesis is empirically wrong on this
-    sample. Re-gated to non-trend regimes to mirror E16's successful pattern
-    (E16 fires HIGH_VOL only, PF 2.70 n=37). E17 covers RANGE which E16 doesn't.
-    """
-    NAME = "e17_bb_fade_bt_1d"
-    CLOID_PREFIX = "e17_"
-    AFFINITY = ["high_vol", "range"]
-    TF = "1d"
-    # Curated universe (2026-05-20 sweep): full 47-coin DEFAULT had OOS PF 1.12
-    # over 360d. Pruning to coins with backtest PF >= 1.3 (n >= 3) yields
-    # OOS PF 1.71 across 147 OOS trades. Dropped 24 bleeders (BCH, CAKE, DOT,
-    # BNB, FIL, OP, PENDLE, ATOM, TIA, NEO, TON, etc).
-    UNIVERSE = [
-        "COMP", "GMX", "PYTH", "AVAX", "APT", "JUP", "BTC", "ORDI", "AAVE",
-        "LINK", "WIF", "SOL", "WLD", "INJ", "ADA", "CRV", "LTC", "NEAR",
-        "LDO", "UNI", "MEME", "SEI", "ETH",
-    ]
-    _BB_PERIOD = 20
-    _BB_STD = 2.0
-    _HOLD_BARS = 5  # was 3; 360d sweep showed h=5 robust across all BB params
-
-    @classmethod
-    def evaluate(cls, coin: str, bus) -> Optional[Signal]:
-        bars = _bars_for_tf(bus, coin, cls.TF, 90)
-        if not bars or len(bars) < 80:
-            return None
-        closes = [b["close"] for b in bars]
-        highs = [b["high"] for b in bars]
-        lows = [b["low"] for b in bars]
-        i = len(bars) - 1
-        if _regime(closes, highs, lows, i) not in ("HIGH_VOL", "RANGE"):
-            return None
-        upper, _, lower = bollinger(closes, cls._BB_PERIOD, cls._BB_STD)
-        if upper[-1] is None:
-            return None
-        c = closes[-1]
-        is_long = True if c < lower[-1] else (False if c > upper[-1] else None)
-        if is_long is None:
-            return None
-        sl, tp = _sl_tp(c, is_long)
-        return Signal(
-            coin=coin, side="B" if is_long else "A", is_long=is_long,
-            ref_price=c, sl_px=sl, tp_px=tp, max_hold_bars=cls._HOLD_BARS,
-            fire_ts=float(bars[-1]["open_ts"]),
-            fire_reason="bb_break_lo" if is_long else "bb_break_hi",
-            extras={"bb_lower": lower[-1], "bb_upper": upper[-1],
-                    "regime_gate": "HIGH_VOL_OR_RANGE", "tf": cls.TF},
-        )
-
-
-# ============================================================
-# ENGINE 7 (E01_4h) — zfade_3sigma in TREND_UP, 4h
 # ============================================================
 class E01_zfade_3s_TU_4h(StrategyBase):
     NAME = "e01_zfade3s_tu_4h"
@@ -639,11 +544,9 @@ class E17_bb_fade_BT_4h(StrategyBase):
 # Engine registry — ordered by backtest PF (highest first → first-fire wins for highest PF)
 OOS_ENGINES = [
     E01_zfade_3s_TU_1d,    # bt_PF 10.05
-    E08_dip3d_10_TD_1d,    # bt_PF 1.93
     E09_pump3d_10_TD_1d,   # bt_PF 1.87
     E07_zfade_2s_TU_1d,    # bt_PF 2.12
     E16_bb_fade_HV_1d,     # bt_PF 1.47
-    E17_bb_fade_BT_1d,     # bt_PF 1.41
     E01_zfade_3s_TU_4h,
     E07_zfade_2s_TU_4h,    # top contributor by PnL
     E08_dip3d_7_TD_4h_INV, # REVIVED 2026-05-20 inverted (OOS PF 2.88 walk-forward universe-select)
