@@ -154,7 +154,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
     "e01_zfade3s_tu_4h":   {"affinity": ["trend_up"],               "bt_pf":  1.20, "cap_frac": 0.02},
 
     # ─── UNTESTED: low weight, monitor live (2 engines) ───
-    "liq_cascade":  {"affinity": ["trend_up", "trend_down"],         "bt_pf": 1.30, "cap_frac": 0.05},  # event-driven, sentinel-born
+    # liq_cascade — REMOVED 2026-05-23 (operator kill: live n=2 WR 50% net -$0.03)
     "e16_bb_fade_hv_4h":   {"affinity": ["high_vol"],               "bt_pf":  1.50, "cap_frac": 0.02},  # n=1 BT only, low weight
 
     # ─── RED: honest PF < 1.0 — halted via STRATEGY_<NAME>_ENABLED=0 env ───
@@ -198,9 +198,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
     # Promotion gate: ≥20 LIVE trades + clean_PF ≥ 1.2 → promote 0.025 → 0.05.
     "hlp_fade":            {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
                              "bt_pf": 2.50, "cap_frac": 0.025},   # demoted 0.10→0.025 (canary)
-    # ─── Tier 1 #2: Funding Momentum (2nd-derivative funding signal) ───
-    "fmom":                {"affinity": ["trend_up", "trend_down", "range", "chop"],
-                             "bt_pf": 1.75, "cap_frac": 0.00},
+    # ─── Tier 1 #2: fmom — REMOVED 2026-05-23 (operator kill: live n=20 WR 40% net -$0.86)
     "hl_settle_5m":        {"affinity": ["trend_up", "trend_down", "range", "chop", "high_vol"],
                              "bt_pf": 1.85, "cap_frac": 0.16,
                              "size_mult": 0.2},   # 1% margin/trade per operator 2026-05-22 (was 5% default; post-fix PF 3.70)
@@ -215,16 +213,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
         "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
         "notes": "world-first HL CVD aggressor flow. Needs honest backtest before live.",
     },
-    "liq_cluster_hunt": {
-        "class": "liq_cluster_predictive",
-        "affinity": ["range", "chop", "high_vol", "trend_up", "trend_down"],
-        "capital_fraction": 0.00,
-        "bt_pf": 2.60,
-        "bt_n": 0,
-        "min_n_for_gate": 30,
-        "audit_status": "PROVISIONAL_NEW_ENGINE_PAPER",
-        "notes": "Predict sweep path from stacked liq cluster + round-number alignment.",
-    },
+    # liq_cluster_hunt — REMOVED 2026-05-23 (operator kill: live n=1 WR 0% net -$0.17)
     "hl_whale_frontrun": {
         "class": "whale_position_copy",
         "affinity": ["trend_up", "trend_down", "range", "chop"],
@@ -274,8 +263,7 @@ ENGINE_REGISTRY: dict[str, dict] = {
     # ACTIVATED 2026-05-18 (council Q5 unblock) — real OI feed now wired via
     # signal_bus.oi_poller (HL metaAndAssetCtxs, 5min poll, 30d history).
     # Strategy reparameterized off real OI (was volume-proxy v1).
-    "oi_concentration":    {"affinity": ["high_vol", "range", "chop"],
-                             "bt_pf": 2.75, "cap_frac": 0.02},
+    # oi_concentration — REMOVED 2026-05-23 (operator kill: live n=2 WR 0% net -$0.03)
 }
 
 # CUT_ENGINES — hard-blocked from check() regardless of env. The 7 legacy

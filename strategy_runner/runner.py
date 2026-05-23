@@ -91,13 +91,11 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load hlp_fade")
 
-    # 1.8) Funding Momentum (Tier 1 #2 — 2nd-derivative funding signal)
-    try:
-        from .strategies.fmom import FundingMomentum
-        register(FundingMomentum)
-        log.info("Loaded fmom: %s", FundingMomentum.NAME)
-    except Exception:
-        log.exception("failed to load fmom")
+    # 1.8) Funding Momentum (fmom) — REMOVED 2026-05-23 (operator kill directive,
+    #       dashboard cleanup). Live n=20 WR 40% net -$0.86 over operational window.
+    #       Module moved to _archived/fmom.py. Closures archived to
+    #       legacy-data/fmom_closures.json. Do not reactivate without honest
+    #       backtest + sentinel-validated edge.
 
     # 1.10) Stop Hunt Rejection (Tier 1 #4 — wick-reject at swept S/R)
     try:
@@ -115,13 +113,10 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load vpoc_retest")
 
-    # 1.12) OI Concentration (Tier 1 #6 — pre-cascade detector, v1 volume proxy)
-    try:
-        from .strategies.oi_concentration import OIConcentration
-        register(OIConcentration)
-        log.info("Loaded oi_concentration: %s", OIConcentration.NAME)
-    except Exception:
-        log.exception("failed to load oi_concentration")
+    # 1.12) OI Concentration — REMOVED 2026-05-23 (operator kill directive).
+    #       Live n=2 WR 0% net -$0.03 — never produced a winning trade.
+    #       Module moved to _archived/oi_concentration.py. Closures archived
+    #       to legacy-data/oi_concentration_closures.json.
 
     # 1.9) HL Hourly Funding Boundary (Tier 1 #3 — only HL has hourly funding)
     try:
@@ -147,13 +142,10 @@ def _load_registered() -> None:
     # 1.15) Cross-Coin Z-Score — KILLED 2026-05-19 (sentinel CRITICAL unanimous,
     #       honest backtest PF 0.99 over 90d × 10 pairs, thesis broken, see SPEC §4)
 
-    # 1.16) Liq Cluster Hunt (Stage 1 #4 — predict sweep path from stacked clusters)
-    try:
-        from .strategies.liq_cluster_hunt import LiqClusterHunt
-        register(LiqClusterHunt)
-        log.info("Loaded liq_cluster_hunt: %s", LiqClusterHunt.NAME)
-    except Exception:
-        log.exception("failed to load liq_cluster_hunt")
+    # 1.16) Liq Cluster Hunt — REMOVED 2026-05-23 (operator kill directive).
+    #       Live n=1 WR 0% net -$0.17 — single trade losing. Paper status,
+    #       never promoted. Module moved to _archived/liq_cluster_hunt.py.
+    #       Closures archived to legacy-data/liq_cluster_hunt_closures.json.
 
     # 1.17) HL Whale Frontrun (Stage 1 #5 — world-first, highest single-engine edge)
     try:
@@ -224,15 +216,16 @@ def _load_registered() -> None:
     except Exception:
         log.exception("failed to load hlp_decoder")
 
-    # 2) Remaining keepers — liq_cascade (sentinel-born), donchian (post-
-    #    sentinel build). cex_dex_arb ARCHIVED 2026-05-19 (look-ahead bias
-    #    history, halted, PF 0.00). The 7 earlier legacy ports (fsp, vsq,
-    #    range_fade, range_breakout, lh1, fd1, precog) live in _archived/
-    #    and are intentionally NOT imported here.
+    # 2) Remaining keepers — donchian (post-sentinel build). liq_cascade
+    #    REMOVED 2026-05-23 (operator kill: n=2 WR 50% net -$0.03 — too sparse
+    #    to keep, closures archived to legacy-data/liq_cascade_closures.json).
+    #    cex_dex_arb ARCHIVED 2026-05-19 (look-ahead bias, PF 0.00). The 7
+    #    earlier legacy ports (fsp, vsq, range_fade, range_breakout, lh1, fd1,
+    #    precog) live in _archived/ and are intentionally NOT imported here.
     import os
     if os.environ.get("STRATEGY_LEGACY_LOAD", "1") == "1":   # default ON for combined deployment
         legacy_loaded = []
-        for modname in ("liq_cascade", "donchian"):
+        for modname in ("donchian",):  # liq_cascade REMOVED 2026-05-23 (n=2 WR 50% net -$0.03, operator kill)
             try:
                 mod = __import__(f"strategy_runner.strategies.{modname}", fromlist=["*"])
                 for attr in dir(mod):
