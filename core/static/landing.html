@@ -3235,10 +3235,33 @@ poll('attribution', loadAttribution, 60000, 3700);
 // Live positions table mirrors /dash.positions in a compact mono format.
 // Equity pulse renders /audit/deep.per_hour as a 24-bar SVG (blue=fills,
 // green/red overlay=pnl). Both poll on their own cadence via poll().
+
+// DCA tranche info cache — populated from sentinel-trader /dca on each
+// loadLivePositions tick. Keyed by coin; value = {filled: n, total: 5, gen: "...", side: "..."}.
+let _dcaTrancheCache = {};
+
+async function _fetchDcaTranches() {
+  try {
+    const r = await fetch('/api/dca_state',
+      { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return {};
+    const d = await r.json();
+    return d.by_coin || {};
+  } catch (e) {
+    return {};  // fail silently — keep last good state
+  }
+}
+
 async function loadLivePositions() {
   const body = document.getElementById('lpos-body');
   const meta = document.getElementById('lpos-meta');
-  const { data: d } = await safeFetch('/dash', 'dash');
+  // Parallel fetch /dash and sentinel-trader DCA state
+  const [dashRes, dcaState] = await Promise.all([
+    safeFetch('/dash', 'dash'),
+    _fetchDcaTranches(),
+  ]);
+  _dcaTrancheCache = dcaState;
+  const d = dashRes.data;
   if (!d) {
     if (!_isPopulated('lpos-body') && body && !body.innerHTML.includes('table')) {
       body.innerHTML = '<div class="lpos-empty">// loading</div>';
@@ -3268,32 +3291,50 @@ async function loadLivePositions() {
       return s + '$' + Math.abs(n).toFixed(2);
     };
     let totalUpnl = 0;
+    let totalDcaFills = 0;
+    let dcaPositionCount = 0;
     const trs = rows.map(p => {
       const u = Number(p.upnl) || 0; totalUpnl += u;
       const cls = u > 0 ? 'pos' : u < 0 ? 'neg' : '';
-      // /dash sends side as full word "LONG"/"SHORT"; legacy paths sent "L"/"S".
-      // Accept either form so the badge doesn't render "?" on real positions.
       const sideRaw = (p.side || '').toUpperCase();
       const isLong = sideRaw === 'LONG' || sideRaw === 'L' || sideRaw === 'B';
       const isShort = sideRaw === 'SHORT' || sideRaw === 'S' || sideRaw === 'A';
       const side = isLong ? 'LONG' : isShort ? 'SHORT' : '';
       const sLab = side || '?';
+      // DCA tranche info lookup
+      const dca = _dcaTrancheCache[p.coin];
+      let dcaCell = '<span style="color:var(--muted,#6b7280);font-size:9px">—</span>';
+      if (dca) {
+        dcaPositionCount += 1;
+        totalDcaFills += dca.filled;
+        // Color: 1/5 = neutral, 2-3/5 = yellow (averaged down), 4-5/5 = orange (full DCA, deep loss recovery)
+        let color = 'var(--muted,#6b7280)';
+        if (dca.filled >= 4) color = '#f97316';      // orange — full DCA engaged
+        else if (dca.filled >= 2) color = '#eab308'; // yellow — averaging
+        else color = 'var(--fg,#e5e7eb)';            // neutral — fresh entry
+        dcaCell = '<span style="color:' + color + ';font-weight:600">'
+          + dca.filled + '/' + dca.total + '</span>';
+      }
       return '<tr>'
         + '<td class="lpos-coin">' + (p.coin || '—') + '</td>'
         + '<td><span class="lpos-side ' + side + '">' + sLab + '</span></td>'
         + '<td class="r">' + fmtPx(p.entry) + '</td>'
         + '<td class="r" style="color:var(--muted,#6b7280);font-size:10px">' + (p.lev ?? '—') + '×</td>'
+        + '<td class="r" style="font-size:10px">' + dcaCell + '</td>'
         + '<td class="r lpos-pnl ' + cls + '">' + fmtPnl(u) + '</td>'
         + '</tr>';
     }).join('');
     body.innerHTML = '<table class="lpos-tbl">'
       + '<thead><tr><th>Coin</th><th>Side</th><th class="r">Entry</th>'
-      + '<th class="r">Lev</th><th class="r">uPnL</th></tr></thead>'
+      + '<th class="r">Lev</th><th class="r">DCA</th><th class="r">uPnL</th></tr></thead>'
       + '<tbody>' + trs + '</tbody></table>';
     _markPopulated('lpos-body');
     if (meta) {
       const sign = totalUpnl > 0 ? '+' : totalUpnl < 0 ? '−' : '';
-      meta.textContent = rows.length + ' open · ' + sign + '$' + Math.abs(totalUpnl).toFixed(2);
+      const dcaInfo = dcaPositionCount > 0
+        ? ' · ' + totalDcaFills + '/' + (dcaPositionCount * 5) + ' DCA filled'
+        : '';
+      meta.textContent = rows.length + ' open' + dcaInfo + ' · ' + sign + '$' + Math.abs(totalUpnl).toFixed(2);
       meta.style.color = totalUpnl > 0 ? 'var(--gain)' : totalUpnl < 0 ? 'var(--loss)' : '';
     }
   } catch (e) {

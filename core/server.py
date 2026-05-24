@@ -735,6 +735,39 @@ class Handler(BaseHTTPRequestHandler):
         }
         self._json(200, out)
 
+    def _serve_dca_state(self) -> None:
+        """Proxy /dca from sentinel-trader to expose DCA tranche state to landing.
+        Returns: {by_coin: {COIN: {filled, total, gen, side, opened_ts}}, ts: <ms>}
+        Errors return empty by_coin so the dashboard renders â instead of red.
+        """
+        import urllib.request, urllib.error
+        out = {"by_coin": {}, "ts": int(time.time() * 1000)}
+        try:
+            req = urllib.request.Request(
+                "https://sentinel-trader.onrender.com/dca",
+                headers={"User-Agent": "core-proxy/1.0"})
+            r = urllib.request.urlopen(req, timeout=5)
+            data = json.loads(r.read())
+            for p in (data.get("active") or []):
+                coin = p.get("coin")
+                if not coin: continue
+                tranches = p.get("tranches") or []
+                filled = sum(1 for t in tranches if t.get("filled"))
+                total = len(tranches) or 5
+                out["by_coin"][coin] = {
+                    "filled": filled,
+                    "total": total,
+                    "gen": ",".join(p.get("gen_ids") or []),
+                    "side": p.get("side"),
+                    "opened_ts": p.get("opened_ts"),
+                    "signal_price": p.get("signal_price"),
+                }
+        except urllib.error.URLError as e:
+            out["error"] = f"upstream: {e}"
+        except Exception as e:
+            out["error"] = str(e)
+        return self._json(200, out)
+
     def _serve_api_engines(self) -> None:
         """/api/engines shape:
            - venues: {name: bool}
@@ -1965,6 +1998,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_dash()
         if path == "/api/engines":
             return self._serve_api_engines()
+        if path == "/api/dca_state":
+            return self._serve_dca_state()
         if path == "/all_systems":
             return self._serve_all_systems()
         if path == "/signals":
