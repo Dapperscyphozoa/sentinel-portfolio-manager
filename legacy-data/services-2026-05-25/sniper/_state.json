@@ -1,0 +1,1 @@
+{"service": "sniper", "killed": false, "kill_reason": "", "open_positions": [], "trades_today": 0, "total_live_trades": 0, "requires_approval": true, "config": {"live_trading": "0", "divergence_threshold": "0.05", "max_per_day": "1", "size_pct": "0.50", "leverage": "5.0"}}
