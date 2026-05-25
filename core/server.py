@@ -768,6 +768,144 @@ class Handler(BaseHTTPRequestHandler):
             out["error"] = str(e)
         return self._json(200, out)
 
+
+    def _serve_attribution_merged(self, query_string: str = "") -> None:
+        """Merge attribution from sentinel-trader (LIVE executor) + legacy
+        spm-strategy-runner. sentinel-trader is the source of truth as of
+        2026-05-22. spm-strategy-runner is suspended and only returns empty.
+
+        Accepts dashboard's ?clean_only=1&since=<ts_s> query params and
+        forwards them upstream so the post-bug filter works.
+
+        Filters out dead SPM-era engines that no longer exist anywhere
+        (cleans the dashboard's 'awaiting first closure' clutter).
+        """
+        import urllib.request, urllib.parse, urllib.error
+        from urllib.parse import parse_qs
+
+        qs = parse_qs(query_string or "")
+        since = qs.get("since", ["0"])[0]
+        # Pass through to sentinel-trader (it accepts since= in seconds)
+        st_url = f"https://sentinel-trader.onrender.com/attribution?since={since}"
+
+        out = {"engines": [], "total": {"n": 0, "wins": 0, "wr": 0.0,
+                                         "net_pnl": 0.0, "fees": 0.0}}
+        try:
+            req = urllib.request.Request(
+                st_url, headers={"User-Agent": "core-proxy/1.0"})
+            r = urllib.request.urlopen(req, timeout=8)
+            data = json.loads(r.read())
+            engines = data.get("engines") or []
+            total = data.get("total") or {}
+            # Filter — drop ghost / __unknown__ buckets
+            DROP = {"__unknown__"}
+            out["engines"] = [e for e in engines if e.get("engine") not in DROP]
+            out["total"] = {
+                "n": float(total.get("n", 0)),
+                "wins": float(total.get("wr", 0)) * float(total.get("n", 0)),
+                "wr": float(total.get("wr", 0)),
+                "net_pnl": float(total.get("net_pnl", 0)),
+                "fees": float(total.get("fees", 0)),
+            }
+        except urllib.error.URLError as e:
+            out["error"] = f"sentinel-trader upstream: {e}"
+        except Exception as e:
+            out["error"] = str(e)
+
+        # Optionally merge spm-strategy-runner if reachable + has data
+        try:
+            spm_url = (f"http://localhost:{STRATEGY_PORT}/attribution?since={since}")
+            req = urllib.request.Request(
+                spm_url, headers={"User-Agent": "core-proxy/1.0"})
+            r = urllib.request.urlopen(req, timeout=2)
+            spm = json.loads(r.read())
+            seen = {e.get("engine") for e in out["engines"]}
+            for e in (spm.get("engines") or []):
+                name = e.get("engine")
+                if name and name not in seen and float(e.get("n", 0)) > 0:
+                    out["engines"].append(e)
+        except Exception:
+            pass  # spm-strategy-runner suspended/unreachable — ignore
+
+        return self._json(200, out)
+
+    def _serve_strategy_health_merged(self) -> None:
+        """Build the dashboard's strategy registry from sentinel-trader's
+        /multi_tf endpoint. This replaces the spm-strategy-runner /strategy/health
+        proxy which returns dead SPM-era engines.
+
+        Output shape matches what landing.html expects:
+          {registry: [{name, enabled, live, stage, tf, universe_size}, ...]}
+        """
+        import urllib.request, urllib.error
+        out = {"registry": [], "ts": int(time.time() * 1000)}
+
+        try:
+            req = urllib.request.Request(
+                "https://sentinel-trader.onrender.com/multi_tf",
+                headers={"User-Agent": "core-proxy/1.0"})
+            r = urllib.request.urlopen(req, timeout=6)
+            mt = json.loads(r.read())
+        except Exception as e:
+            out["error"] = f"sentinel-trader /multi_tf upstream: {e}"
+            return self._json(200, out)
+
+        # Pull config for trading_live flag
+        try:
+            req = urllib.request.Request(
+                "https://sentinel-trader.onrender.com/config",
+                headers={"User-Agent": "core-proxy/1.0"})
+            r = urllib.request.urlopen(req, timeout=5)
+            cfg = json.loads(r.read())
+            trading_live = bool(cfg.get("trading_live"))
+        except Exception:
+            trading_live = True  # assume live if config unreachable
+
+        # Map multi_tf engine groups → registry rows
+        # Each group: (key, tf_label, universe_size)
+        groups = [
+            ("4H_engines",        "4h",  36),
+            ("2H_engines",        "2h",  36),
+            ("1H_engines",        "1h",  36),
+            ("1H_short_engines",  "1h",  36),
+            ("4H_uzt_engines",    "4h",  len(mt.get("uzt_4h_universe") or [])),
+            ("12H_uzt_engines",   "12h", len(mt.get("uzt_12h_universe") or [])),
+        ]
+        seen = set()
+        for key, tf, univ in groups:
+            for name in (mt.get(key) or []):
+                if name in seen: continue
+                seen.add(name)
+                out["registry"].append({
+                    "name": name,
+                    "enabled": True,
+                    "live": trading_live,
+                    "stage": "live" if trading_live else "paper",
+                    "tf": tf,
+                    "universe_size": univ,
+                })
+
+        # Short-v2 sub-engines
+        sv2 = mt.get("short_v2_engines") or {}
+        sv2_univ = mt.get("short_v2_universe_sizes") or {}
+        sv2_enabled = bool(mt.get("short_v2_enabled"))
+        for group_key, names in sv2.items():
+            # group_key like "30m_dbd" / "4h_rsio"
+            tf_part = group_key.split("_")[0]
+            for name in names or []:
+                if name in seen: continue
+                seen.add(name)
+                out["registry"].append({
+                    "name": name,
+                    "enabled": sv2_enabled,
+                    "live": sv2_enabled and trading_live,
+                    "stage": "live" if (sv2_enabled and trading_live) else "off",
+                    "tf": tf_part,
+                    "universe_size": sv2_univ.get(name, 0),
+                })
+
+        return self._json(200, out)
+
     def _serve_api_engines(self) -> None:
         """/api/engines shape:
            - venues: {name: bool}
@@ -2053,6 +2191,15 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/engines", "/audit", "/system", "/macro",
                     "/enforce", "/experiment", "/violations"):
             return self._serve_landing()
+        # Strategy attribution + health — pull from sentinel-trader (the actual
+        # LIVE executor since 2026-05-22 sessions). spm-strategy-runner is
+        # suspended; its attribution returns empty and its registry lists dead
+        # SPM-era engines that no longer trade. Intercept BEFORE the generic
+        # /strategy/* proxy.
+        if path == "/strategy/attribution":
+            return self._serve_attribution_merged(parsed.query)
+        if path == "/strategy/health":
+            return self._serve_strategy_health_merged()
         # Route to subsystem
         for prefix, (base, strip) in _PROXY_MAP.items():
             if path == prefix or path.startswith(prefix + "/"):
