@@ -531,8 +531,14 @@ class Handler(BaseHTTPRequestHandler):
                         # and the trader's next position read). Excludes "skip_cap"
                         # entries (wanted to open but hit MAX_CONCURRENT).
                         action = cr.get("action", "")
-                        holds_or_just_opened = (actual != "flat") or (action == "open")
-                        if c and tgt != "flat" and holds_or_just_opened and c not in runner_by_coin:
+                        # Attribute whenever there's an actual position held OR the engine
+                        # just placed an open. tgt=="flat" was a stale guard — DCA-managed
+                        # positions correctly report tgt="flat" + action="hold_dca_managed"
+                        # because the engine isn't issuing NEW signals, but the position
+                        # IS still being managed by the DCA executor. Without this fix,
+                        # all DCA-held positions render with engine="-" on /dash.
+                        holds_or_just_opened = (actual != "flat") or (action in ("open", "open_dca5", "open_dca5_short"))
+                        if c and holds_or_just_opened and c not in runner_by_coin:
                             # ACTUAL firing engine — prefer gen_ids from the signals
                             # table (companion enrichment in sentinel-trader ea09490).
                             # gen_ids is what voted at entry. disabled_gens is what
