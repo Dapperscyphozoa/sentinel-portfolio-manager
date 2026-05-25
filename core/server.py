@@ -545,11 +545,15 @@ class Handler(BaseHTTPRequestHandler):
                             if firing_raw:
                                 firing = [g.strip() for g in firing_raw.split(",") if g.strip()]
                             else:
-                                # Fallback: active gens (was the only signal source pre-ea09490)
+                                # Fallback: post-bleeder-removal active gen list.
+                                # The 'sw:' prefix referred to the legacy sweep-winner
+                                # config and is dropped — engine name is now direct.
                                 disabled = cr.get("disabled_gens") or []
-                                all_gens = ["donchian", "ema_cross", "rsi_revert", "bb_squeeze"]
+                                all_gens = ["donchian", "donchian_1h", "donchian_2h",
+                                            "pump_fail_1h", "uzt_rev_4h", "uzt_rev_12h",
+                                            "fsp_v2"]
                                 firing = [g for g in all_gens if g not in disabled]
-                            engine_label = "sw:" + "+".join(firing) if firing else "sw:?"
+                            engine_label = "+".join(firing) if firing else "?"
                             runner_by_coin[c] = {
                                 "coin": c,
                                 "strategy": engine_label,
