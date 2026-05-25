@@ -1587,7 +1587,20 @@ async function _fetchPaperPositions() {
 
 async function loadDash() {
     try {
-        const { data: d, fromCache } = await safeFetch('/dash', 'dash');
+        // Fetch /dash and DCA tranche state in parallel — operator wants
+        // DCA fill count (X/5) shown inline on each live position row.
+        const [{ data: d, fromCache }, dcaByCoin] = await Promise.all([
+            safeFetch('/dash', 'dash'),
+            (async () => {
+                try {
+                    const r = await fetch('/api/dca_state',
+                        { cache: 'no-store', signal: AbortSignal.timeout(5000) });
+                    if (!r.ok) return {};
+                    const j = await r.json();
+                    return j.by_coin || {};
+                } catch (e) { return {}; }
+            })(),
+        ]);
         if (!d) {
             // No data + no cache (first ever load failed). Leave initial $0
             // placeholders so the user knows the panel is bootstrapping.
@@ -1660,9 +1673,21 @@ async function loadDash() {
             const rowCls = stage === 'paper' ? 'pos-row is-paper'
                          : stage === 'shadow' ? 'pos-row is-shadow'
                          : 'pos-row';
+            // DCA tranche fill count — colour escalates as more tranches fill
+            //   1/5 = fresh entry (neutral grey)
+            //   2-3/5 = averaging down (yellow)
+            //   4-5/5 = deep recovery (orange — close to max DCA depth)
+            const dca = dcaByCoin[p.coin];
+            let dcaBadge = '';
+            if (dca) {
+                let dcaColor = '#9aa0a6';  // neutral
+                if (dca.filled >= 4)      dcaColor = '#f97316';  // orange
+                else if (dca.filled >= 2) dcaColor = '#eab308';  // yellow
+                dcaBadge = `<span style="display:inline-block;padding:1px 4px;margin-left:5px;font-size:9px;font-weight:700;color:${dcaColor};border:1px solid ${dcaColor};border-radius:3px;letter-spacing:0.03em">DCA ${dca.filled}/${dca.total}</span>`;
+            }
             return `<div class="${rowCls}">
                 <div class="pos-coin">${p.coin}${eng?'<br>'+eng:''}</div>
-                <div>${stageBadge}<span class="pos-side side-${p.side}">${p.side}</span> <span style="opacity:0.5;font-size:9px">${lev}x</span></div>
+                <div>${stageBadge}<span class="pos-side side-${p.side}">${p.side}</span> <span style="opacity:0.5;font-size:9px">${lev}x</span>${dcaBadge}</div>
                 <div class="pos-size">
                     <div style="font-size:10px"><span style="opacity:0.55">${p.size} @ </span><span style="opacity:0.85">${entry}</span> <span style="opacity:0.4">→</span> <span class="${markCls}">${mark}</span></div>
                     <div style="font-size:9px;margin-top:2px"><span style="color:var(--acid);opacity:0.85">TP ${tp}</span> · <span style="color:#f88;opacity:0.85">SL ${sl}</span></div>
