@@ -829,7 +829,7 @@ class Handler(BaseHTTPRequestHandler):
             mt = json.loads(r.read())
             allowed = set()
             for k in ("4H_engines","2H_engines","1H_engines","1H_short_engines",
-                      "4H_uzt_engines","12H_uzt_engines"):
+                      "4H_uzt_engines","12H_uzt_engines","1H_fsp_engines"):
                 allowed.update(mt.get(k) or [])
             for names in (mt.get("short_v2_engines") or {}).values():
                 allowed.update(names or [])
@@ -882,6 +882,7 @@ class Handler(BaseHTTPRequestHandler):
             ("1H_short_engines",  "1h",  36),
             ("4H_uzt_engines",    "4h",  len(mt.get("uzt_4h_universe") or [])),
             ("12H_uzt_engines",   "12h", len(mt.get("uzt_12h_universe") or [])),
+            ("1H_fsp_engines",    "1h",  mt.get("fsp_v2_universe_size", 0)),
         ]
         seen = set()
         for key, tf, univ in groups:
