@@ -1635,8 +1635,23 @@ async function loadDash() {
             const cls = (p.upnl||0)>=0?'pnl-pos':'pnl-neg';
             const sign = (p.upnl||0)>=0?'+':'';
             const lev = p.lev || '-';
-            const tp = (p.tp != null && p.tp !== '-') ? Number(p.tp).toPrecision(5) : '-';
-            const sl = (p.sl != null && p.sl !== '-') ? Number(p.sl).toPrecision(5) : '-';
+            // Absolute prices — operator wants entry / mark / tp / sl all visible.
+            // toPrecision(5) keeps consistent significant digits across coins of
+            // any price magnitude (BTC at 76000 vs SHIB at 0.000012).
+            const fmt = (v) => (v != null && v !== '-' && !isNaN(v)) ? Number(v).toPrecision(5) : '-';
+            const entry = fmt(p.entry);
+            const mark  = fmt(p.mark_px);
+            const tp    = fmt(p.tp);
+            const sl    = fmt(p.sl);
+            // Mark price colour vs entry, side-aware:
+            //   LONG  + mark > entry → gain (green); mark < entry → loss (red)
+            //   SHORT + mark < entry → gain (green); mark > entry → loss (red)
+            let markCls = '';
+            if (p.mark_px != null && p.entry != null) {
+                const isLong = (p.side === 'LONG' || p.side === 'BUY' || p.side === 'L');
+                const diff = isLong ? (p.mark_px - p.entry) : (p.entry - p.mark_px);
+                markCls = diff >= 0 ? 'pnl-pos' : 'pnl-neg';
+            }
             const eng = p.engine ? `<span style="opacity:0.45;font-size:9px;letter-spacing:0.05em">${p.engine}</span>` : '';
             // Stage badge: PAPER / SHADOW / LIVE — explicit and color-distinct
             const stage = p.stage || 'live';
@@ -1648,7 +1663,10 @@ async function loadDash() {
             return `<div class="${rowCls}">
                 <div class="pos-coin">${p.coin}${eng?'<br>'+eng:''}</div>
                 <div>${stageBadge}<span class="pos-side side-${p.side}">${p.side}</span> <span style="opacity:0.5;font-size:9px">${lev}x</span></div>
-                <div class="pos-size">${p.size} @ ${p.entry}<br><span style="opacity:0.5;font-size:9px">TP ${tp} · SL ${sl}</span></div>
+                <div class="pos-size">
+                    <div style="font-size:10px"><span style="opacity:0.55">${p.size} @ </span><span style="opacity:0.85">${entry}</span> <span style="opacity:0.4">→</span> <span class="${markCls}">${mark}</span></div>
+                    <div style="font-size:9px;margin-top:2px"><span style="color:var(--acid);opacity:0.85">TP ${tp}</span> · <span style="color:#f88;opacity:0.85">SL ${sl}</span></div>
+                </div>
                 <div class="pos-pnl ${cls}">${sign}$${(p.upnl||0).toFixed(2)}</div>
             </div>`;
         }).join('') || '<div class="pos-row" style="opacity:0.5">// no active positions</div>';
