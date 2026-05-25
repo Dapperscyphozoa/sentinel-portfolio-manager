@@ -812,20 +812,32 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             out["error"] = str(e)
 
-        # Optionally merge spm-strategy-runner if reachable + has data
+        # NOTE: removed spm-strategy-runner fallback. Even though the service
+        # is suspended on Render, an embedded strategy_runner runs in this
+        # container on STRATEGY_PORT and its /attribution returns dead SPM-era
+        # engine closures (hl_settle_5m, ict_confluence_*, hl_whale_frontrun,
+        # etc.). Operator directive 2026-05-25: those are dead — keep them
+        # out of the dashboard. sentinel-trader is the sole truth.
+
+        # Filter to engines that exist in sentinel-trader's current registry.
+        # Anything older / from a different stack is suppressed.
         try:
-            spm_url = (f"http://localhost:{STRATEGY_PORT}/attribution?since={since}")
             req = urllib.request.Request(
-                spm_url, headers={"User-Agent": "core-proxy/1.0"})
-            r = urllib.request.urlopen(req, timeout=2)
-            spm = json.loads(r.read())
-            seen = {e.get("engine") for e in out["engines"]}
-            for e in (spm.get("engines") or []):
-                name = e.get("engine")
-                if name and name not in seen and float(e.get("n", 0)) > 0:
-                    out["engines"].append(e)
+                "https://sentinel-trader.onrender.com/multi_tf",
+                headers={"User-Agent": "core-proxy/1.0"})
+            r = urllib.request.urlopen(req, timeout=4)
+            mt = json.loads(r.read())
+            allowed = set()
+            for k in ("4H_engines","2H_engines","1H_engines","1H_short_engines",
+                      "4H_uzt_engines","12H_uzt_engines"):
+                allowed.update(mt.get(k) or [])
+            for names in (mt.get("short_v2_engines") or {}).values():
+                allowed.update(names or [])
+            if allowed:
+                out["engines"] = [e for e in out["engines"]
+                                  if e.get("engine") in allowed]
         except Exception:
-            pass  # spm-strategy-runner suspended/unreachable — ignore
+            pass  # if multi_tf unreachable, fall through with unfiltered list
 
         return self._json(200, out)
 

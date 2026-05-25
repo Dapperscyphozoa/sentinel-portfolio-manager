@@ -3027,11 +3027,12 @@ async function loadEnginesGrid() {
 //   4. Sort: bleeders (negative net) bubble to top so they don't hide under awaiting-rows.
 
 // Post-bug cutoff timestamp — closures before this are considered tainted
-// by reconciler bug, backfill, manual force-close, or other non-engine
-// artefacts. Bumped 2026-05-25 to today's date to filter out the
-// short-stack-v2 / UZT_REV / DCA-guard ship-day backfill closures.
+// by reconciler bug, backfill, manual force-close, shadow mass-closes,
+// or other non-engine artefacts. Bumped 2026-05-25 to post-Variant-E
+// ship (60d858a) at 05:35 UTC. Cuts the 03:20 UTC shadow mass-close
+// of 100 ghost positions from the clean view.
 // Anything before this is recovery noise, not real engine performance.
-const POST_BUG_TS = 1779553200;  // 2026-05-25 00:00:00 UTC — post short-v2 + variant-E ship
+const POST_BUG_TS = 1779687300;  // 2026-05-25 05:35:00 UTC — post Variant E ship (commit 60d858a)
 // Default to CLEAN-ONLY view so the dashboard reflects actual live engine
 // performance, not bug-recovery artefacts. Click "[show all]" to see raw.
 let ATTR_SINCE = POST_BUG_TS;    // default = clean post-bug view
