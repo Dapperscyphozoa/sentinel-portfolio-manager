@@ -569,6 +569,32 @@ class Handler(BaseHTTPRequestHandler):
                                 "sl_px": stp.get("sl_px"),
                                 "extras_json": f'{{"executor": "sentinel-trader", "firing_gens": {firing}}}',
                             }
+                    # Second pass: short-v2 coins live in sub-universes whose scan
+                    # results never appear in last_coin_results (which only iterates
+                    # the main 36-coin UNIVERSE). For any HL position we still
+                    # haven't attributed, look it up in /positions which has gen_ids
+                    # written by the open path. Without this, short-v2 entries
+                    # render with engine='-' on the dashboard.
+                    if isinstance(st_positions, dict):
+                        for c, stp in st_positions.items():
+                            if c in runner_by_coin: continue
+                            if not isinstance(stp, dict): continue
+                            firing_raw = (stp.get("gen_ids") or "").strip()
+                            if not firing_raw: continue
+                            firing = [g.strip() for g in firing_raw.split(",") if g.strip()]
+                            if not firing: continue
+                            engine_label = "+".join(firing)
+                            sz = stp.get("size", 0) or 0
+                            is_long = 1 if sz > 0 else 0
+                            runner_by_coin[c] = {
+                                "coin": c,
+                                "strategy": engine_label,
+                                "is_long": is_long,
+                                "status": "open",
+                                "tp_px": stp.get("tp_px"),
+                                "sl_px": stp.get("sl_px"),
+                                "extras_json": f'{{"executor": "sentinel-trader-short-v2", "firing_gens": {firing}}}',
+                            }
         except Exception:
             pass
         # Final fallback: read HL native reduceOnly orders as TP/SL source. The
