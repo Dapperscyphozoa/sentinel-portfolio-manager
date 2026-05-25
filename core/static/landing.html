@@ -3026,8 +3026,15 @@ async function loadEnginesGrid() {
 //      (catches dropped engines that left bleed in the books).
 //   4. Sort: bleeders (negative net) bubble to top so they don't hide under awaiting-rows.
 
-const POST_BUG_TS = 1779343730;  // 2026-05-21 06:08:50 UTC — reconciler bug fix epoch
-let ATTR_SINCE = 0;              // 0 = all-time (default); POST_BUG_TS = clean-only
+// Post-bug cutoff timestamp — closures before this are considered tainted
+// by reconciler bug, backfill, manual force-close, or other non-engine
+// artefacts. Bumped 2026-05-25 to today's date to filter out the
+// short-stack-v2 / UZT_REV / DCA-guard ship-day backfill closures.
+// Anything before this is recovery noise, not real engine performance.
+const POST_BUG_TS = 1779553200;  // 2026-05-25 00:00:00 UTC — post short-v2 + variant-E ship
+// Default to CLEAN-ONLY view so the dashboard reflects actual live engine
+// performance, not bug-recovery artefacts. Click "[show all]" to see raw.
+let ATTR_SINCE = POST_BUG_TS;    // default = clean post-bug view
 
 async function loadAttribution() {
     try {
