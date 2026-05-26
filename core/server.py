@@ -2479,11 +2479,25 @@ def main():
     subsystems = []
     if not EXTERNAL_BUS:
         subsystems.append(("signal_bus", _start_signal_bus, SIGNAL_BUS_PORT, 45.0))
-    subsystems += [
-        ("pm",              _start_pm,              PM_PORT,         15.0),
-        ("strategy_runner", _start_strategy_runner, STRATEGY_PORT,   15.0),
-        ("monitor",         _start_monitor,         MONITOR_PORT,    15.0),
-    ]
+    # ── trading subsystems kill switch ────────────────────────────────────
+    # 2026-05-25 audit found the in-process strategy_runner was still placing
+    # tiny ($0.40-$5) orders on the live wallet, completely independent of
+    # sentinel-trader's DCA path. Source: the legacy SPM registry of 47 dead
+    # engines running with its own slot_cap math. Bug accumulated 12 phantom
+    # positions and burned $0.26 in fees over 27 days.
+    #
+    # FIX: gate strategy_runner + pm + monitor behind DISABLE_INPROCESS_TRADING.
+    # core is now a pure dashboard service. Trading lives ONLY in sentinel-trader.
+    # Default: trading subsystems DISABLED. Set DISABLE_INPROCESS_TRADING=0 to re-enable.
+    if os.environ.get("DISABLE_INPROCESS_TRADING", "1") != "1":
+        subsystems += [
+            ("pm",              _start_pm,              PM_PORT,         15.0),
+            ("strategy_runner", _start_strategy_runner, STRATEGY_PORT,   15.0),
+            ("monitor",         _start_monitor,         MONITOR_PORT,    15.0),
+        ]
+    else:
+        log.warning("DISABLE_INPROCESS_TRADING=1 — pm/strategy_runner/monitor NOT spawned. "
+                    "core is dashboard-only. Trading is delegated to sentinel-trader.")
     for name, fn, port, timeout in subsystems:
         t = threading.Thread(target=fn, daemon=True, name=fn.__name__)
         t.start()
