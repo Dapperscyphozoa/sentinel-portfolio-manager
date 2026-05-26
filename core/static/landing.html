@@ -341,29 +341,9 @@ body::after {
   box-sizing: border-box;
 }
 .pm-main { min-width: 0; overflow-x: hidden; }
-.pm-engine-rail {
-  position: fixed;
-  top: 46px;            /* below precog-nav (40-44px tall) */
-  right: 0;
-  width: 220px;
-  height: calc(100vh - 46px);
-  max-height: calc(100vh - 46px);
-  z-index: 50;
-  overflow: hidden;
-  background: linear-gradient(180deg, var(--carbon) 0%, rgba(13,14,17,0.97) 100%);
-  border-left: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-}
 /* push every page-level region clear of the fixed rail */
 body { padding-right: 232px; }
 .precog-nav { padding-right: 232px; }
-.pm-rail-head {
-  padding: 10px 12px 9px;
-  border-bottom: 1px solid var(--line);
-  background: rgba(59,130,246,0.04);
-  flex-shrink: 0;
-}
 .pm-rail-title {
   font-family: 'Cormorant Garamond', serif;
   font-size: 14px;
@@ -372,14 +352,6 @@ body { padding-right: 232px; }
   color: var(--bone);
   text-transform: uppercase;
   line-height: 1.2;
-}
-.pm-rail-sub {
-  font-size: 9px;
-  letter-spacing: 0.25em;
-  color: var(--oxide);
-  opacity: 0.75;
-  margin-top: 4px;
-  text-transform: uppercase;
 }
 .pm-rail-counts {
   display: flex;
@@ -390,19 +362,9 @@ body { padding-right: 232px; }
   text-transform: uppercase;
   color: var(--chrome);
 }
-.pm-rail-count strong { font-weight: 600; }
 .pm-rail-count.live strong { color: var(--acid); }
-.pm-rail-count.off strong { color: var(--blood); }
 
-.pm-rail-scroll {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  scroll-behavior: smooth;
-  position: relative;
-}
 .pm-rail-scroll::-webkit-scrollbar { width: 3px; }
-.pm-rail-scroll::-webkit-scrollbar-track { background: var(--void); }
 .pm-rail-scroll::-webkit-scrollbar-thumb { background: var(--steel); }
 
 /* Continuous rolling animation: DISABLED per user request — gates are now
@@ -412,10 +374,6 @@ body { padding-right: 232px; }
   0%   { transform: translateY(0); }
   92%  { transform: translateY(calc(-1 * var(--rail-distance, 0px))); }
   100% { transform: translateY(0); }
-}
-.pm-rail-scroll.cycling .pm-rail-list {
-  /* animation disabled — was: pm-rail-roll var(--rail-cycle, 40s) linear infinite */
-  animation: none;
 }
 .pm-rail-scroll.cycling:hover .pm-rail-list {
   animation-play-state: paused;
@@ -550,46 +508,19 @@ body { padding-right: 232px; }
   background: var(--blood);
   opacity: 0.6;
 }
-
-.pm-rail-foot {
-  padding: 9px 14px;
-  border-top: 1px solid var(--line);
-  font-size: 9px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  color: var(--chrome);
-  opacity: 0.6;
-  display: flex;
-  justify-content: space-between;
-  flex-shrink: 0;
-}
 .pm-rail-foot a { color: var(--acid); text-decoration: none; }
-.pm-rail-foot a:hover { color: var(--acid-bright); }
 
 @media (max-width: 1100px) {
   .pm-layout { padding: 12px; }
-  .pm-rail-title { font-size: 13px; }
   .pm-gate-section { padding: 8px 8px 2px; }
   .pm-gate-card .pm-gate-status { font-size: 10px; }
   .pm-gate-grid { gap: 3px; }
   body { padding-right: 200px; }
   .precog-nav { padding-right: 200px; }
-  .pm-engine-rail { width: 188px; }
 }
 @media (max-width: 800px) {
   body { padding-right: 0; }
   .precog-nav { padding-right: 16px; }
-  .pm-engine-rail {
-    position: relative;
-    top: 0; right: auto;
-    width: 100%;
-    height: auto;
-    max-height: 70vh;
-    margin: 16px 0;
-    border-left: none;
-    border-top: 1px solid var(--line);
-    border-bottom: 1px solid var(--line);
-  }
 }
 </style>
 <nav class="precog-nav">
@@ -1286,7 +1217,6 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
     /* kill the desktop rail entirely on small screens */
     body { padding-right: 0 !important; padding-left: 0 !important; }
     .precog-nav { padding-right: 16px !important; padding-left: 12px !important; }
-    .pm-engine-rail { display: none !important; }
     .pm-layout { padding: 8px 10px !important; }
     .container { padding: 12px 10px !important; max-width: 100% !important; }
 
@@ -1403,26 +1333,7 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
 </div>
 </div><!-- /pm-main -->
 
-<!-- ═══ RHS ENGINE RAIL — vertical rolling bar ═══ -->
-<aside class="pm-engine-rail">
-  <div class="pm-rail-head">
-    <div class="pm-rail-title">Precog · Internal Gates</div>
-    <div class="pm-rail-sub">// 8 signal · 9 guard · 6 venue · 1 sizing</div>
-    <div class="pm-rail-counts">
-      <span class="pm-rail-count live">live <strong id="rail-c-live">—</strong></span>
-      <span class="pm-rail-count off">off <strong id="rail-c-off">—</strong></span>
-    </div>
-  </div>
-  <div class="pm-rail-scroll" id="pm-rail-scroll">
-    <div class="pm-rail-list" id="pm-rail-list">
-      <div style="padding:24px 14px;font-size:10px;letter-spacing:0.2em;color:var(--chrome);opacity:0.5;text-transform:uppercase;">// loading gates…</div>
-    </div>
-  </div>
-  <div class="pm-rail-foot">
-    <span id="rail-foot-ts">—</span>
-    <a href="/violations" target="_blank">violations →</a>
-  </div>
-</aside>
+<!-- RHS engine rail removed 2026-05-26 (operator request — reduce memory + visual noise) -->
 
 </div><!-- /pm-layout -->
 
@@ -1944,58 +1855,9 @@ async function loadSignals() {
     if (total) _markPopulated('signals');
 }
 
-async function loadWhales() {
-    const el = document.getElementById('whales');
-    const meta = document.getElementById('whale-meta');
-    const { data: d } = await safeFetch('/whales', 'whales');
-    // Only render if we actually got something (live or cached). If d is null
-    // and the panel is already populated, leave it alone — never wipe.
-    if (!d) {
-        if (!_isPopulated('whales') && el && !el.innerHTML.trim()) {
-            el.innerHTML = '<div class="pos-row" style="opacity:0.5">// loading</div>';
-        }
-        return;
-    }
-    const items = d.items || [];
-    if (items.length === 0 && _isPopulated('whales')) {
-        // We have live empty data and a previously-populated panel —
-        // update the meta to reflect 0 but keep the last whale list visible.
-        if (meta) meta.textContent = '0 last 5m (stale)';
-        return;
-    }
-    el.innerHTML = items.map(w => {
-        const sideCls = w.side === 'BUY' ? 'pnl-pos' : 'pnl-neg';
-        return `<div class="pos-row" style="grid-template-columns:60px 50px 1fr;font-size:11px">
-            <div class="pos-coin">${w.coin}</div>
-            <div class="${sideCls}" style="font-weight:600">${w.side}</div>
-            <div style="text-align:right">$${(w.usd/1000).toFixed(0)}k</div>
-        </div>`;
-    }).join('') || '<div class="pos-row" style="opacity:0.5">// no whale prints yet</div>';
-    if (meta) meta.textContent = items.length + ' last 5m';
-    if (items.length) _markPopulated('whales');
-}
+// loadWhales removed 2026-05-26
 
-async function loadNews() {
-    const el = document.getElementById('news');
-    const { data: d } = await safeFetch('/news', 'news');
-    if (!d) {
-        if (!_isPopulated('news') && el && !el.innerHTML.trim()) {
-            el.innerHTML = '<div class="news-item" style="opacity:0.5">// loading</div>';
-        }
-        return;
-    }
-    const items = (d.items || []).slice(0,5);
-    if (items.length === 0 && _isPopulated('news')) return;  // keep last good
-    el.innerHTML = items.map(n => {
-        const mag = n.magnitude || 3;
-        return `<div class="news-item">
-            <span class="news-mag mag-${mag}">MAG ${mag}</span>
-            <div class="news-title">${n.title || n.headline || '—'}</div>
-            <div class="news-meta">${n.source || ''} · ${n.direction > 0 ? 'BULL' : n.direction < 0 ? 'BEAR' : 'NEUTRAL'}</div>
-        </div>`;
-    }).join('') || '<div class="news-item" style="opacity:0.5">// awaiting feed</div>';
-    if (items.length) _markPopulated('news');
-}
+// loadNews removed 2026-05-26
 
 function updateClock() {
     const n = new Date();
@@ -2705,59 +2567,7 @@ function _renderGateGroup(label, items, accentClass = '') {
     </div>`;
 }
 
-async function loadPMRail() {
-  const list = document.getElementById('pm-rail-list');
-  if (!list) return;
-  // Use same-origin /engines (precog itself returns it)
-  const e = await _fetchJSON('/api/engines');
-  if (e.__err) {
-    list.innerHTML = `<div style="padding:24px 14px;font-size:10px;letter-spacing:0.2em;color:var(--blood);text-transform:uppercase;">// /engines unreachable<br>${e.__err}</div>`;
-    return;
-  }
-
-  const sig    = e.signal_engines || {};
-  const guard  = e.guards         || {};
-  const venue  = e.venues         || {};
-  const sizing = e.sizing         || {};
-
-  // Counts: total live vs off across all 4 groups
-  const all = { ...sig, ...guard, ...venue, ...sizing };
-  let live = 0, off = 0;
-  for (const v of Object.values(all)) (v ? live++ : off++);
-  const cLive = document.getElementById('rail-c-live');
-  const cOff  = document.getElementById('rail-c-off');
-  if (cLive) cLive.textContent = live;
-  if (cOff)  cOff.textContent  = off;
-
-  list.innerHTML =
-    _renderGateGroup('SIGNAL ENGINES', sig) +
-    _renderGateGroup('GUARDS',         guard) +
-    _renderGateGroup('VENUES',         venue) +
-    _renderGateGroup('SIZING',         sizing);
-
-  // Update timestamp
-  const ts = new Date().toISOString().slice(11, 19);
-  const elTs = document.getElementById('rail-foot-ts');
-  if (elTs) elTs.textContent = ts + 'Z';
-
-  // Auto-scroll cycle: if list is taller than viewport, animate continuous roll
-  const scroll = document.getElementById('pm-rail-scroll');
-  if (scroll) {
-    requestAnimationFrame(() => {
-      const overflow = list.scrollHeight > scroll.clientHeight + 4;
-      if (overflow) {
-        scroll.classList.add('cycling');
-        // 1px per ~20ms → adjust to content height
-        const distance = list.scrollHeight - scroll.clientHeight;
-        const cycleDur = Math.max(28, Math.min(80, distance * 0.08)) + 's';
-        scroll.style.setProperty('--rail-cycle', cycleDur);
-        scroll.style.setProperty('--rail-distance', distance + 'px');
-      } else {
-        scroll.classList.remove('cycling');
-      }
-    });
-  }
-}
+// loadPMRail removed 2026-05-26
 
 
 // ─── ENGINES GRID — dynamic from PM /engines ────────────────────────────────
@@ -3296,7 +3106,7 @@ async function loadAttribution() {
 })();
 
 // Initial paint — immediate but no setInterval bursts at t=0
-loadDash(); loadMacroStrip(); loadEngines(); loadPMRail(); loadEnginesGrid();
+loadDash(); loadMacroStrip(); loadEngines(); loadEnginesGrid();
 loadAttribution();
 
 // Staggered offsets keep concurrent fetches small
@@ -3308,14 +3118,11 @@ loadAttribution();
 poll('clock',     updateClock,     1000,   0);
 poll('dash',      loadDash,        15000,  100);
 poll('signals',   loadSignals,     15000,  400);
-poll('whales',    loadWhales,      30000,  700);
 poll('orderbook', loadOrderbook,   15000,  1000);
 poll('heatmap',   loadHeatmap,     60000,  1300);
-poll('news',      loadNews,        120000, 1600);
 poll('macro',     loadMacroStrip,  30000,  1900);
 poll('engines',   loadEngines,     30000,  2200);
 poll('systems',   loadSystems,     45000,  2500);
-poll('pmrail',    loadPMRail,      30000,  2800);
 poll('engines_grid', loadEnginesGrid, 60000, 3100);
 poll('attribution', loadAttribution, 60000, 3700);
 
@@ -3525,9 +3332,8 @@ poll('pulse',  loadEquityPulse,   30000,  3400);
 document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
         Object.values(_polls).forEach(p => { p.running = false; });
-        loadDash(); loadSignals(); loadWhales();
+        loadDash(); loadSignals();
         loadMacroStrip(); loadSystems(); loadEngines();
-        loadPMRail();
         loadSentinel();
     }
 });
