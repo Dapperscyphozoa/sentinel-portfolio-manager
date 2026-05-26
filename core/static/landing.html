@@ -1589,16 +1589,53 @@ async function loadDash() {
     try {
         // Fetch /dash and DCA tranche state in parallel — operator wants
         // DCA fill count (X/5) shown inline on each live position row.
+        // 2026-05-26: core OOMs intermittently (2Gi limit). When /api/dca_state
+        // returns 502, badges vanish. Mitigation: (1) cache last-good by_coin
+        // in window.__dcaCache, (2) fall back to direct sentinel-trader fetch
+        // if the proxy 502s, (3) reuse cache if both fail. This keeps DCA
+        // badges visible across core restarts.
+        if (!window.__dcaCache) window.__dcaCache = {};
         const [{ data: d, fromCache }, dcaByCoin] = await Promise.all([
             safeFetch('/dash', 'dash'),
             (async () => {
+                // 1st try: core proxy (preferred — same origin)
                 try {
                     const r = await fetch('/api/dca_state',
-                        { cache: 'no-store', signal: AbortSignal.timeout(5000) });
-                    if (!r.ok) return {};
-                    const j = await r.json();
-                    return j.by_coin || {};
-                } catch (e) { return {}; }
+                        { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+                    if (r.ok) {
+                        const j = await r.json();
+                        const bc = j.by_coin || {};
+                        if (Object.keys(bc).length > 0) {
+                            window.__dcaCache = bc;
+                            return bc;
+                        }
+                    }
+                } catch (e) { /* fall through */ }
+                // 2nd try: direct sentinel-trader (bypass dead core proxy)
+                try {
+                    const r2 = await fetch('https://sentinel-trader.onrender.com/dca',
+                        { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+                    if (r2.ok) {
+                        const dj = await r2.json();
+                        const bc = {};
+                        for (const p of (dj.active || [])) {
+                            if (!p.coin) continue;
+                            const tr = p.tranches || [];
+                            bc[p.coin] = {
+                                filled: tr.filter(t => t.filled).length,
+                                total: tr.length || 5,
+                                gen: (p.gen_ids || []).join(','),
+                                side: p.side,
+                            };
+                        }
+                        if (Object.keys(bc).length > 0) {
+                            window.__dcaCache = bc;
+                            return bc;
+                        }
+                    }
+                } catch (e) { /* fall through */ }
+                // 3rd: cached last-good (may be stale but better than empty)
+                return window.__dcaCache;
             })(),
         ]);
         if (!d) {
@@ -3292,15 +3329,47 @@ poll('attribution', loadAttribution, 60000, 3700);
 let _dcaTrancheCache = {};
 
 async function _fetchDcaTranches() {
+  // 2026-05-26: core OOMs intermittently. 3-tier fallback keeps DCA badges
+  // visible across core restarts: proxy → direct → cache.
+  if (!window.__dcaCache) window.__dcaCache = {};
+  // 1st: core proxy
   try {
     const r = await fetch('/api/dca_state',
-      { cache: 'no-store', signal: AbortSignal.timeout(5000) });
-    if (!r.ok) return {};
-    const d = await r.json();
-    return d.by_coin || {};
-  } catch (e) {
-    return {};  // fail silently — keep last good state
-  }
+      { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (r && r.ok) {
+      const d = await r.json();
+      const bc = d.by_coin || {};
+      if (Object.keys(bc).length > 0) {
+        window.__dcaCache = bc;
+        return bc;
+      }
+    }
+  } catch (e) { /* fall through */ }
+  // 2nd: direct sentinel-trader
+  try {
+    const r2 = await fetch('https://sentinel-trader.onrender.com/dca',
+      { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (r2 && r2.ok) {
+      const dj = await r2.json();
+      const bc = {};
+      for (const p of (dj.active || [])) {
+        if (!p.coin) continue;
+        const tr = p.tranches || [];
+        bc[p.coin] = {
+          filled: tr.filter(t => t.filled).length,
+          total: tr.length || 5,
+          gen: (p.gen_ids || []).join(','),
+          side: p.side,
+        };
+      }
+      if (Object.keys(bc).length > 0) {
+        window.__dcaCache = bc;
+        return bc;
+      }
+    }
+  } catch (e) { /* fall through */ }
+  // 3rd: cached last-good
+  return window.__dcaCache;
 }
 
 async function loadLivePositions() {
