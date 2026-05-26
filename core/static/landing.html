@@ -2977,7 +2977,9 @@ async function loadLivePositions() {
     // Split by gen_id: confluence_* goes to its own panel, everything else to main
     const isConfluence = (p) => {
       const gen = (dcaState[p.coin] || {}).gen || p.engine || '';
-      return gen.toLowerCase().indexOf('confluence') >= 0;
+      // 2026-05-26 audit v2 NEW #1: word-boundary match. Avoid false positives
+      // on 'anti_confluence' or similar. Match 'confluence' as a word/token only.
+      return /\bconfluence(_|\b)/i.test(gen);
     };
     const mainRows = allRows.filter(p => !isConfluence(p));
     const confRows = allRows.filter(p => isConfluence(p));
