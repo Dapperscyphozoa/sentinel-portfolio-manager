@@ -3219,58 +3219,55 @@ async function loadLivePositions() {
 }
 
 async function loadEquityPulse() {
-  const svg = document.getElementById('pulse-svg');
-  const netEl = document.getElementById('pulse-net');
-  const metaEl = document.getElementById('pulse-meta');
+  // 2026-05-26: resilient against core /audit/deep 502s. Caches last good
+  // payload so the pulse doesn't blank during core restarts.
+  if (!window.__pulseCache) window.__pulseCache = null;
+  let d = null;
   try {
-    const r = await fetch('/audit/deep?hours=24&format=json', { cache: 'no-store' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const a = await r.json();
-    const ph = (a && a.per_hour) ? a.per_hour.slice() : []; // already oldest → newest
-    // If endpoint returns ok but no buckets OR all-zero — show awaiting message, NOT offline
-    const totalFills = ph.reduce((s, h) => s + (Number(h.fills) || 0), 0);
-    if (!ph.length || totalFills === 0) {
-      svg.innerHTML = '<text x="140" y="50" text-anchor="middle" fill="rgba(217,214,205,0.35)" '
-        + 'font-size="9" font-family="JetBrains Mono">awaiting first closures…</text>';
-      if (netEl) netEl.textContent = 'net —';
-      if (metaEl) metaEl.textContent = (ph.length || 24) + 'h · 0 fills';
-      return;
-    }
-    const W = 280, H = 96, BL = 64;
-    const fills = ph.map(h => Number(h.fills) || 0);
-    const pnls  = ph.map(h => Number(h.pnl)   || 0);
-    const maxF  = Math.max(1, Math.max.apply(null, fills));
-    const absP  = Math.max.apply(null, pnls.map(Math.abs).concat([1]));
-    const bw    = W / ph.length;
-    let svgInner = '';
-    for (let i = 0; i < ph.length; i++) {
-      const x = i * bw;
-      const fh = (fills[i] / maxF) * BL;
-      const fy = BL - fh;
-      svgInner += '<rect x="' + x.toFixed(1) + '" y="' + fy.toFixed(1)
-        + '" width="' + (bw - 1).toFixed(1) + '" height="' + Math.max(1, fh).toFixed(1)
-        + '" fill="#3b82f6" opacity="0.55"/>';
-      if (pnls[i] !== 0) {
-        const ph2 = (Math.abs(pnls[i]) / absP) * 24;
-        const color = pnls[i] > 0 ? '#10b981' : '#ef4444';
-        svgInner += '<rect x="' + x.toFixed(1) + '" y="' + (BL + 4).toFixed(1)
-          + '" width="' + (bw - 1).toFixed(1) + '" height="' + ph2.toFixed(1)
-          + '" fill="' + color + '"/>';
+    const r = await fetch('/audit/deep?hours=24&format=json',
+      { cache: 'no-store', signal: AbortSignal.timeout(10000) });
+    if (r.ok) {
+      d = await r.json();
+      if (d && (d.per_hour || []).length > 0) {
+        window.__pulseCache = d;
       }
     }
-    svgInner += '<line x1="0" y1="' + BL + '" x2="' + W + '" y2="' + BL
-      + '" stroke="rgba(200,204,212,0.18)" stroke-width="1"/>';
-    svg.innerHTML = svgInner;
-    const totalNet = pnls.reduce((s, v) => s + v, 0);
-    if (netEl) {
-      const sign = totalNet > 0 ? '+' : totalNet < 0 ? '−' : '';
-      netEl.textContent = 'net ' + sign + '$' + Math.abs(totalNet).toFixed(2);
-      netEl.style.color = totalNet > 0 ? 'var(--gain)' : totalNet < 0 ? 'var(--loss)' : '';
+  } catch (e) { /* fall through to cache */ }
+  if (!d || !(d.per_hour || []).length) {
+    d = window.__pulseCache;
+  }
+  if (!d || !(d.per_hour || []).length) return;
+  // ── render the 24-bar SVG ──
+  const svg = document.getElementById('pulse-svg');
+  const meta = document.getElementById('pulse-meta');
+  const net = document.getElementById('pulse-net');
+  if (!svg) return;
+  const ph = d.per_hour || [];
+  const W = 280, H = 96, BAR_W = W / 24;
+  let bars = '';
+  let total_net = 0;
+  let max_fills = Math.max(1, ...ph.map(h => h.fills || 0));
+  for (let i = 0; i < 24; i++) {
+    const h = ph[i] || { fills: 0, net_pnl: 0 };
+    const fh = h.fills ? (h.fills / max_fills) * (H * 0.6) : 0;
+    const pnl = h.net_pnl || 0;
+    total_net += pnl;
+    const pnlH = Math.min(Math.abs(pnl) * 4, H * 0.35);
+    const x = i * BAR_W;
+    // blue base bar = fills, overlay green/red = pnl
+    bars += `<rect x="${x+1}" y="${H - fh}" width="${BAR_W-2}" height="${fh}" fill="rgba(70,160,255,0.25)" />`;
+    if (pnl !== 0) {
+      const color = pnl > 0 ? 'rgba(80,220,120,0.85)' : 'rgba(220,80,80,0.85)';
+      bars += `<rect x="${x+1}" y="${pnl > 0 ? (H/2 - pnlH) : (H/2)}" width="${BAR_W-2}" height="${pnlH}" fill="${color}" />`;
     }
-    if (metaEl) metaEl.textContent = totalFills + ' fills · ' + ph.length + 'h';
-  } catch (e) {
-    if (svg) svg.innerHTML = '<text x="140" y="50" text-anchor="middle" fill="rgba(193,39,45,0.6)" '
-      + 'font-size="9" font-family="JetBrains Mono">/audit offline</text>';
+  }
+  bars += `<line x1="0" y1="${H/2}" x2="${W}" y2="${H/2}" stroke="rgba(255,255,255,0.08)" stroke-width="1" />`;
+  svg.innerHTML = bars;
+  if (meta) meta.textContent = `${ph.reduce((s,h) => s + (h.fills||0), 0)} fills`;
+  if (net) {
+    const sign = total_net >= 0 ? '+' : '-';
+    net.textContent = `net ${sign}$${Math.abs(total_net).toFixed(2)}`;
+    net.style.color = total_net >= 0 ? 'var(--acid)' : 'var(--blood)';
   }
 }
 poll('lpos',   loadLivePositions, 15000,  3100);

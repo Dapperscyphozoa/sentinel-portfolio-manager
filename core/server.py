@@ -1181,8 +1181,107 @@ class Handler(BaseHTTPRequestHandler):
             self._json(500, {"error": "blackout_failed", "detail": str(e)[:200]})
 
     def _serve_audit_deep(self) -> None:
-        """STUBBED 2026-05-26 — page killed by operator."""
-        return self._json(404, {"error": "endpoint removed"})
+        """Landing's /audit/deep — per-coin attribution + per-hour fills/PnL series.
+
+        Primary source: HL info.userFillsByTime (last 24h on the main wallet).
+        This survives runner DB resets and gives the operator a "what actually
+        happened on the exchange" view independent of any internal state.
+
+        Fallback: strategy_runner /closures aggregation, used only if HL is
+        unreachable. Runner closures double-count vs HL fills (each closing
+        fill = 1 runner closure), so they're never merged — HL wins when present.
+        """
+        per_coin: list = []
+        per_hour: list = []
+        try:
+            now = time.time()
+            since_ms = int((now - 24 * 3600) * 1000)
+            user_wallet = os.environ.get("HL_USER_WALLET", "")
+            fills: list = []
+            if user_wallet:
+                try:
+                    with httpx.Client(timeout=5.0) as cli:
+                        r = cli.post(
+                            "https://api.hyperliquid.xyz/info",
+                            json={"type": "userFillsByTime",
+                                  "user": user_wallet,
+                                  "startTime": since_ms},
+                        )
+                        if r.status_code == 200:
+                            fills = r.json() or []
+                except Exception:
+                    fills = []
+            # 24 hourly buckets, oldest first → JS reverses to newest-first
+            buckets: dict = {}
+            for i in range(24):
+                bucket_ts = int((now - (24 - i) * 3600) * 1000)
+                buckets[i] = {"ts": bucket_ts, "fills": 0, "pnl": 0.0}
+            coin_agg: dict = {}
+            if fills:
+                # Only closing fills produce realized PnL on HL. dir is
+                # "Close Long" / "Close Short" for closing legs, "Open …" for
+                # opening legs. closedPnl is 0 on opens. Count fills as the
+                # number of closing legs (matches the "fills · 24h" UI meaning).
+                for f in fills:
+                    direction = (f.get("dir") or "").lower()
+                    if "close" not in direction:
+                        continue
+                    ts_ms = float(f.get("time", 0) or 0)
+                    ts_s = ts_ms / 1000.0
+                    hour_idx = int((ts_s - (now - 24 * 3600)) / 3600)
+                    pnl = float(f.get("closedPnl", 0) or 0)
+                    fee = float(f.get("fee", 0) or 0)
+                    net = pnl - fee
+                    if 0 <= hour_idx < 24:
+                        buckets[hour_idx]["fills"] += 1
+                        buckets[hour_idx]["pnl"] += net
+                    coin = f.get("coin", "—")
+                    agg = coin_agg.setdefault(coin, {"coin": coin, "n": 0, "wins": 0, "pnl_usd": 0.0})
+                    agg["n"] += 1
+                    agg["pnl_usd"] += net
+                    if net > 0:
+                        agg["wins"] += 1
+            else:
+                # Fallback: runner closures (matches legacy behaviour)
+                with httpx.Client(timeout=5.0) as cli:
+                    r = cli.get(f"http://localhost:{STRATEGY_PORT}/closures?since={now - 24*3600}&limit=2000")
+                    closures = []
+                    if r.status_code == 200:
+                        data = r.json()
+                        closures = data if isinstance(data, list) else (data.get("items") or [])
+                for c in closures:
+                    ts = float(c.get("close_ts", 0) or 0)
+                    hour_idx = int((ts - (now - 24 * 3600)) / 3600)
+                    net = float(c.get("pnl_usd", 0) or 0) - float(c.get("fees_usd", 0) or 0)
+                    if 0 <= hour_idx < 24:
+                        buckets[hour_idx]["fills"] += 1
+                        buckets[hour_idx]["pnl"] += net
+                    coin = c.get("coin", "—")
+                    agg = coin_agg.setdefault(coin, {"coin": coin, "n": 0, "wins": 0, "pnl_usd": 0.0})
+                    agg["n"] += 1
+                    agg["pnl_usd"] += net
+                    if net > 0:
+                        agg["wins"] += 1
+            for i in sorted(buckets.keys()):
+                per_hour.append(buckets[i])
+            for coin, agg in coin_agg.items():
+                agg["wr"] = round(agg["wins"] / agg["n"], 3) if agg["n"] else 0.0
+                agg["pnl_usd"] = round(agg["pnl_usd"], 4)
+                # Legacy panel aliases — landing.html loadHeatmap reads c.w / c.l / c.pnl
+                # rather than c.wins / (n-wins) / c.pnl_usd. Provide both shapes.
+                agg["w"] = agg["wins"]
+                agg["l"] = agg["n"] - agg["wins"]
+                agg["pnl"] = agg["pnl_usd"]
+                per_coin.append(agg)
+            per_coin.sort(key=lambda x: x["pnl_usd"], reverse=True)
+        except Exception:
+            pass
+        self._json(200, {
+            "per_coin": per_coin,
+            "per_hour": per_hour,
+            "hours": 24,
+            "ts": int(time.time() * 1000),
+        })
 
     def _serve_chat(self) -> None:
         """Serve the new PSYCHO-themed sentinel chat UI."""
@@ -1535,6 +1634,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_whales()
         if path == "/news":
             return self._serve_news()
+        if path.startswith("/audit/deep"):
+            return self._serve_audit_deep()
         if path.startswith("/orderbook/"):
             coin = path.split("/")[-1]
             return self._serve_orderbook(coin)
