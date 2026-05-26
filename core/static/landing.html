@@ -1005,6 +1005,13 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
         </div>
         <div class="panel">
             <div class="panel-head">
+                <div class="panel-title">Confluence Engines · Live</div>
+                <div class="panel-meta" id="confl-meta">— open</div>
+            </div>
+            <div id="confl-body"><div class="lpos-empty">// awaiting confluence signals</div></div>
+        </div>
+        <div class="panel">
+            <div class="panel-head">
                 <div class="panel-title">24h Equity Pulse</div>
                 <div class="panel-meta" id="pulse-meta">—</div>
             </div>
@@ -2876,10 +2883,78 @@ async function _fetchDcaTranches() {
   return window.__dcaCache;
 }
 
+async function _renderPositionsPanel(rows, bodyId, metaId, dcaCache) {
+  const body = document.getElementById(bodyId);
+  const meta = document.getElementById(metaId);
+  if (!body) return;
+  if (!rows.length) {
+    body.innerHTML = '<div class="lpos-empty">// no open positions</div>';
+    if (meta) { meta.textContent = '0 open'; meta.style.color = ''; }
+    return;
+  }
+  const fmtPx = v => {
+    if (v == null || isNaN(v)) return '—';
+    const n = Number(v);
+    if (n >= 1000) return n.toFixed(1);
+    if (n >= 1) return n.toFixed(3);
+    return n.toFixed(5);
+  };
+  const fmtPnl = v => {
+    const n = Number(v) || 0;
+    const s = n > 0 ? '+' : n < 0 ? '−' : '';
+    return s + '$' + Math.abs(n).toFixed(2);
+  };
+  let totalUpnl = 0;
+  let totalDcaFills = 0;
+  let dcaPositionCount = 0;
+  const trs = rows.map(p => {
+    const u = Number(p.upnl) || 0; totalUpnl += u;
+    const cls = u > 0 ? 'pos' : u < 0 ? 'neg' : '';
+    const sideRaw = (p.side || '').toUpperCase();
+    const isLong = sideRaw === 'LONG' || sideRaw === 'L' || sideRaw === 'B';
+    const isShort = sideRaw === 'SHORT' || sideRaw === 'S' || sideRaw === 'A';
+    const side = isLong ? 'LONG' : isShort ? 'SHORT' : '';
+    const sLab = side || '?';
+    const dca = dcaCache[p.coin];
+    let dcaCell = '<span style="color:var(--muted,#6b7280);font-size:9px">—</span>';
+    if (dca) {
+      dcaPositionCount += 1;
+      totalDcaFills += dca.filled;
+      let color = 'var(--muted,#6b7280)';
+      if (dca.filled >= 4) color = '#f97316';
+      else if (dca.filled >= 2) color = '#eab308';
+      else color = 'var(--fg,#e5e7eb)';
+      dcaCell = '<span style="color:' + color + ';font-weight:600">'
+        + dca.filled + '/' + dca.total + '</span>';
+    }
+    return '<tr>'
+      + '<td class="lpos-coin">' + (p.coin || '—') + '</td>'
+      + '<td><span class="lpos-side ' + side + '">' + sLab + '</span></td>'
+      + '<td class="r">' + fmtPx(p.entry) + '</td>'
+      + '<td class="r" style="color:var(--muted,#6b7280);font-size:10px">' + (p.lev ?? '—') + '×</td>'
+      + '<td class="r" style="font-size:10px">' + dcaCell + '</td>'
+      + '<td class="r lpos-pnl ' + cls + '">' + fmtPnl(u) + '</td>'
+      + '</tr>';
+  }).join('');
+  body.innerHTML = '<table class="lpos-tbl">'
+    + '<thead><tr><th>Coin</th><th>Side</th><th class="r">Entry</th>'
+    + '<th class="r">Lev</th><th class="r">DCA</th><th class="r">uPnL</th></tr></thead>'
+    + '<tbody>' + trs + '</tbody></table>';
+  _markPopulated(bodyId);
+  if (meta) {
+    const sign = totalUpnl > 0 ? '+' : totalUpnl < 0 ? '−' : '';
+    const dcaInfo = dcaPositionCount > 0
+      ? ' · ' + totalDcaFills + '/' + (dcaPositionCount * 5) + ' DCA filled'
+      : '';
+    meta.textContent = rows.length + ' open' + dcaInfo + ' · ' + sign + '$' + Math.abs(totalUpnl).toFixed(2);
+    meta.style.color = totalUpnl > 0 ? 'var(--gain)' : totalUpnl < 0 ? 'var(--loss)' : '';
+  }
+}
+
 async function loadLivePositions() {
-  const body = document.getElementById('lpos-body');
-  const meta = document.getElementById('lpos-meta');
-  // Parallel fetch /dash and sentinel-trader DCA state
+  // Loads /dash + DCA state once, splits into 2 panels:
+  //   #lpos-body    — existing 15-engine stack (donchian/uzt/rsi/pump_fail/fsp_v2)
+  //   #confl-body   — confluence engines (gen_id starts with 'confluence_')
   const [dashRes, dcaState] = await Promise.all([
     safeFetch('/dash', 'dash'),
     _fetchDcaTranches(),
@@ -2887,86 +2962,32 @@ async function loadLivePositions() {
   _dcaTrancheCache = dcaState;
   const d = dashRes.data;
   if (!d) {
-    if (!_isPopulated('lpos-body') && body && !body.innerHTML.includes('table')) {
-      body.innerHTML = '<div class="lpos-empty">// loading</div>';
+    if (!_isPopulated('lpos-body')) {
+      const body = document.getElementById('lpos-body');
+      if (body && !body.innerHTML.includes('table')) {
+        body.innerHTML = '<div class="lpos-empty">// loading</div>';
+      }
     }
     return;
   }
   try {
-    const rows = (d.positions || []).slice().sort((a, b) =>
+    const allRows = (d.positions || []).slice().sort((a, b) =>
       Math.abs((b.upnl || 0)) - Math.abs((a.upnl || 0)));
-    const body = document.getElementById('lpos-body');
-    const meta = document.getElementById('lpos-meta');
-    if (!rows.length) {
-      body.innerHTML = '<div class="lpos-empty">// no open positions</div>';
-      if (meta) meta.textContent = '0 open';
-      return;
-    }
-    const fmtPx = v => {
-      if (v == null || isNaN(v)) return '—';
-      const n = Number(v);
-      if (n >= 1000) return n.toFixed(1);
-      if (n >= 1) return n.toFixed(3);
-      return n.toFixed(5);
+    
+    // Split by gen_id: confluence_* goes to its own panel, everything else to main
+    const isConfluence = (p) => {
+      const gen = (dcaState[p.coin] || {}).gen || p.engine || '';
+      return gen.toLowerCase().indexOf('confluence') >= 0;
     };
-    const fmtPnl = v => {
-      const n = Number(v) || 0;
-      const s = n > 0 ? '+' : n < 0 ? '−' : '';
-      return s + '$' + Math.abs(n).toFixed(2);
-    };
-    let totalUpnl = 0;
-    let totalDcaFills = 0;
-    let dcaPositionCount = 0;
-    const trs = rows.map(p => {
-      const u = Number(p.upnl) || 0; totalUpnl += u;
-      const cls = u > 0 ? 'pos' : u < 0 ? 'neg' : '';
-      const sideRaw = (p.side || '').toUpperCase();
-      const isLong = sideRaw === 'LONG' || sideRaw === 'L' || sideRaw === 'B';
-      const isShort = sideRaw === 'SHORT' || sideRaw === 'S' || sideRaw === 'A';
-      const side = isLong ? 'LONG' : isShort ? 'SHORT' : '';
-      const sLab = side || '?';
-      // DCA tranche info lookup
-      const dca = _dcaTrancheCache[p.coin];
-      let dcaCell = '<span style="color:var(--muted,#6b7280);font-size:9px">—</span>';
-      if (dca) {
-        dcaPositionCount += 1;
-        totalDcaFills += dca.filled;
-        // Color: 1/5 = neutral, 2-3/5 = yellow (averaged down), 4-5/5 = orange (full DCA, deep loss recovery)
-        let color = 'var(--muted,#6b7280)';
-        if (dca.filled >= 4) color = '#f97316';      // orange — full DCA engaged
-        else if (dca.filled >= 2) color = '#eab308'; // yellow — averaging
-        else color = 'var(--fg,#e5e7eb)';            // neutral — fresh entry
-        dcaCell = '<span style="color:' + color + ';font-weight:600">'
-          + dca.filled + '/' + dca.total + '</span>';
-      }
-      return '<tr>'
-        + '<td class="lpos-coin">' + (p.coin || '—') + '</td>'
-        + '<td><span class="lpos-side ' + side + '">' + sLab + '</span></td>'
-        + '<td class="r">' + fmtPx(p.entry) + '</td>'
-        + '<td class="r" style="color:var(--muted,#6b7280);font-size:10px">' + (p.lev ?? '—') + '×</td>'
-        + '<td class="r" style="font-size:10px">' + dcaCell + '</td>'
-        + '<td class="r lpos-pnl ' + cls + '">' + fmtPnl(u) + '</td>'
-        + '</tr>';
-    }).join('');
-    body.innerHTML = '<table class="lpos-tbl">'
-      + '<thead><tr><th>Coin</th><th>Side</th><th class="r">Entry</th>'
-      + '<th class="r">Lev</th><th class="r">DCA</th><th class="r">uPnL</th></tr></thead>'
-      + '<tbody>' + trs + '</tbody></table>';
-    _markPopulated('lpos-body');
-    if (meta) {
-      const sign = totalUpnl > 0 ? '+' : totalUpnl < 0 ? '−' : '';
-      const dcaInfo = dcaPositionCount > 0
-        ? ' · ' + totalDcaFills + '/' + (dcaPositionCount * 5) + ' DCA filled'
-        : '';
-      meta.textContent = rows.length + ' open' + dcaInfo + ' · ' + sign + '$' + Math.abs(totalUpnl).toFixed(2);
-      meta.style.color = totalUpnl > 0 ? 'var(--gain)' : totalUpnl < 0 ? 'var(--loss)' : '';
-    }
+    const mainRows = allRows.filter(p => !isConfluence(p));
+    const confRows = allRows.filter(p => isConfluence(p));
+    
+    await _renderPositionsPanel(mainRows, 'lpos-body', 'lpos-meta', dcaState);
+    await _renderPositionsPanel(confRows, 'confl-body', 'confl-meta', dcaState);
   } catch (e) {
-    // Render exception (not fetch — safeFetch handled that). Keep last good.
     console.error('lpos render failed', e);
   }
 }
-
 async function loadEquityPulse() {
   const svg = document.getElementById('pulse-svg');
   const netEl = document.getElementById('pulse-net');
