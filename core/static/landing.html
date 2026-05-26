@@ -42,29 +42,13 @@
    body[data-view=X]. These rules show/hide sections per view. */
 
 /* DASH (default /) — hide engine breakdown grid */
-body[data-view="dash"] [data-section="engines"] { display: none !important; }
-
-/* ENGINES (/engines) — show only the systems grid + nav */
-body[data-view="engines"] .hero,
-body[data-view="engines"] .metrics-bar,
-body[data-view="engines"] .grid:not(#systems-grid),
-body[data-view="engines"] .footer { display: none !important; }
-body[data-view="engines"] [data-section="engines"] { display: grid !important; }
-
-/* SYSTEM and MACRO sub-pages: hide everything except the placeholder block */
-body[data-view="system"] .hero,
-body[data-view="system"] .metrics-bar,
-body[data-view="system"] .grid,
-body[data-view="system"] [data-section="engines"],
-body[data-view="system"] .footer,
-body[data-view="macro"]  .hero,
-body[data-view="macro"]  .metrics-bar,
-body[data-view="macro"]  .grid,
-body[data-view="macro"]  [data-section="engines"],
-body[data-view="macro"]  .footer { display: none !important; }
+/* MACRO sub-page only (Engines/Audit/System removed 2026-05-26) */
+body[data-view="macro"] .hero,
+body[data-view="macro"] .metrics-bar,
+body[data-view="macro"] .grid,
+body[data-view="macro"] .footer { display: none !important; }
 
 .subpage-placeholder { display: none; padding: 80px 20px; text-align: center; font-family: 'Cormorant Garamond', serif; color: var(--chrome); }
-body[data-view="system"] .subpage-placeholder.system,
 body[data-view="macro"]  .subpage-placeholder.macro { display: block; }
 .subpage-placeholder h2 { font-size: 36px; letter-spacing: 0.3em; margin-bottom: 16px; color: var(--bone); font-weight: 400; }
 .subpage-placeholder p { font-size: 13px; letter-spacing: 0.2em; opacity: 0.6; }
@@ -526,9 +510,6 @@ body { padding-right: 232px; }
 <nav class="precog-nav">
 <a href="/" class="nav-brand">PRECOG</a>
 <a href="/" data-page="dashboard">Dash</a>
-<a href="/engines" data-page="engines">Engines</a>
-<a href="/audit" data-page="audit">Audit</a>
-<a href="/system" data-page="system">System</a>
 <a href="/macro" data-page="macro">Macro</a>
 <a href="/chat" data-page="chat">Chat</a>
 <div class="nav-sep"></div>
@@ -545,14 +526,7 @@ document.body.setAttribute("data-view",v);
 document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.getAttribute("data-page")===c)a.classList.add("current")})})();</script>
 
 <!-- SUB-PAGE PLACEHOLDERS (only displayed on /system and /macro; CSS controls visibility) -->
-<div class="subpage-placeholder system">
-    <h2>SYSTEM</h2>
-    <p>// operator tools — enforcement contract & promotion-engine A/B</p>
-    <div class="links">
-        <a href="/enforce">Enforce · Protection</a>
-        <a href="/experiment">Experiment · Promotion</a>
-    </div>
-</div>
+<!-- system placeholder removed 2026-05-26 -->
 <!-- MACRO PAGE — renders MER from portfolio-manager /mer/today -->
 <div class="subpage-placeholder macro" id="macro-page">
     <h2 style="margin-bottom:8px">MACRO</h2>
@@ -1024,14 +998,7 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
         <div id="attribution-body"><div style="opacity:0.5;font-size:11px">// loading engines…</div></div>
     </div>
 
-    <!-- NEWS -->
-    <div class="panel">
-        <div class="panel-head">
-            <div class="panel-title">News Feed</div>
-            <div class="panel-meta">Auto-polled · 10m</div>
-        </div>
-        <div id="news"></div>
-    </div>
+    <!-- NEWS panel removed 2026-05-26 -->
 
     <!-- LIVE OPS COLUMN (positions + 24h equity pulse) — fills the 3rd grid slot -->
     <div class="lops-col">
@@ -1095,14 +1062,8 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
 <div class="grid" style="display:none;">
 </div>
 
-<!-- ═══ SYSTEMS A–F · MOVED UP ═══ -->
-<!-- ENGINES GRID — dynamic, populated from PM /engines + each engine's /state, /pnl, /closures.
-     Replaces the old 6 hardcoded SYSTEM panels (A/C/D/E/H/I) which missed 16 engines. -->
-<div data-section="engines" style="display: none;" id="engines-dyn">
-    <!-- Group sections injected by JS:
-         LIVE / CANARY · PAPER / VALIDATING · DEMOTED / DEPRECATED -->
-    <div id="engines-summary" class="eng-summary">
-        <div class="eng-summary-stat"><div class="lbl">total</div><div class="val" id="esum-total">—</div></div>
+<!-- Systems A–F + engines-dyn section removed 2026-05-26 -->
+<div class="val" id="esum-total">—</div></div>
         <div class="eng-summary-stat"><div class="lbl">live</div><div class="val" id="esum-live" style="color:var(--gain)">—</div></div>
         <div class="eng-summary-stat"><div class="lbl">paper</div><div class="val" id="esum-paper" style="color:var(--oxide)">—</div></div>
         <div class="eng-summary-stat"><div class="lbl">dead</div><div class="val" id="esum-dead" style="color:var(--loss)">—</div></div>
@@ -1282,14 +1243,7 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
         <div id="signals" style="max-height: 320px; overflow-y: auto;"></div>
     </div>
 
-    <!-- WHALE TICKER -->
-    <div class="panel">
-        <div class="panel-head">
-            <div class="panel-title">Whale Prints · >$100k</div>
-            <div class="panel-meta" id="whale-meta">—</div>
-        </div>
-        <div id="whales" style="max-height: 320px; overflow-y: auto;"></div>
-    </div>
+    <!-- WHALE panel removed 2026-05-26 -->
 
     <!-- MARKET DATA -->
     <div class="panel">
@@ -3069,7 +3023,6 @@ async function loadAttribution() {
             tog.addEventListener('click', (ev) => {
                 ev.preventDefault();
                 ATTR_SINCE = ATTR_SINCE > 0 ? 0 : POST_BUG_TS;
-                loadAttribution();
             });
         }
     } catch (e) {
@@ -3106,8 +3059,7 @@ async function loadAttribution() {
 })();
 
 // Initial paint — immediate but no setInterval bursts at t=0
-loadDash(); loadMacroStrip(); loadEngines(); loadEnginesGrid();
-loadAttribution();
+loadDash(); loadMacroStrip();
 
 // Staggered offsets keep concurrent fetches small
 // 2026-05-21: Polling intervals backed off across the board to fix 502 cascade.
@@ -3121,10 +3073,6 @@ poll('signals',   loadSignals,     15000,  400);
 poll('orderbook', loadOrderbook,   15000,  1000);
 poll('heatmap',   loadHeatmap,     60000,  1300);
 poll('macro',     loadMacroStrip,  30000,  1900);
-poll('engines',   loadEngines,     30000,  2200);
-poll('systems',   loadSystems,     45000,  2500);
-poll('engines_grid', loadEnginesGrid, 60000, 3100);
-poll('attribution', loadAttribution, 60000, 3700);
 
 // ═══ Live Positions + 24h Equity Pulse ═══════════════════════════════════
 // Live positions table mirrors /dash.positions in a compact mono format.
@@ -3333,7 +3281,7 @@ document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
         Object.values(_polls).forEach(p => { p.running = false; });
         loadDash(); loadSignals();
-        loadMacroStrip(); loadSystems(); loadEngines();
+        loadMacroStrip();
         loadSentinel();
     }
 });

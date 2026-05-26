@@ -1125,223 +1125,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {"items": [], "ts": int(time.time() * 1000)})
 
     def _serve_engines_full(self) -> None:
-        """Landing's /engines panel aggregator.
+        """STUBBED 2026-05-26 — page killed by operator."""
+        return self._json(404, {"error": "endpoint removed"})
 
-        Replaces the legacy panel's habit of calling N legacy services
-        (`https://portfolio-manager-7df2.onrender.com/engines` then
-        `<engine_url>/pnl /state /closures /signals` per engine). The new
-        single-process stack exposes everything via internal localhost
-        endpoints; this method fans out once and returns a payload shaped
-        to match the panel's existing `loadEnginesGrid()` consumers.
-
-        Response shape:
-        {
-          ts: <ms>,
-          engines: { name: {  # dict keyed by engine name (legacy expectation)
-              halt_url,        # synthetic — panel only checks it's non-empty
-              capital_fraction, class, affinity, audit_status,
-              audit_metrics: {wr, pf, oos_pf, max_trades_per_day, n},
-              lifecycle_stage, spec: {thesis, timeframe},
-              cloid_prefix, live, deprecated, ...
-          }},
-          data: { name: {
-              pnl: {total_net_pnl, n_closed, wr_pct, equity},
-              state: {mode_effective, halt:{active}, open_trades:[...]},
-              closures: {closures: [{ts_close, net_pnl}]},
-              signals: {signals: [{fire_ts, ts}]},
-          }}
-        }
-        """
-        import json as _json_mod
-        from concurrent.futures import ThreadPoolExecutor
-
-        engines_list: list = []
-        closures: list = []
-        signals: list = []
-        open_state: list = []
-        attribution: dict = {"engines": []}
-        equity_usd: float | None = None
-        live_trading = os.environ.get("LIVE_TRADING", "0") == "1"
-
-        def _engine_is_live(engine_name: str) -> bool:
-            """Mirror strategy_runner/trader._is_live precedence:
-            per-engine STRATEGY_<NAME>_LIVE overrides global LIVE_TRADING.
-            Without this, the engines_full panel mislabels per-engine
-            promotions as 'paper' even when they're transacting live HL orders."""
-            per = os.environ.get(f"STRATEGY_{engine_name.upper()}_LIVE")
-            if per is not None:
-                return per.strip().lower() in ("1", "true", "yes", "on")
-            return live_trading
-
-        # Parallel fan-out — `/strategy/signals?limit=500` was sequentially
-        # gating the whole panel at 26+ seconds. Each call now runs in its
-        # own thread with a hard 5s timeout; the slowest blocker dictates
-        # total latency, not the sum.
-        def _get(url: str, timeout: float = 5.0):
-            try:
-                with httpx.Client(timeout=timeout) as cli:
-                    r = cli.get(url)
-                    if r.status_code == 200:
-                        return r.json()
-            except Exception as e:
-                log.warning("engines_full GET %s: %s", url, e)
-            return None
-
-        urls = {
-            "engines":     (f"http://localhost:{PM_PORT}/engines", 5.0),
-            "closures":    (f"http://localhost:{STRATEGY_PORT}/closures?limit=2000", 8.0),
-            # limit=100 keeps payload small — /signals is slow with extras_json
-            "signals":     (f"http://localhost:{STRATEGY_PORT}/signals?limit=100", 5.0),
-            "state":       (f"http://localhost:{STRATEGY_PORT}/state", 5.0),
-            "attribution": (f"http://localhost:{STRATEGY_PORT}/attribution?since=0", 8.0),
-            "account":     (f"{SIGNAL_BUS_BASE}/hl/account", 3.0),
-        }
-        results: dict = {}
-        with ThreadPoolExecutor(max_workers=6) as ex:
-            futs = {ex.submit(_get, url, t): name for name, (url, t) in urls.items()}
-            for fut in futs:
-                name = futs[fut]
-                try:
-                    results[name] = fut.result(timeout=10.0)
-                except Exception as e:
-                    log.warning("engines_full fut[%s]: %s", name, e)
-                    results[name] = None
-
-        engines_list = (results.get("engines") or {}).get("engines", []) or []
-        closures = results.get("closures") or []
-        signals = results.get("signals") or []
-        open_state = results.get("state") or []
-        attribution = results.get("attribution") or {"engines": []}
-        if results.get("account"):
-            equity_usd = results["account"].get("value") or results["account"].get("account_value")
-
-        # Bucket per-engine data
-        attr_by_name = {e["engine"]: e for e in attribution.get("engines", [])
-                        if isinstance(e, dict) and e.get("engine")}
-        closures_by_name: dict = {}
-        for c in closures:
-            n = c.get("strategy") or c.get("engine")
-            if not n:
-                continue
-            closures_by_name.setdefault(n, []).append({
-                "ts_close": int((c.get("close_ts") or 0) * 1000),
-                "net_pnl": float(c.get("pnl_usd", 0)) - float(c.get("fees_usd", 0)),
-                "coin": c.get("coin"),
-                "is_long": bool(c.get("is_long")),
-                "close_reason": c.get("close_reason"),
-            })
-        signals_by_name: dict = {}
-        for s in signals:
-            n = s.get("strategy")
-            if not n:
-                continue
-            if n in signals_by_name:
-                continue  # /signals is already sorted desc; first hit wins
-            signals_by_name[n] = {
-                "fire_ts": int((s.get("ts") or 0) * 1000),
-                "ts": int((s.get("ts") or 0) * 1000),
-                "coin": s.get("coin"),
-                "side": "long" if s.get("is_long") else "short",
-                "fire_reason": s.get("fire_reason"),
-            }
-        open_by_name: dict = {}
-        for p in open_state:
-            n = p.get("strategy")
-            if not n:
-                continue
-            open_by_name.setdefault(n, []).append({
-                "coin": p.get("coin"),
-                "is_long": bool(p.get("is_long")),
-                "open_ts": int((p.get("open_ts") or 0) * 1000),
-                "open_px": p.get("open_px"),
-                "size_usd": p.get("size_usd"),
-            })
-
-        # Affinity-class fallback mapping
-        def _class_from_affinity(aff: list) -> str:
-            if not aff:
-                return ""
-            s = set(aff)
-            if "trend_up" in s and "trend_down" in s:
-                if "range" in s or "chop" in s:
-                    return "multi_regime"
-                return "trend_follower"
-            if "range" in s or "chop" in s:
-                return "mean_reversion"
-            if "trend_down" in s:
-                return "trend_short"
-            if "trend_up" in s:
-                return "trend_long"
-            return aff[0]
-
-        # Build dict-keyed registry in legacy shape
-        engines_dict: dict = {}
-        for e in engines_list:
-            name = e.get("name")
-            if not name:
-                continue
-            attr = attr_by_name.get(name) or {}
-            stage = e.get("stage") or "unknown"
-            # New PM uses 'live' for what legacy called 'full'
-            legacy_stage = {"live": "full"}.get(stage, stage)
-            engines_dict[name] = {
-                "halt_url": "/strategy/halt/" + name,  # synthetic — non-empty signals "API available"
-                "capital_fraction": e.get("capital_fraction"),
-                "class": _class_from_affinity(e.get("affinity") or []),
-                "affinity": e.get("affinity") or [],
-                "audit_status": e.get("audit_status") or "",
-                "audit_metrics": {
-                    "pf": e.get("bt_pf"),
-                    "n":  e.get("bt_n"),
-                    "wr": attr.get("wr"),
-                    "max_trades_per_day": None,
-                    "oos_pf": e.get("bt_pf"),
-                },
-                "lifecycle_stage": legacy_stage,
-                "spec": {
-                    "thesis": "",
-                    "timeframe": e.get("tf") or "",
-                },
-                "cloid_prefix": e.get("cloid_prefix") or "",
-                "live": legacy_stage in ("full", "canary", "small"),
-                "deprecated": legacy_stage in ("demoted", "deprecated"),
-                "needs_rewrite": False,
-            }
-
-        # Build per-engine data block
-        data_dict: dict = {}
-        for name in engines_dict.keys():
-            attr = attr_by_name.get(name) or {}
-            engine_closures = closures_by_name.get(name, [])
-            engine_open = open_by_name.get(name, [])
-            engine_signals = signals_by_name.get(name)
-            data_dict[name] = {
-                "pnl": {
-                    "total_net_pnl": attr.get("net_pnl", 0.0),
-                    "n_closed": attr.get("n", 0),
-                    "wr_pct": (attr.get("wr", 0.0) or 0.0) * 100.0 if attr else None,
-                    "equity": equity_usd,
-                    "__synthetic": False,
-                } if (attr or engine_closures) else None,
-                "state": {
-                    "mode_effective": "live" if _engine_is_live(name) else "paper",
-                    "halt": {"active": False},
-                    "open_trades": engine_open,
-                    "equity_usd": equity_usd,
-                    "daily_pnl_usd": attr.get("net_pnl", 0.0) if attr else None,
-                    "closed_trades_count": attr.get("n", 0) if attr else 0,
-                },
-                "closures": {"closures": engine_closures},
-                "signals": {"signals": [engine_signals] if engine_signals else []},
-            }
-
-        self._json(200, {
-            "ts": int(time.time() * 1000),
-            "engines": engines_dict,
-            "data": data_dict,
-        })
-
-    # ────────────────── Macro Economic Report (MER) ──────────────────
     def _serve_mer_today(self) -> None:
         """GET /mer or /mer/today — landing /macro fetches this."""
         try:
@@ -1395,107 +1181,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(500, {"error": "blackout_failed", "detail": str(e)[:200]})
 
     def _serve_audit_deep(self) -> None:
-        """Landing's /audit/deep — per-coin attribution + per-hour fills/PnL series.
-
-        Primary source: HL info.userFillsByTime (last 24h on the main wallet).
-        This survives runner DB resets and gives the operator a "what actually
-        happened on the exchange" view independent of any internal state.
-
-        Fallback: strategy_runner /closures aggregation, used only if HL is
-        unreachable. Runner closures double-count vs HL fills (each closing
-        fill = 1 runner closure), so they're never merged — HL wins when present.
-        """
-        per_coin: list = []
-        per_hour: list = []
-        try:
-            now = time.time()
-            since_ms = int((now - 24 * 3600) * 1000)
-            user_wallet = os.environ.get("HL_USER_WALLET", "")
-            fills: list = []
-            if user_wallet:
-                try:
-                    with httpx.Client(timeout=5.0) as cli:
-                        r = cli.post(
-                            "https://api.hyperliquid.xyz/info",
-                            json={"type": "userFillsByTime",
-                                  "user": user_wallet,
-                                  "startTime": since_ms},
-                        )
-                        if r.status_code == 200:
-                            fills = r.json() or []
-                except Exception:
-                    fills = []
-            # 24 hourly buckets, oldest first → JS reverses to newest-first
-            buckets: dict = {}
-            for i in range(24):
-                bucket_ts = int((now - (24 - i) * 3600) * 1000)
-                buckets[i] = {"ts": bucket_ts, "fills": 0, "pnl": 0.0}
-            coin_agg: dict = {}
-            if fills:
-                # Only closing fills produce realized PnL on HL. dir is
-                # "Close Long" / "Close Short" for closing legs, "Open …" for
-                # opening legs. closedPnl is 0 on opens. Count fills as the
-                # number of closing legs (matches the "fills · 24h" UI meaning).
-                for f in fills:
-                    direction = (f.get("dir") or "").lower()
-                    if "close" not in direction:
-                        continue
-                    ts_ms = float(f.get("time", 0) or 0)
-                    ts_s = ts_ms / 1000.0
-                    hour_idx = int((ts_s - (now - 24 * 3600)) / 3600)
-                    pnl = float(f.get("closedPnl", 0) or 0)
-                    fee = float(f.get("fee", 0) or 0)
-                    net = pnl - fee
-                    if 0 <= hour_idx < 24:
-                        buckets[hour_idx]["fills"] += 1
-                        buckets[hour_idx]["pnl"] += net
-                    coin = f.get("coin", "—")
-                    agg = coin_agg.setdefault(coin, {"coin": coin, "n": 0, "wins": 0, "pnl_usd": 0.0})
-                    agg["n"] += 1
-                    agg["pnl_usd"] += net
-                    if net > 0:
-                        agg["wins"] += 1
-            else:
-                # Fallback: runner closures (matches legacy behaviour)
-                with httpx.Client(timeout=5.0) as cli:
-                    r = cli.get(f"http://localhost:{STRATEGY_PORT}/closures?since={now - 24*3600}&limit=2000")
-                    closures = []
-                    if r.status_code == 200:
-                        data = r.json()
-                        closures = data if isinstance(data, list) else (data.get("items") or [])
-                for c in closures:
-                    ts = float(c.get("close_ts", 0) or 0)
-                    hour_idx = int((ts - (now - 24 * 3600)) / 3600)
-                    net = float(c.get("pnl_usd", 0) or 0) - float(c.get("fees_usd", 0) or 0)
-                    if 0 <= hour_idx < 24:
-                        buckets[hour_idx]["fills"] += 1
-                        buckets[hour_idx]["pnl"] += net
-                    coin = c.get("coin", "—")
-                    agg = coin_agg.setdefault(coin, {"coin": coin, "n": 0, "wins": 0, "pnl_usd": 0.0})
-                    agg["n"] += 1
-                    agg["pnl_usd"] += net
-                    if net > 0:
-                        agg["wins"] += 1
-            for i in sorted(buckets.keys()):
-                per_hour.append(buckets[i])
-            for coin, agg in coin_agg.items():
-                agg["wr"] = round(agg["wins"] / agg["n"], 3) if agg["n"] else 0.0
-                agg["pnl_usd"] = round(agg["pnl_usd"], 4)
-                # Legacy panel aliases — landing.html loadHeatmap reads c.w / c.l / c.pnl
-                # rather than c.wins / (n-wins) / c.pnl_usd. Provide both shapes.
-                agg["w"] = agg["wins"]
-                agg["l"] = agg["n"] - agg["wins"]
-                agg["pnl"] = agg["pnl_usd"]
-                per_coin.append(agg)
-            per_coin.sort(key=lambda x: x["pnl_usd"], reverse=True)
-        except Exception:
-            pass
-        self._json(200, {
-            "per_coin": per_coin,
-            "per_hour": per_hour,
-            "hours": 24,
-            "ts": int(time.time() * 1000),
-        })
+        """STUBBED 2026-05-26 — page killed by operator."""
+        return self._json(404, {"error": "endpoint removed"})
 
     def _serve_chat(self) -> None:
         """Serve the new PSYCHO-themed sentinel chat UI."""
@@ -1838,8 +1525,6 @@ class Handler(BaseHTTPRequestHandler):
         # Compatibility endpoints for the precog landing.html
         if path == "/dash":
             return self._serve_dash()
-        if path == "/api/engines":
-            return self._serve_api_engines()
         if path == "/api/dca_state":
             return self._serve_dca_state()
         if path == "/all_systems":
@@ -1850,10 +1535,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_whales()
         if path == "/news":
             return self._serve_news()
-        if path == "/engines_full":
-            return self._serve_engines_full()
-        if path.startswith("/audit/deep"):
-            return self._serve_audit_deep()
         if path.startswith("/orderbook/"):
             coin = path.split("/")[-1]
             return self._serve_orderbook(coin)
@@ -1892,8 +1573,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._serve_chat()
         # Landing sub-nav paths — serve the landing HTML so the page stays styled
         # (originally these were separate sub-pages in precog-hl, not yet ported).
-        if path in ("/engines", "/audit", "/system", "/macro",
-                    "/enforce", "/experiment", "/violations"):
+        if path in ("/macro", "/enforce", "/experiment", "/violations"):
             return self._serve_landing()
         # Strategy attribution + health — pull from sentinel-trader (the actual
         # LIVE executor since 2026-05-22 sessions). spm-strategy-runner is
