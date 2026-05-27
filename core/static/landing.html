@@ -1064,14 +1064,7 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
 </div>
 
 <!-- Systems A–F + engines-dyn section removed 2026-05-26 -->
-<div class="val" id="esum-total">—</div></div>
-        <div class="eng-summary-stat"><div class="lbl">live</div><div class="val" id="esum-live" style="color:var(--gain)">—</div></div>
-        <div class="eng-summary-stat"><div class="lbl">paper</div><div class="val" id="esum-paper" style="color:var(--oxide)">—</div></div>
-        <div class="eng-summary-stat"><div class="lbl">dead</div><div class="val" id="esum-dead" style="color:var(--loss)">—</div></div>
-    </div>
-    <div id="engines-sections"></div>
-    <div id="engines-empty" class="dim" style="display:none;text-align:center;padding:24px;font-style:italic">no engines registered</div>
-</div>
+<!-- 2026-05-27: orphaned esum-total/live/paper/dead block removed too -->
 
 <style>
 /* ── Summary header ── */
@@ -2930,15 +2923,13 @@ async function _renderPositionsPanel(rows, bodyId, metaId, dcaCache) {
     return '<tr>'
       + '<td class="lpos-coin">' + (p.coin || '—') + '</td>'
       + '<td><span class="lpos-side ' + side + '">' + sLab + '</span></td>'
-      + '<td class="r">' + fmtPx(p.entry) + '</td>'
-      + '<td class="r" style="color:var(--muted,#6b7280);font-size:10px">' + (p.lev ?? '—') + '×</td>'
       + '<td class="r" style="font-size:10px">' + dcaCell + '</td>'
       + '<td class="r lpos-pnl ' + cls + '">' + fmtPnl(u) + '</td>'
       + '</tr>';
   }).join('');
   body.innerHTML = '<table class="lpos-tbl">'
-    + '<thead><tr><th>Coin</th><th>Side</th><th class="r">Entry</th>'
-    + '<th class="r">Lev</th><th class="r">DCA</th><th class="r">uPnL</th></tr></thead>'
+    + '<thead><tr><th>Coin</th><th>Side</th>'
+    + '<th class="r">DCA</th><th class="r">uPnL</th></tr></thead>'
     + '<tbody>' + trs + '</tbody></table>';
   _markPopulated(bodyId);
   if (meta) {
