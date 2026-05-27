@@ -978,8 +978,14 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
 
 <!-- GRID -->
 <div class="grid">
-    <!-- 2026-05-27: legacy "Positions · Live + Paper" panel removed — duplicate
-         of the simpler Live Positions table in the .lops-col below. -->
+    <!-- POSITIONS -->
+    <div class="panel">
+        <div class="panel-head">
+            <div class="panel-title">Positions · Live + Paper</div>
+            <div class="panel-meta" id="pos-meta">—</div>
+        </div>
+        <div id="positions"></div>
+    </div>
 
     <!-- ENGINE ATTRIBUTION (per-engine WR / PF / expectancy / fee drag) -->
     <!-- 2026-05-21: switched to clean_only data, added LIVE/PAPER badges,
@@ -990,13 +996,9 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
 
     <!-- LIVE OPS COLUMN (positions + 24h equity pulse) — fills the 3rd grid slot -->
     <div class="lops-col">
-        <div class="panel">
-            <div class="panel-head">
-                <div class="panel-title">Live Positions</div>
-                <div class="panel-meta" id="lpos-meta">— open</div>
-            </div>
-            <div id="lpos-body"><div class="lpos-empty">// loading…</div></div>
-        </div>
+        <!-- 2026-05-27: 'Live Positions' panel removed per operator —
+             retained 'Positions · Live + Paper' (above) as the canonical
+             positions view. Confluence Engines panel preserved below. -->
         <div class="panel">
             <div class="panel-head">
                 <div class="panel-title">Confluence Engines · Live</div>
@@ -1532,7 +1534,6 @@ async function loadDash() {
 
         // Positions
         const posDiv = document.getElementById('positions');
-        if (!posDiv) return;  // 2026-05-27: panel removed — bail out cleanly
         const sorted = [...pos].sort((a,b)=>(b.upnl||0)-(a.upnl||0));
         posDiv.innerHTML = sorted.map(p => {
             const cls = (p.upnl||0)>=0?'pnl-pos':'pnl-neg';
@@ -1589,8 +1590,7 @@ async function loadDash() {
         const metaParts = [];
         if (liveCount)  metaParts.push(`${liveCount} live`);
         if (paperCount) metaParts.push(`${paperCount} paper`);
-        const posMeta = document.getElementById('pos-meta');
-        if (posMeta) posMeta.textContent = metaParts.join(' · ') || '0 active';
+        document.getElementById('pos-meta').textContent = metaParts.join(' · ') || '0 active';
 
         // Aggregation panel
         document.getElementById('aggregation').innerHTML = `
