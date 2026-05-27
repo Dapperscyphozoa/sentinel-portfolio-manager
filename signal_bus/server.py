@@ -209,7 +209,38 @@ class Handler(BaseHTTPRequestHandler):
             return _json_resp(self, 200, m)
 
         if path == "/hl/account":
-            return _json_resp(self, 200, CACHE.hl_account)
+            # 2026-05-27: unified-mode fix. webData2's marginSummary.accountValue
+            # is "not meaningful" per HL docs when unified account is active —
+            # it only reflects USDC pinned as perp margin (~$354), not the
+            # wallet's true equity (~$998). Overlay spot USDC total here.
+            # Cached in module-level _spot_total_cache with 8s TTL to keep cost
+            # bounded across the 15s /dash poll rate.
+            acct = dict(CACHE.hl_account)  # copy so we don't mutate cache
+            try:
+                global _spot_total_cache  # noqa: PLW0603
+                _spot_cache = globals().setdefault("_spot_total_cache", {"ts": 0.0, "val": None})
+                if time.time() - _spot_cache["ts"] > 8.0:
+                    import httpx as _httpx
+                    with _httpx.Client(timeout=4.0) as _cli:
+                        _r = _cli.post("https://api.hyperliquid.xyz/info",
+                                       json={"type": "spotClearinghouseState",
+                                             "user": os.environ.get("HL_USER_WALLET", os.environ.get("HL_USER", ""))})
+                        if _r.status_code == 200:
+                            for _b in _r.json().get("balances", []):
+                                if _b.get("coin") == "USDC":
+                                    _v = float(_b.get("total", 0))
+                                    if _v > 0:
+                                        _spot_cache["val"] = _v
+                                    _spot_cache["ts"] = time.time()
+                                    break
+                if _spot_cache.get("val") is not None and float(_spot_cache["val"]) > 0:
+                    acct["value"] = float(_spot_cache["val"])
+                    acct["value_source"] = "spotClearinghouseState"
+                else:
+                    acct["value_source"] = "marginSummary.accountValue (fallback)"
+            except Exception as _e:
+                acct["value_source"] = f"marginSummary.accountValue (spot read failed: {str(_e)[:60]})"
+            return _json_resp(self, 200, acct)
 
         if path == "/hl/positions":
             return _json_resp(self, 200, CACHE.hl_positions)
