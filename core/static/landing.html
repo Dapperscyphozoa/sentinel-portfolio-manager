@@ -1935,7 +1935,7 @@ async function loadHeatmap() {
             const pnlColor = s.pnl >= 0 ? 'var(--heat)' : 'var(--blood)';
             return `<div style="padding:8px 6px;background:${bg};border:1px solid var(--line);text-align:center">
                 <div style="font-weight:600;font-size:11px">${s.coin}</div>
-                <div style="font-size:9px;opacity:0.7">${s.wr.toFixed(0)}% · ${s.n}</div>
+                <div style="font-size:9px;opacity:0.85"><span style="opacity:0.6">WR</span> ${s.wr.toFixed(0)}% · ${s.n}n</div>
                 <div style="font-size:9px;color:${pnlColor};margin-top:2px">${s.pnl >= 0 ? '+' : ''}${s.pnl.toFixed(2)}</div>
             </div>`;
         }).join('');
