@@ -663,6 +663,10 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
                 <div class="hero-stat-val pos" id="hero-upnl">$0</div>
                 <div class="hero-stat-lbl">UNREALIZED</div>
             </div>
+            <div>
+                <div class="hero-stat-val" id="hero-wr">—</div>
+                <div class="hero-stat-lbl">WIN RATE</div>
+            </div>
         </div>
     </div>
 
@@ -1518,6 +1522,24 @@ async function loadDash() {
 
         document.getElementById('hero-eq').textContent = '$' + eq.toFixed(2);
         document.getElementById('hero-pos').textContent = pos.length;
+        // Win rate hero stat — pull authoritative total WR from sentinel-trader
+        // attribution (post-flush: reflects only fixed-system closures). Shows
+        // sample size so a small-n WR isn't read as a large-sample fact.
+        (async () => {
+            try {
+                const a = await fetch('https://sentinel-trader.onrender.com/attribution',
+                                      { cache: 'no-store' }).then(r => r.json());
+                const t = (a && a.total) || {};
+                const wrEl = document.getElementById('hero-wr');
+                if (wrEl && t.n) {
+                    const wrPct = (t.wr || 0) * 100;
+                    wrEl.textContent = wrPct.toFixed(0) + '% · ' + Math.round(t.n) + 'n';
+                    wrEl.className = 'hero-stat-val ' + (wrPct >= 50 ? 'pos' : 'neg');
+                } else if (wrEl) {
+                    wrEl.textContent = '—';
+                }
+            } catch (e) { /* leave placeholder on failure */ }
+        })();
         const upEl = document.getElementById('hero-upnl');
         upEl.textContent = (upnl>=0?'+$':'-$') + Math.abs(upnl).toFixed(2);
         upEl.className = 'hero-stat-val ' + (upnl>=0?'pos':'neg');
