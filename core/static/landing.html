@@ -1484,6 +1484,10 @@ async function loadDash() {
                                 total: tr.length || 5,
                                 gen: (p.gen_ids || []).join(','),
                                 side: p.side,
+                                pct_from_entry: p.pct_from_entry,
+                                pct_entry_to_sl: p.pct_entry_to_sl,
+                                pct_mark_to_sl: p.pct_mark_to_sl,
+                                pct_entry_to_tp: p.pct_entry_to_tp,
                             };
                         }
                         if (Object.keys(bc).length > 0) {
@@ -1598,12 +1602,39 @@ async function loadDash() {
                 else if (dca.filled >= 2) dcaColor = '#eab308';  // yellow
                 dcaBadge = `<span style="display:inline-block;padding:1px 4px;margin-left:5px;font-size:9px;font-weight:700;color:${dcaColor};border:1px solid ${dcaColor};border-radius:3px;letter-spacing:0.03em">DCA ${dca.filled}/${dca.total}</span>`;
             }
-            return `<div class="${rowCls}">
+            // 2026-05-30: %-from-entry line + the -7% SL invariant tripwire.
+            // pct_from_entry: +ve = in profit (side-aware from API). pct_entry_to_sl
+            // should read -7.0 on EVERY position; anything else = signal-anchor
+            // discrepancy (the SL-drift bug signature) → render it RED+bold so a
+            // bad value jumps out of the panel instantly.
+            let pctLine = '';
+            if (dca && (dca.pct_from_entry != null || dca.pct_entry_to_sl != null)) {
+                const pfe = dca.pct_from_entry;
+                const pms = dca.pct_mark_to_sl;
+                const pes = dca.pct_entry_to_sl;
+                const fePart = (pfe != null)
+                    ? `<span style="color:${pfe>=0?'var(--acid)':'#f88'};font-weight:600">${pfe>=0?'+':''}${pfe.toFixed(2)}%</span> <span style="opacity:0.4">entry</span>`
+                    : '';
+                const msPart = (pms != null)
+                    ? `<span style="opacity:0.4">·</span> <span style="color:#f88;opacity:0.8">${pms.toFixed(2)}%</span> <span style="opacity:0.4">→SL</span>`
+                    : '';
+                // invariant check: |SL%| should be ~7.0. flag if it drifts.
+                let invPart = '';
+                if (pes != null) {
+                    const ok = Math.abs(Math.abs(pes) - 7.0) < 0.3;
+                    invPart = ok
+                        ? `<span style="opacity:0.4">·</span> <span style="opacity:0.45">SL@${pes.toFixed(1)}%</span>`
+                        : `<span style="opacity:0.4">·</span> <span style="color:#ff3b3b;font-weight:800;background:#3a0000;padding:0 3px;border-radius:2px">⚠SL@${pes.toFixed(1)}%</span>`;
+                }
+                pctLine = `<div style="font-size:9px;margin-top:3px;letter-spacing:0.02em">${fePart} ${msPart} ${invPart}</div>`;
+            }
+            return `<div class="${rowCls}" style="padding-top:9px;padding-bottom:9px">
                 <div class="pos-coin">${p.coin}${eng?'<br>'+eng:''}</div>
                 <div>${stageBadge}<span class="pos-side side-${p.side}">${p.side}</span> <span style="opacity:0.5;font-size:9px">${lev}x</span>${dcaBadge}</div>
                 <div class="pos-size">
                     <div style="font-size:10px"><span style="opacity:0.55">${p.size} @ </span><span style="opacity:0.85">${entry}</span> <span style="opacity:0.4">→</span> <span class="${markCls}">${mark}</span></div>
                     <div style="font-size:9px;margin-top:2px"><span style="color:var(--acid);opacity:0.85">TP ${tp}</span> · <span style="color:#f88;opacity:0.85">SL ${sl}</span></div>
+                    ${pctLine}
                 </div>
                 <div class="pos-pnl ${cls}">${sign}$${(p.upnl||0).toFixed(2)}</div>
             </div>`;
