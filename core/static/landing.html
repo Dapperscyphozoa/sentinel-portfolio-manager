@@ -1573,17 +1573,29 @@ async function loadDash() {
             // toPrecision(5) keeps consistent significant digits across coins of
             // any price magnitude (BTC at 76000 vs SHIB at 0.000012).
             const fmt = (v) => (v != null && v !== '-' && !isNaN(v)) ? Number(v).toPrecision(5) : '-';
-            const entry = fmt(p.entry);
-            const mark  = fmt(p.mark_px);
-            const tp    = fmt(p.tp);
-            const sl    = fmt(p.sl);
+            // Some position records arrive with null entry/tp/sl (e.g. kSHIB) while the
+            // DCA feed has them. Fall back to the dca object's signal_price/tp1_px/sl_px
+            // so the row never shows '-' / a bogus 100% when the data exists elsewhere.
+            const _d = dcaByCoin[p.coin] || {};
+            const entryVal = (p.entry != null && !isNaN(p.entry) && p.entry != 0) ? Number(p.entry)
+                           : (_d.signal_price != null ? Number(_d.signal_price) : null);
+            const tpVal    = (p.tp != null && !isNaN(p.tp)) ? Number(p.tp)
+                           : (_d.tp1_px != null ? Number(_d.tp1_px) : null);
+            const slVal    = (p.sl != null && !isNaN(p.sl)) ? Number(p.sl)
+                           : (_d.sl_px != null ? Number(_d.sl_px) : null);
+            const markVal  = (p.mark_px != null && !isNaN(p.mark_px)) ? Number(p.mark_px)
+                           : (_d.mark_px != null ? Number(_d.mark_px) : null);
+            const entry = fmt(entryVal);
+            const mark  = fmt(markVal);
+            const tp    = fmt(tpVal);
+            const sl    = fmt(slVal);
             // Mark price colour vs entry, side-aware:
             //   LONG  + mark > entry → gain (green); mark < entry → loss (red)
             //   SHORT + mark < entry → gain (green); mark > entry → loss (red)
             let markCls = '';
-            if (p.mark_px != null && p.entry != null) {
+            if (markVal != null && entryVal != null) {
                 const isLong = (p.side === 'LONG' || p.side === 'BUY' || p.side === 'L');
-                const diff = isLong ? (p.mark_px - p.entry) : (p.entry - p.mark_px);
+                const diff = isLong ? (markVal - entryVal) : (entryVal - markVal);
                 markCls = diff >= 0 ? 'pnl-pos' : 'pnl-neg';
             }
             const eng = p.engine ? `<span style="opacity:0.45;font-size:9px;letter-spacing:0.05em">${p.engine}</span>` : '';
@@ -1613,11 +1625,13 @@ async function loadDash() {
             // mark shown on the row → the "% looks wrong" bug). Single source = the % can
             // never disagree with the entry→mark prices beside it.
             let pctLine = '';
-            if (p.entry != null && p.mark_px != null && !isNaN(p.entry) && !isNaN(p.mark_px) && p.entry != 0) {
+            // Guard: need BOTH resolved entry and mark, entry non-zero. Missing data
+            // (kSHIB had null entry) must NOT fall through to a bogus 100%.
+            if (entryVal != null && markVal != null && entryVal != 0) {
                 const isLong = (p.side === 'LONG' || p.side === 'BUY' || p.side === 'L');
                 const pfe = isLong
-                    ? (p.mark_px - p.entry) / p.entry * 100
-                    : (p.entry - p.mark_px) / p.entry * 100;
+                    ? (markVal - entryVal) / entryVal * 100
+                    : (entryVal - markVal) / entryVal * 100;
                 const fePart = `<span style="color:${pfe>=0?'var(--gain)':'#f88'};font-weight:700;font-size:14.5px">${pfe>=0?'+':''}${pfe.toFixed(2)}%</span>`;
                 // SL-drift tripwire (kept): -7% invariant only holds PRE-ratchet. Suppress
                 // on ratcheted winners (pfe>0.4) — flagging those was a false alarm.
