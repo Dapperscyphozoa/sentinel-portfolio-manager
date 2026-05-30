@@ -797,6 +797,14 @@ class Handler(BaseHTTPRequestHandler):
                     "side": p.get("side"),
                     "opened_ts": p.get("opened_ts"),
                     "signal_price": p.get("signal_price"),
+                    # 2026-05-30: pass through the %-from-entry fields the dashboard
+                    # renders (these were dropped here, so the proxy path — which the
+                    # dashboard tries FIRST — never delivered them; the update "didn't land").
+                    "mark_px": p.get("mark_px"),
+                    "pct_from_entry": p.get("pct_from_entry"),
+                    "pct_entry_to_sl": p.get("pct_entry_to_sl"),
+                    "pct_mark_to_sl": p.get("pct_mark_to_sl"),
+                    "pct_entry_to_tp": p.get("pct_entry_to_tp"),
                 }
         except urllib.error.URLError as e:
             out["error"] = f"upstream: {e}"
