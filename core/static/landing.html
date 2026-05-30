@@ -1623,11 +1623,11 @@ async function loadDash() {
                 if (pes != null && !ratcheted && Math.abs(Math.abs(pes) - 7.0) >= 0.3) {
                     invPart = ` <span style="color:#ff3b3b;font-weight:800;background:#3a0000;padding:0 3px;border-radius:2px">⚠SL@${pes.toFixed(1)}%</span>`;
                 }
-                pctLine = `<div style="font-size:13px;margin-top:4px;letter-spacing:0.02em">${fePart}${invPart}</div>`;
+                pctLine = `<div style="font-size:13px;margin-top:4px;letter-spacing:0.02em">${fePart}${invPart}</div>${dcaBadge?`<div style="margin-top:4px">${dcaBadge}</div>`:''}`;
             }
             return `<div class="${rowCls}">
                 <div class="pos-coin">${p.coin}${eng?'<br>'+eng:''}</div>
-                <div>${stageBadge}<span class="pos-side side-${p.side}">${p.side}</span> <span style="opacity:0.5;font-size:10px">${lev}x</span>${dcaBadge}</div>
+                <div>${stageBadge}<span class="pos-side side-${p.side}">${p.side}</span> <span style="opacity:0.5;font-size:10px">${lev}x</span></div>
                 <div class="pos-size">
                     <div style="font-size:11.5px"><span style="opacity:0.55">${p.size} @ </span><span style="opacity:0.85">${entry}</span> <span style="opacity:0.4">→</span> <span class="${markCls}">${mark}</span></div>
                     <div style="font-size:11px;margin-top:3px"><span style="color:var(--acid);opacity:0.85">TP ${tp}</span> · <span style="color:#f88;opacity:0.85">SL ${sl}</span></div>
