@@ -1615,11 +1615,15 @@ async function loadDash() {
                 const fePart = (pfe != null)
                     ? `<span style="color:${pfe>=0?'var(--acid)':'#f88'};font-weight:700;font-size:14.5px">${pfe>=0?'+':''}${pfe.toFixed(2)}%</span>`
                     : '';
-                // SL-drift tripwire: stays SILENT in normal operation (|SL|~7.0).
-                // Only renders — loud red ⚠ — if the signal-anchored -7% has drifted,
-                // so a bad value still jumps out without cluttering every healthy row.
+                // SL-drift tripwire: the -7% invariant ONLY holds PRE-ratchet. Once a
+                // position ratchets into profit, the stop legitimately trails off -7%
+                // toward breakeven/profit (that's the whole point of Model D). So only
+                // flag a drift when the position is NOT in profit (pfe <= ~0) AND the
+                // SL isn't ~-7%. A winning, ratcheting position with SL@1.5% is HEALTHY,
+                // not drifted — flagging it red was a false alarm (FIL showed this).
                 let invPart = '';
-                if (pes != null && Math.abs(Math.abs(pes) - 7.0) >= 0.3) {
+                const ratcheted = (pfe != null && pfe > 0.4);   // +0.4% floor = ratchet engaged
+                if (pes != null && !ratcheted && Math.abs(Math.abs(pes) - 7.0) >= 0.3) {
                     invPart = ` <span style="color:#ff3b3b;font-weight:800;background:#3a0000;padding:0 3px;border-radius:2px">⚠SL@${pes.toFixed(1)}%</span>`;
                 }
                 pctLine = `<div style="font-size:13px;margin-top:4px;letter-spacing:0.02em">${fePart}${invPart}</div>`;
