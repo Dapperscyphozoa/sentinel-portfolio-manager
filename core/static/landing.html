@@ -1614,7 +1614,7 @@ async function loadDash() {
                 const pfe = isLong
                     ? (p.mark_px - p.entry) / p.entry * 100
                     : (p.entry - p.mark_px) / p.entry * 100;
-                const fePart = `<span style="color:${pfe>=0?'var(--acid)':'#f88'};font-weight:700;font-size:14.5px">${pfe>=0?'+':''}${pfe.toFixed(2)}%</span>`;
+                const fePart = `<span style="color:${pfe>=0?'var(--gain)':'#f88'};font-weight:700;font-size:14.5px">${pfe>=0?'+':''}${pfe.toFixed(2)}%</span>`;
                 // SL-drift tripwire (kept): -7% invariant only holds PRE-ratchet. Suppress
                 // on ratcheted winners (pfe>0.4) — flagging those was a false alarm.
                 let invPart = '';
