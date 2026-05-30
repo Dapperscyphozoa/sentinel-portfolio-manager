@@ -1613,7 +1613,7 @@ async function loadDash() {
                 const pes = dca.pct_entry_to_sl;
                 // ONE clean reading: how far above (green) / below (red) entry.
                 const fePart = (pfe != null)
-                    ? `<span style="color:${pfe>=0?'var(--acid)':'#f88'};font-weight:700;font-size:13px">${pfe>=0?'+':''}${pfe.toFixed(2)}%</span>`
+                    ? `<span style="color:${pfe>=0?'var(--acid)':'#f88'};font-weight:700;font-size:14.5px">${pfe>=0?'+':''}${pfe.toFixed(2)}%</span>`
                     : '';
                 // SL-drift tripwire: stays SILENT in normal operation (|SL|~7.0).
                 // Only renders — loud red ⚠ — if the signal-anchored -7% has drifted,
