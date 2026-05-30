@@ -188,9 +188,9 @@ body::after {
 .panel-meta { font-size: 9px; letter-spacing: 0.2em; color: var(--oxide); opacity: 0.8; }
 
 /* POSITIONS */
-.pos-row { display: grid; grid-template-columns: 60px 1fr auto auto; gap: 12px; padding: 10px 0; border-bottom: 1px dashed var(--line); font-size: 12px; align-items: center; }
+.pos-row { display: grid; grid-template-columns: 70px 1fr auto auto; gap: 14px; padding: 13px 0; border-bottom: 1px dashed var(--line); font-size: 13.5px; align-items: center; }
 .pos-row:last-child { border-bottom: none; }
-.pos-coin { font-weight: 600; letter-spacing: 0.05em; }
+.pos-coin { font-weight: 600; letter-spacing: 0.05em; font-size: 14px; }
 .pos-side { font-size: 9px; padding: 2px 6px; letter-spacing: 0.15em; display: inline-block; }
 .side-L { background: rgba(16,185,129,0.15); color: var(--gain); border: 1px solid rgba(16,185,129,0.35); }
 .side-S { background: rgba(193,39,45,0.15); color: var(--blood); border: 1px solid rgba(193,39,45,0.3); }
@@ -203,8 +203,8 @@ body::after {
 .stage-live { background: rgba(16,185,129,0.12); color: var(--gain); border: 1px solid rgba(16,185,129,0.35); }
 .pos-row.is-paper { background: rgba(245,158,11,0.04); border-left: 2px solid rgba(245,158,11,0.5); padding-left: 10px; margin-left: -2px; }
 .pos-row.is-shadow { background: rgba(139,92,246,0.04); border-left: 2px solid rgba(139,92,246,0.5); padding-left: 10px; margin-left: -2px; }
-.pos-size { font-size: 10px; opacity: 0.6; text-align: right; }
-.pos-pnl { font-family: 'JetBrains Mono', monospace; font-weight: 600; text-align: right; min-width: 80px; }
+.pos-size { font-size: 11.5px; opacity: 0.6; text-align: right; }
+.pos-pnl { font-family: 'JetBrains Mono', monospace; font-weight: 600; text-align: right; min-width: 92px; font-size: 15px; }
 /* .pnl-pos / .pnl-neg defined globally above with --gain/--loss (proper green/red). */
 
 /* NEWS */
@@ -1187,7 +1187,7 @@ document.querySelectorAll(".precog-nav a[data-page]").forEach(function(a){if(a.g
     .eng-metric-grid, .eng-metric-grid.cols4 { grid-template-columns: 1fr 1fr !important; gap: 4px 10px !important; }
 
     /* position / signal / whale rows: 3 cols max */
-    .pos-row { grid-template-columns: 56px 1fr auto !important; gap: 8px !important; font-size: 11px !important; padding: 8px 0 !important; }
+    .pos-row { grid-template-columns: 64px 1fr auto !important; gap: 10px !important; font-size: 12.5px !important; padding: 11px 0 !important; }
 
     /* sticky bottom ticker eats screen real estate on mobile — minimize */
     .ticker { font-size: 10px !important; padding: 6px 10px !important; letter-spacing: 0.1em !important; }
@@ -1626,14 +1626,14 @@ async function loadDash() {
                         ? `<span style="opacity:0.4">·</span> <span style="opacity:0.45">SL@${pes.toFixed(1)}%</span>`
                         : `<span style="opacity:0.4">·</span> <span style="color:#ff3b3b;font-weight:800;background:#3a0000;padding:0 3px;border-radius:2px">⚠SL@${pes.toFixed(1)}%</span>`;
                 }
-                pctLine = `<div style="font-size:9px;margin-top:3px;letter-spacing:0.02em">${fePart} ${msPart} ${invPart}</div>`;
+                pctLine = `<div style="font-size:11px;margin-top:4px;letter-spacing:0.02em">${fePart} ${msPart} ${invPart}</div>`;
             }
-            return `<div class="${rowCls}" style="padding-top:9px;padding-bottom:9px">
+            return `<div class="${rowCls}">
                 <div class="pos-coin">${p.coin}${eng?'<br>'+eng:''}</div>
-                <div>${stageBadge}<span class="pos-side side-${p.side}">${p.side}</span> <span style="opacity:0.5;font-size:9px">${lev}x</span>${dcaBadge}</div>
+                <div>${stageBadge}<span class="pos-side side-${p.side}">${p.side}</span> <span style="opacity:0.5;font-size:10px">${lev}x</span>${dcaBadge}</div>
                 <div class="pos-size">
-                    <div style="font-size:10px"><span style="opacity:0.55">${p.size} @ </span><span style="opacity:0.85">${entry}</span> <span style="opacity:0.4">→</span> <span class="${markCls}">${mark}</span></div>
-                    <div style="font-size:9px;margin-top:2px"><span style="color:var(--acid);opacity:0.85">TP ${tp}</span> · <span style="color:#f88;opacity:0.85">SL ${sl}</span></div>
+                    <div style="font-size:11.5px"><span style="opacity:0.55">${p.size} @ </span><span style="opacity:0.85">${entry}</span> <span style="opacity:0.4">→</span> <span class="${markCls}">${mark}</span></div>
+                    <div style="font-size:11px;margin-top:3px"><span style="color:var(--acid);opacity:0.85">TP ${tp}</span> · <span style="color:#f88;opacity:0.85">SL ${sl}</span></div>
                     ${pctLine}
                 </div>
                 <div class="pos-pnl ${cls}">${sign}$${(p.upnl||0).toFixed(2)}</div>
