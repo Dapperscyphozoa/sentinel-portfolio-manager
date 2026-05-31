@@ -1576,15 +1576,15 @@ async function loadDash() {
             // Some position records arrive with null entry/tp/sl (e.g. kSHIB) while the
             // DCA feed has them. Fall back to the dca object's signal_price/tp1_px/sl_px
             // so the row never shows '-' / a bogus 100% when the data exists elsewhere.
-            const _d = dcaByCoin[p.coin] || {};
+            const _d = dcaByCoin[p.coin] || dcaByCoin[(p.coin||'').toLowerCase()] || dcaByCoin[(p.coin||'').toUpperCase()] || (function(){const k=Object.keys(dcaByCoin||{}).find(x=>x.toUpperCase()===(p.coin||'').toUpperCase());return k?dcaByCoin[k]:{};})();
             const entryVal = (p.entry != null && !isNaN(p.entry) && p.entry != 0) ? Number(p.entry)
                            : (_d.signal_price != null ? Number(_d.signal_price) : null);
             const tpVal    = (p.tp != null && !isNaN(p.tp)) ? Number(p.tp)
                            : (_d.tp1_px != null ? Number(_d.tp1_px) : null);
             const slVal    = (p.sl != null && !isNaN(p.sl)) ? Number(p.sl)
                            : (_d.sl_px != null ? Number(_d.sl_px) : null);
-            const markVal  = (p.mark_px != null && !isNaN(p.mark_px)) ? Number(p.mark_px)
-                           : (_d.mark_px != null ? Number(_d.mark_px) : null);
+            const markVal  = (p.mark_px != null && !isNaN(p.mark_px) && Number(p.mark_px) !== 0) ? Number(p.mark_px)
+                           : (_d.mark_px != null && Number(_d.mark_px) !== 0 ? Number(_d.mark_px) : null);
             const entry = fmt(entryVal);
             const mark  = fmt(markVal);
             const tp    = fmt(tpVal);

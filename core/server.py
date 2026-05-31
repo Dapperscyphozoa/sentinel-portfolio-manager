@@ -805,6 +805,10 @@ class Handler(BaseHTTPRequestHandler):
                     "pct_entry_to_sl": p.get("pct_entry_to_sl"),
                     "pct_mark_to_sl": p.get("pct_mark_to_sl"),
                     "pct_entry_to_tp": p.get("pct_entry_to_tp"),
+                    # 2026-05-31: also pass tp1_px/sl_px so the dashboard can show real
+                    # TP/SL prices for positions absent from /positions (kSHIB showed '-').
+                    "tp1_px": p.get("tp1_px"),
+                    "sl_px": p.get("sl_px"),
                 }
         except urllib.error.URLError as e:
             out["error"] = f"upstream: {e}"
